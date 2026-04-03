@@ -50,13 +50,30 @@ const adaptLoopbackBaseUrlForBrowserHost = (baseUrl) => {
     return baseUrl;
   }
 };
+
+const forceHttpForLoopbackInDev = (baseUrl) => {
+  if (typeof window === 'undefined' || !baseUrl || process.env.NODE_ENV === 'production') {
+    return baseUrl;
+  }
+
+  try {
+    const parsed = new URL(baseUrl, window.location.origin);
+    if (isLoopbackHost(parsed.hostname) && parsed.protocol === 'https:') {
+      parsed.protocol = 'http:';
+      return parsed.toString();
+    }
+    return baseUrl;
+  } catch {
+    return baseUrl;
+  }
+};
 const runtimeConfigBaseUrl =
   typeof window !== 'undefined'
-    ? adaptLoopbackBaseUrlForBrowserHost(toAuthApiBaseUrl(window.__APP_CONFIG__?.apiBaseUrl))
+    ? forceHttpForLoopbackInDev(adaptLoopbackBaseUrlForBrowserHost(toAuthApiBaseUrl(window.__APP_CONFIG__?.apiBaseUrl)))
     : '';
 const explicitApiUrl = toAuthApiBaseUrl(process.env.REACT_APP_API_URL);
-const explicitBaseUrl = adaptLoopbackBaseUrlForBrowserHost(
-  toAuthApiBaseUrl(process.env.REACT_APP_API_BASE_URL) || explicitApiUrl
+const explicitBaseUrl = forceHttpForLoopbackInDev(
+  adaptLoopbackBaseUrlForBrowserHost(toAuthApiBaseUrl(process.env.REACT_APP_API_BASE_URL) || explicitApiUrl)
 );
 const useSameOriginApi = process.env.REACT_APP_USE_SAME_ORIGIN_API === 'true';
 const allowProductionApiFallback = process.env.REACT_APP_ALLOW_PRODUCTION_API_FALLBACK === 'true';
@@ -93,8 +110,8 @@ const resolvedBaseUrl = (() => {
 
   // For local development on any frontend port, default API calls to backend :8000.
   if (typeof window !== 'undefined' && !isProductionBuild && String(window.location.port) !== '8000') {
-    const protocol = window.location.protocol || 'http:';
     const hostname = window.location.hostname || '127.0.0.1';
+    const protocol = isLoopbackHost(hostname) ? 'http:' : (window.location.protocol || 'http:');
     return toAuthApiBaseUrl(`${protocol}//${hostname}:8000`);
   }
 
