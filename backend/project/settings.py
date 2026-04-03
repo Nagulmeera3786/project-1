@@ -43,9 +43,20 @@ if not SECRET_KEY:
 
 allowed_hosts_env = os.environ.get('ALLOWED_HOSTS', '')
 if allowed_hosts_env.strip():
-    ALLOWED_HOSTS = [item.strip() for item in allowed_hosts_env.split(',') if item.strip()]
+    ALLOWED_HOSTS = [
+        item.strip().replace('https://', '').replace('http://', '').rstrip('/')
+        for item in allowed_hosts_env.split(',')
+        if item.strip()
+    ]
 else:
     ALLOWED_HOSTS = ['localhost', '127.0.0.1'] if DEBUG else []
+
+# Render exposes the public host via env vars; include it as a safety fallback.
+render_host = _env_text('RENDER_EXTERNAL_HOSTNAME') or _env_text('RENDER_PUBLIC_HOSTNAME')
+if render_host:
+    normalized_render_host = render_host.replace('https://', '').replace('http://', '').rstrip('/')
+    if normalized_render_host and normalized_render_host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(normalized_render_host)
 
 if not DEBUG and not ALLOWED_HOSTS:
     raise ImproperlyConfigured('ALLOWED_HOSTS must be set when DEBUG=False.')

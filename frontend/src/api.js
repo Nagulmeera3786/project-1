@@ -69,6 +69,9 @@ const apiHost = String(process.env.REACT_APP_API_HOST || '').trim();
 const apiPort = String(process.env.REACT_APP_API_PORT || '').trim();
 const apiProtocol = String(process.env.REACT_APP_API_PROTOCOL || browserProtocol).trim() || 'http:';
 const isProductionBuild = process.env.NODE_ENV === 'production';
+const parsedTimeout = Number(process.env.REACT_APP_API_TIMEOUT_MS);
+const defaultTimeoutMs = isProductionBuild ? 60000 : 15000;
+const requestTimeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : defaultTimeoutMs;
 
 const resolvedBaseUrl = (() => {
   if (runtimeConfigBaseUrl) {
@@ -132,7 +135,7 @@ if (typeof window !== 'undefined' && missingApiConfigurationInProduction) {
 
 const API = axios.create({
   baseURL: resolvedBaseUrl,
-  timeout: 15000,
+  timeout: requestTimeoutMs,
 });
 
 const refreshClient = axios.create({ baseURL: resolvedBaseUrl });
