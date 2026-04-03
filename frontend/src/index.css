@@ -1,0 +1,53 @@
+/* ── Purple Theme CSS Variables ─────────────────── */
+:root {
+  --purple-900: #1A0E4E;
+  --purple-800: #2D1B69;
+  --purple-700: #3D2B82;
+  --purple-600: #5B3FA8;
+  --purple-500: #7C5DC7;
+  --purple-300: #B39DDB;
+  --purple-100: #EDE8FB;
+  --purple-50:  #F5F2FF;
+  --bg-app:     #F0EFFE;
+  --white:      #FFFFFF;
+  --text-dark:  #1A1A2E;
+  --text-muted: #6B6B8A;
+  --shadow-sm:  0 2px 8px  rgba(45,27,105,0.08);
+  --shadow-md:  0 4px 20px rgba(45,27,105,0.12);
+  --radius-sm:  8px;
+  --radius-md:  12px;
+  --radius-lg:  16px;
+}
+
+/* basic reset */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--bg-app);
+  color: var(--text-dark);
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--purple-300); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--purple-500); }
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+button {
+  font-family: inherit;
+  font-size: 0.9rem;
+}

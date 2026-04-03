@@ -1,0 +1,15 @@
+django
+djangorestframework
+djangorestframework-simplejwt
+django-cors-headers
+python-dotenv
+openpyxl
+xlrd
+pytz
+requests
+certifi
+whitenoise
+smpplib
+cryptography
+gunicorn
+waitress
