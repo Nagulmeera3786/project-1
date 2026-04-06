@@ -60,8 +60,9 @@ SECRET_KEY=your-production-secret
 DEBUG=False
 ALLOWED_HOSTS=your-domain.com,www.your-domain.com
 CSRF_TRUSTED_ORIGINS=https://your-domain.com,https://www.your-domain.com
-DB_ENGINE=django.db.backends.sqlite3
-DB_NAME=/absolute/path/to/db.sqlite3
+DATABASE_URL=postgresql://user:password@host:5432/database
+DB_CONN_MAX_AGE=60
+DB_SSLMODE=require
 EMAIL_HOST=smtp.gmail.com
 EMAIL_PORT=587
 EMAIL_USE_TLS=True
@@ -81,6 +82,10 @@ SECURE_CROSS_ORIGIN_OPENER_POLICY=same-origin
 X_FRAME_OPTIONS=DENY
 CORS_ALLOW_CREDENTIALS=False
 ```
+
+Production note:
+- Do not use SQLite for Render production unless you attach a persistent disk and explicitly set `ALLOW_SQLITE_IN_PRODUCTION=True`.
+- Best practice is a managed PostgreSQL instance (Render PostgreSQL) because user auth data must survive restarts and redeployments.
 
 Deployment steps:
 

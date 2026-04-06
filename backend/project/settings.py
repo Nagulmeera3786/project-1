@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from datetime import timedelta
+from urllib.parse import parse_qs, unquote, urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -108,8 +109,52 @@ WSGI_APPLICATION = 'project.wsgi.application'
 
 db_engine = _env_text('DB_ENGINE', 'django.db.backends.sqlite3')
 db_name_default = str(BASE_DIR / 'db.sqlite3') if db_engine == 'django.db.backends.sqlite3' else 'abc_sms'
+database_url = _env_text('DATABASE_URL', '')
 
-if db_engine == 'django.db.backends.sqlite3':
+
+def _database_config_from_url(raw_url):
+    parsed = urlparse(raw_url)
+    scheme = (parsed.scheme or '').lower()
+
+    # Normalize database URL schemes from managed providers.
+    if scheme in ('postgres', 'postgresql', 'postgresql+psycopg2'):
+        engine = 'django.db.backends.postgresql'
+    elif scheme in ('mysql', 'mysql2'):
+        engine = 'django.db.backends.mysql'
+    elif scheme == 'sqlite':
+        engine = 'django.db.backends.sqlite3'
+    else:
+        raise ImproperlyConfigured(
+            f"Unsupported DATABASE_URL scheme '{scheme}'. Supported: postgres, mysql, sqlite"
+        )
+
+    if engine == 'django.db.backends.sqlite3':
+        sqlite_path = unquote(parsed.path or '').lstrip('/') or str(BASE_DIR / 'db.sqlite3')
+        return {
+            'ENGINE': engine,
+            'NAME': sqlite_path,
+        }
+
+    db_name = unquote((parsed.path or '').lstrip('/'))
+    config = {
+        'ENGINE': engine,
+        'NAME': db_name,
+        'USER': unquote(parsed.username or ''),
+        'PASSWORD': unquote(parsed.password or ''),
+        'HOST': parsed.hostname or '',
+        'PORT': str(parsed.port or ''),
+    }
+
+    query = parse_qs(parsed.query or '')
+    sslmode = query.get('sslmode', [None])[0] or _env_text('DB_SSLMODE', '')
+    if sslmode:
+        config['OPTIONS'] = {'sslmode': sslmode}
+
+    return config
+
+if database_url:
+    DATABASES = {'default': _database_config_from_url(database_url)}
+elif db_engine == 'django.db.backends.sqlite3':
     DATABASES = {
         'default': {
             'ENGINE': db_engine,
@@ -133,6 +178,19 @@ if db_engine == 'django.db.backends.mysql':
         'charset': _env_text('DB_CHARSET', 'utf8mb4'),
     }
     DATABASES['default']['CONN_MAX_AGE'] = int(_env_text('DB_CONN_MAX_AGE', 60))
+
+if DATABASES['default']['ENGINE'] in ('django.db.backends.postgresql', 'django.db.backends.mysql'):
+    DATABASES['default']['CONN_MAX_AGE'] = int(_env_text('DB_CONN_MAX_AGE', 60))
+
+if not DEBUG and DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
+    DATABASES['default'].setdefault('OPTIONS', {})
+    DATABASES['default']['OPTIONS'].setdefault('sslmode', _env_text('DB_SSLMODE', 'require'))
+
+if not DEBUG and DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3' and not _env_bool('ALLOW_SQLITE_IN_PRODUCTION', False):
+    raise ImproperlyConfigured(
+        'SQLite is disabled in production by default. Use a managed database '
+        'or set ALLOW_SQLITE_IN_PRODUCTION=True with a persistent disk.'
+    )
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -244,9 +302,16 @@ SECURE_CROSS_ORIGIN_OPENER_POLICY = _env_text('SECURE_CROSS_ORIGIN_OPENER_POLICY
 X_FRAME_OPTIONS = _env_text('X_FRAME_OPTIONS', 'DENY')
 CORS_ALLOW_CREDENTIALS = _env_bool('CORS_ALLOW_CREDENTIALS', False)
 
-# Fallback to console backend if no email credentials provided
+# Avoid silent OTP email failures in production.
+# In local debug sessions, allow console backend when SMTP credentials are missing.
 if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
-    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+    if DEBUG:
+        EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+    else:
+        raise ImproperlyConfigured(
+            'EMAIL_USER/EMAIL_PASSWORD (or EMAIL_HOST_USER/EMAIL_HOST_PASSWORD) '
+            'must be configured when DEBUG=False.'
+        )
 
 # custom user model
 AUTH_USER_MODEL = 'accounts.User'

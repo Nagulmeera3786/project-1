@@ -53,7 +53,7 @@ export default function Signup() {
           setError(response.data?.detail || 'OTP generated but email sending failed.');
           return;
         }
-        navigate('/verify-otp', { state: { email: form.email } });
+        navigate(`/verify-otp?email=${encodeURIComponent(form.email)}`, { state: { email: form.email } });
       }
     } catch (err) {
       console.error('Signup error:', err);

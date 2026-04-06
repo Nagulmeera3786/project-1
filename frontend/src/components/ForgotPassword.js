@@ -27,7 +27,7 @@ export default function ForgotPassword() {
       }
       setSuccess(true);
       setTimeout(() => {
-        nav('/reset-password', { state: { email } });
+        nav(`/reset-password?email=${encodeURIComponent(email)}`, { state: { email } });
       }, 2000);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to send OTP. Please try again.');

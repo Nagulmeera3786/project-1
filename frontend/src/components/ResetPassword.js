@@ -4,7 +4,8 @@ import API from '../api';
 
 export default function ResetPassword() {
   const loc = useLocation();
-  const email = loc.state?.email;
+  const queryEmail = new URLSearchParams(loc.search).get('email') || '';
+  const email = loc.state?.email || queryEmail;
   const [otp, setOtp] = useState('');
   const [newPass, setNewPass] = useState('');
   const [confirmPass, setConfirmPass] = useState('');

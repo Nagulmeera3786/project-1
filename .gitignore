@@ -48,3 +48,7 @@ backend/staticfiles/
 # Logs and reports
 *.log
 security-report.json
+
+# Local DB migration exports (contains user data)
+backend/data.json
+backend/data.*.backup.json

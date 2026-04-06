@@ -29,6 +29,18 @@ export default function Login() {
       if (!err.response) {
         setError('Network error while logging in. Please check your internet/API server availability and try again.');
       } else {
+        const requiresOtp = Boolean(err.response?.data?.requires_otp_verification);
+        if (requiresOtp) {
+          const emailForVerify = err.response?.data?.email || email;
+          nav(`/verify-otp?email=${encodeURIComponent(emailForVerify)}`, {
+            state: {
+              email: emailForVerify,
+              fromLogin: true,
+            },
+            replace: false,
+          });
+          return;
+        }
         setError(err.response?.data?.detail || 'Login failed: ' + err.message);
       }
     } finally {
@@ -132,6 +144,17 @@ export default function Login() {
 
         <p style={{ marginTop: '16px', textAlign: 'center', color: '#6B6B8A', fontSize: '13.5px' }}>
           Forgot password? <Link to="/forgot-password" style={{ color: '#5B3FA8', textDecoration: 'none', fontWeight: '600' }}>Reset here</Link>
+        </p>
+
+        <p style={{ marginTop: '10px', textAlign: 'center', color: '#6B6B8A', fontSize: '13.5px' }}>
+          Not verified yet?{' '}
+          <Link
+            to={email ? `/verify-otp?email=${encodeURIComponent(email)}` : '/signup'}
+            state={email ? { email, fromLogin: true } : undefined}
+            style={{ color: '#5B3FA8', textDecoration: 'none', fontWeight: '600' }}
+          >
+            Verify with OTP
+          </Link>
         </p>
 
         <p style={{ marginTop: '10px', textAlign: 'center', color: '#6B6B8A', fontSize: '13.5px' }}>

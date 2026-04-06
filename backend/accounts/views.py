@@ -389,8 +389,31 @@ class SignupView(generics.CreateAPIView):
         except ValidationError as error:
             return Response({'password': list(error.messages)}, status=400)
 
-        if User.objects.filter(email__iexact=email).exists():
+        existing_user = _find_user_by_email(email)
+        if existing_user and existing_user.is_active:
             return Response({'detail': 'User already exists with this email address.'}, status=400)
+
+        if existing_user and not existing_user.is_active:
+            existing_user.first_name = first_name
+            existing_user.phone_number = phone_number
+            existing_user.username = email
+            existing_user.email = email
+            existing_user.set_password(password)
+
+            otp = generate_otp()
+            existing_user.otp_code = otp
+            existing_user.otp_created = timezone.now()
+            existing_user.save()
+
+            email_sent = send_otp_via_email(existing_user, otp)
+            return Response(
+                {
+                    'requires_otp': True,
+                    'email_sent': email_sent,
+                    'detail': 'Account exists but is not verified. A new OTP has been generated and sent.',
+                },
+                status=200,
+            )
 
         serializer = self.get_serializer(data={
             'first_name': first_name,
@@ -477,7 +500,14 @@ class LoginView(generics.GenericAPIView):
             return Response({'detail': 'Invalid credentials'}, status=401)
 
         if not user.is_active:
-            return Response({'detail': 'Account not verified. Please verify OTP or use forgot password.'}, status=403)
+            return Response(
+                {
+                    'detail': 'Account not verified. Please verify OTP.',
+                    'requires_otp_verification': True,
+                    'email': user.email,
+                },
+                status=403,
+            )
 
         refresh = RefreshToken.for_user(user)
         return Response({
@@ -507,12 +537,39 @@ class ForgotPasswordView(generics.GenericAPIView):
         if not email_sent:
             return Response(
                 {
-                    'detail': 'OTP generated. Email sending failed; verify SMTP credentials in backend/.env.',
+                    'detail': 'OTP generated. Email sending failed; verify server EMAIL_* configuration and mail provider logs.',
                     'email_sent': False,
                 },
                 status=200,
             )
         return Response({'detail': 'OTP sent successfully.', 'email_sent': True}, status=200)
+
+
+class ResendOTPView(generics.GenericAPIView):
+    serializer_class = ForgotPasswordSerializer
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = _find_user_by_email(serializer.validated_data['email'])
+        if not user:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        otp = generate_otp()
+        user.otp_code = otp
+        user.otp_created = timezone.now()
+        user.save(update_fields=['otp_code', 'otp_created'])
+        email_sent = send_otp_via_email(user, otp)
+
+        return Response(
+            {
+                'detail': 'OTP sent successfully.' if email_sent else 'OTP generated but email sending failed.',
+                'email_sent': email_sent,
+            },
+            status=200,
+        )
 
 class ResetPasswordView(generics.GenericAPIView):
     serializer_class = ResetPasswordSerializer

@@ -58,9 +58,14 @@ EMAIL_FROM=your_email@gmail.com
 EMAIL_VERIFY_CERTS=True
 EMAIL_ALLOW_INSECURE_FALLBACK=True
 
-# Database (SQLite default)
+# Database (local development default)
 DB_ENGINE=django.db.backends.sqlite3
 DB_NAME=db.sqlite3
+
+# Production (recommended: managed PostgreSQL)
+# DATABASE_URL=postgresql://user:password@host:5432/database
+# DB_CONN_MAX_AGE=60
+# DB_SSLMODE=require
 
 # Optional MySQL override
 # DB_ENGINE=django.db.backends.mysql
@@ -100,6 +105,7 @@ Anything committed to git is potentially public. Never place real credentials in
 
 - Backend static files are served with WhiteNoise; run `python manage.py collectstatic --noinput` during deployment.
 - Set `DEBUG=False` and explicit `ALLOWED_HOSTS` in production.
+- Use managed PostgreSQL in production for persistent user/account data. SQLite is for local development only.
 - Set `CSRF_TRUSTED_ORIGINS=https://your-domain` for any HTTPS domain that serves the frontend.
 - If frontend and backend are deployed on different domains, also set `CORS_ALLOWED_ORIGINS=https://your-frontend-domain`.
 - Use `GET /healthz/` as deployment health check endpoint.
@@ -166,3 +172,66 @@ If you already have data in SQLite and want to move to MySQL:
    ```bash
    python backend/manage.py createsuperuser
    ```
+
+## Windows PowerShell Fix For `loaddata data.json` UTF-8 Error
+
+If you exported with PowerShell redirection like this:
+
+```powershell
+python manage.py dumpdata ... > data.json
+```
+
+PowerShell may create `data.json` as UTF-16, and Django `loaddata` will fail with:
+`UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff...`
+
+Use this safe approach instead:
+
+1. Export with Django `--output` (creates proper UTF-8 JSON):
+   ```powershell
+   python manage.py dumpdata --natural-foreign --natural-primary -e contenttypes -e auth.Permission --output data.json
+   ```
+2. Load data:
+   ```powershell
+   python manage.py loaddata data.json
+   ```
+
+If `data.json` is already UTF-16, convert it:
+
+```powershell
+Copy-Item data.json data.utf16.backup.json -Force
+$content = Get-Content -Path data.json -Raw -Encoding Unicode
+[System.IO.File]::WriteAllText((Resolve-Path data.json), $content, (New-Object System.Text.UTF8Encoding($false)))
+python manage.py loaddata data.json
+```
+
+## Exact Deployment Data Persistence Steps (Render)
+
+1. Create a Render PostgreSQL database.
+2. Copy the Render connection string.
+3. In Render backend service env vars, set:
+   - `DATABASE_URL=postgresql://...`
+   - `DB_CONN_MAX_AGE=60`
+   - `DB_SSLMODE=require`
+4. Keep `DEBUG=False` and set valid `ALLOWED_HOSTS`.
+5. Deploy backend.
+6. Run migrations:
+   ```powershell
+   python manage.py migrate
+   ```
+7. Import old data (if migrating from SQLite):
+   ```powershell
+   python manage.py loaddata data.json
+   ```
+
+## Exact GitHub Update Steps
+
+From project root (`C:\ABC\Project`):
+
+```powershell
+git status
+git add backend/project/settings.py backend/.env.production.example DEPLOYMENT_AND_SECURITY.md README.md backend/accounts/views.py backend/accounts/urls.py frontend/src/components/Login.js frontend/src/components/VerifyOtp.js frontend/src/components/Signup.js frontend/src/components/ForgotPassword.js frontend/src/components/ResetPassword.js
+git commit -m "Fix OTP verification flow and add persistent production DB configuration"
+git push origin main
+```
+
+If your branch is not `main`, push your current branch name instead.
