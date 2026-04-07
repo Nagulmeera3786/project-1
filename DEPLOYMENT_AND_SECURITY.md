@@ -125,6 +125,32 @@ Use Netlify for frontend and host Django API separately.
 	- `ALLOWED_HOSTS=your-backend-domain`
 	- `CSRF_TRUSTED_ORIGINS=https://your-netlify-domain.netlify.app,https://your-custom-domain.com`
 	- `CORS_ALLOWED_ORIGINS=https://your-netlify-domain.netlify.app,https://your-custom-domain.com`
+	- `EMAIL_TIMEOUT=8`
+	- `OTP_EMAIL_MAX_ATTEMPTS=1`
+	- `OTP_EMAIL_RETRY_DELAY_MS=0`
+
+## OTP Mail Delivery And Slowness On Netlify + Render
+
+- Netlify does not send OTP emails. Your Django backend on Render sends them.
+- If OTP sending is slow or fails, the usual cause is wrong backend mail env vars or the mail provider blocking SMTP login.
+- Gmail requires 2FA and an App Password. Normal Gmail account passwords do not work reliably for SMTP in production.
+- Render free instances can also cold-start, which adds noticeable delay to login/signup requests.
+
+Recommended production mail settings:
+
+```env
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASSWORD=your_gmail_app_password
+EMAIL_FROM=your_email@gmail.com
+EMAIL_TIMEOUT=8
+OTP_EMAIL_MAX_ATTEMPTS=1
+OTP_EMAIL_RETRY_DELAY_MS=0
+```
+
+If delivery is still failing, use a transactional mail provider such as SendGrid, Brevo, or Resend instead of personal Gmail SMTP.
 
 ## Portability Notes
 
