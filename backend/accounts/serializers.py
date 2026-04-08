@@ -338,3 +338,4 @@ class UserNotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = InternalNotificationRecipient
         fields = ['id', 'notification', 'content', 'audience_filter', 'is_read', 'read_at', 'notification_created_at']
+

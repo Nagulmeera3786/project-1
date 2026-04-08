@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import API from '../api';
+import { parseApiError } from '../errorHelpers';
 
 export default function ResetPassword() {
   const loc = useLocation();
@@ -11,6 +12,7 @@ export default function ResetPassword() {
   const [confirmPass, setConfirmPass] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [diagnostics, setDiagnostics] = useState(null);
   const [success, setSuccess] = useState(false);
   const nav = useNavigate();
 
@@ -24,6 +26,7 @@ export default function ResetPassword() {
 
   const submit = async () => {
     setError('');
+    setDiagnostics(null);
 
     if (!otp || !newPass || !confirmPass) {
       setError('All fields are required');
@@ -58,7 +61,9 @@ export default function ResetPassword() {
         nav('/login');
       }, 2000);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to reset password. Please try again.');
+      const parsed = parseApiError(err, 'Failed to reset password. Please try again.');
+      setError(parsed.message);
+      setDiagnostics(parsed.diagnostics);
     } finally {
       setLoading(false);
     }
@@ -74,6 +79,12 @@ export default function ResetPassword() {
       <p style={{ color: '#666' }}>We've sent an OTP to <strong>{email}</strong></p>
 
       {error && <div style={{ color: '#d32f2f', marginBottom: '10px', padding: '10px', backgroundColor: '#ffebee', borderRadius: '4px' }}>{error}</div>}
+      {diagnostics && (
+        <div style={{ color: '#92400E', marginBottom: '10px', padding: '10px', backgroundColor: '#FFF7ED', borderRadius: '4px', border: '1px solid #FED7AA', fontSize: '12px' }}>
+          {diagnostics.errorCode && <div><strong>Error:</strong> {diagnostics.errorCode}</div>}
+          {diagnostics.nextStep && <div><strong>Next Step:</strong> {diagnostics.nextStep}</div>}
+        </div>
+      )}
       
       {success && <div style={{ color: '#388e3c', marginBottom: '10px', padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '4px' }}>✓ Password reset successfully! Redirecting to login...</div>}
 
@@ -130,4 +141,5 @@ export default function ResetPassword() {
     </div>
   );
 }
+
 

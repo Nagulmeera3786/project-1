@@ -138,3 +138,4 @@ This is a breaking change - the API now returns `display_sender_id` instead of `
 
 **Status:** 🟢 Network errors resolved, servers running, ready for testing  
 **Date Fixed:** February 24, 2026
+

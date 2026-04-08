@@ -12,3 +12,4 @@ export const DASHBOARD_LABELS = {
   dltDescription: 'Manage DLT template and sender registration settings.',
   dltButton: 'Configure',
 };
+

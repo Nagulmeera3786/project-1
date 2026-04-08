@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import API from '../api';
+import { buildOtpDiagnostics, parseApiError } from '../errorHelpers';
 
 export default function VerifyOtp() {
   const loc = useLocation();
@@ -11,6 +12,7 @@ export default function VerifyOtp() {
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
   const [error, setError] = useState('');
+  const [diagnostics, setDiagnostics] = useState(null);
   const [message, setMessage] = useState('');
 
   if (!email) {
@@ -29,6 +31,7 @@ export default function VerifyOtp() {
 
     setLoading(true);
     setError('');
+    setDiagnostics(null);
     setMessage('');
 
     try {
@@ -39,7 +42,9 @@ export default function VerifyOtp() {
       // Use window.location to force page reload
       window.location.href = '/dashboard';
     } catch (err) {
-      setError(err.response?.data?.detail || 'Invalid or expired OTP. Please try again.');
+      const parsed = parseApiError(err, 'Invalid or expired OTP. Please try again.');
+      setError(parsed.message);
+      setDiagnostics(parsed.diagnostics);
     } finally {
       setLoading(false);
     }
@@ -52,16 +57,20 @@ export default function VerifyOtp() {
 
     setResending(true);
     setError('');
+    setDiagnostics(null);
     setMessage('');
     try {
       const response = await API.post('resend-otp/', { email });
       if (response?.data?.email_sent === false) {
         setError(response?.data?.detail || 'OTP generated but email sending failed.');
+        setDiagnostics(buildOtpDiagnostics(response?.data));
       } else {
         setMessage('A new OTP has been sent to your email.');
       }
     } catch (err) {
-      setError(err.response?.data?.detail || 'Could not resend OTP right now.');
+      const parsed = parseApiError(err, 'Could not resend OTP right now.');
+      setError(parsed.message);
+      setDiagnostics(parsed.diagnostics);
     } finally {
       setResending(false);
     }
@@ -82,6 +91,14 @@ export default function VerifyOtp() {
       )}
 
       {error && <div style={{ color: '#d32f2f', marginBottom: '10px', padding: '10px', backgroundColor: '#ffebee', borderRadius: '4px' }}>{error}</div>}
+      {diagnostics && (
+        <div style={{ color: '#92400E', marginBottom: '10px', padding: '10px', backgroundColor: '#FFF7ED', borderRadius: '4px', border: '1px solid #FED7AA', fontSize: '12px' }}>
+          {diagnostics.errorCode && <div><strong>Error:</strong> {diagnostics.errorCode}</div>}
+          {diagnostics.provider && <div><strong>Email Provider:</strong> {diagnostics.provider}</div>}
+          {diagnostics.host && <div><strong>SMTP Host:</strong> {diagnostics.host}</div>}
+          {diagnostics.nextStep && <div><strong>Next Step:</strong> {diagnostics.nextStep}</div>}
+        </div>
+      )}
       {message && <div style={{ color: '#1e6f3d', marginBottom: '10px', padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '4px' }}>{message}</div>}
 
       <div style={{ marginBottom: '15px' }}>
@@ -134,4 +151,5 @@ export default function VerifyOtp() {
     </div>
   );
 }
+
 

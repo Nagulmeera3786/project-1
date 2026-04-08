@@ -190,3 +190,4 @@ class InternalNotificationRecipient(models.Model):
 
     def __str__(self):
         return f"Notification {self.notification_id} -> User {self.user_id}"
+

@@ -347,3 +347,4 @@ After confirming credentials save successfully:
 
 **Last Updated:** February 24, 2026  
 **Fixes Applied:** Credentials view rewrite, import fixes, error handling enhancement
+

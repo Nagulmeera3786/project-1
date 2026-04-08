@@ -415,3 +415,4 @@ If you want to understand how to extend this:
 4. Check: Database schema in `accounts/models.py`
 
 Everything is modular and clean - easy to extend! ✨
+

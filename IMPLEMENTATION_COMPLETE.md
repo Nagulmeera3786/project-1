@@ -143,3 +143,4 @@ OTPs will print in backend terminal.
 ## 📞 Support
 
 All components have error handling with user-friendly messages. Check browser console and backend terminal for detailed error logs during development.
+

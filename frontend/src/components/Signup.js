@@ -1,16 +1,19 @@
 import { useState } from 'react';
 import API from '../api';
 import { useNavigate, Link } from 'react-router-dom';
+import { buildOtpDiagnostics, parseApiError } from '../errorHelpers';
 
 export default function Signup() {
   const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', confirmPass: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [diagnostics, setDiagnostics] = useState(null);
   const navigate = useNavigate();
 
   const handleSubmit = async e => {
     e.preventDefault();
     setError('');
+    setDiagnostics(null);
 
     if (!form.name || !form.email || !form.phone || !form.password || !form.confirmPass) {
       setError('All fields are required');
@@ -51,30 +54,15 @@ export default function Signup() {
       } else {
         if (response.data?.email_sent === false) {
           setError(response.data?.detail || 'OTP generated but email sending failed.');
+          setDiagnostics(buildOtpDiagnostics(response?.data));
           return;
         }
         navigate(`/verify-otp?email=${encodeURIComponent(form.email)}`, { state: { email: form.email } });
       }
     } catch (err) {
-      console.error('Signup error:', err);
-      // Better error handling to show actual API error
-      let errorMsg = 'Signup failed: ';
-      if (err.response?.data) {
-        // If error is an object with field errors
-        if (typeof err.response.data === 'object' && !Array.isArray(err.response.data)) {
-          const errors = Object.entries(err.response.data)
-            .map(([key, value]) => `${key}: ${Array.isArray(value) ? value[0] : value}`)
-            .join(', ');
-          errorMsg = errors;
-        } else if (err.response.data?.detail) {
-          errorMsg = err.response.data.detail;
-        } else {
-          errorMsg += JSON.stringify(err.response.data);
-        }
-      } else {
-        errorMsg += err.message;
-      }
-      setError(errorMsg);
+      const parsed = parseApiError(err, 'Signup failed. Please try again.');
+      setError(parsed.message);
+      setDiagnostics(parsed.diagnostics);
     } finally {
       setLoading(false);
     }
@@ -121,6 +109,19 @@ export default function Signup() {
             backgroundColor: '#FFF0F0', borderRadius: '8px',
             fontSize: '13.5px', border: '1px solid #FCA5A5',
           }}>{error}</div>
+        )}
+
+        {diagnostics && (
+          <div style={{
+            color: '#92400E', marginBottom: '16px', padding: '12px 14px',
+            backgroundColor: '#FFF7ED', borderRadius: '8px',
+            fontSize: '12px', border: '1px solid #FED7AA',
+          }}>
+            {diagnostics.errorCode && <div><strong>Error:</strong> {diagnostics.errorCode}</div>}
+            {diagnostics.provider && <div><strong>Email Provider:</strong> {diagnostics.provider}</div>}
+            {diagnostics.host && <div><strong>SMTP Host:</strong> {diagnostics.host}</div>}
+            {diagnostics.nextStep && <div><strong>Next Step:</strong> {diagnostics.nextStep}</div>}
+          </div>
         )}
 
         <form onSubmit={handleSubmit}>
@@ -202,4 +203,5 @@ export default function Signup() {
     </div>
   );
 }
+
 

@@ -19,3 +19,4 @@ class Migration(migrations.Migration):
             field=models.CharField(choices=[('numeric', 'Numeric'), ('alphanumeric', 'Alphanumeric')], default='alphanumeric', max_length=20),
         ),
     ]
+

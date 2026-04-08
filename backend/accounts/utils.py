@@ -49,3 +49,4 @@ def otp_is_valid(user, otp, minutes=10):
     if timezone.now() > user.otp_created + timedelta(minutes=minutes):
         return False
     return True
+

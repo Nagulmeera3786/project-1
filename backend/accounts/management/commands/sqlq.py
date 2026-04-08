@@ -53,3 +53,4 @@ class Command(BaseCommand):
             lines.append(render_row(row))
         lines.append(border())
         return "\n".join(lines)
+

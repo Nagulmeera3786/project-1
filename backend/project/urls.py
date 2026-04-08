@@ -30,3 +30,4 @@ urlpatterns = [
     path('s/<str:short_code>/', ShortURLRedirectView.as_view(), name='short-url-redirect'),
     re_path(r'^(?!api/|admin/|static/|healthz/).*$', frontend_index_or_api_status),
 ]
+

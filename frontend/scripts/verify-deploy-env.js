@@ -49,3 +49,4 @@ if ((apiBaseUrl && !/^https?:\/\//i.test(apiBaseUrl)) || (apiUrlAlias && !/^http
 }
 
 console.log('[deploy-check] Frontend API configuration looks valid for production.');
+

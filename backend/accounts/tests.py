@@ -638,3 +638,4 @@ class FreeTrialFlowTests(TestCase):
         user_history = self.client.get('/api/auth/sms/messages/')
         self.assertEqual(user_history.status_code, 200)
         self.assertTrue(any(item['id'] == sms_log.id for item in user_history.data))
+

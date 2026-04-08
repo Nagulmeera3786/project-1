@@ -35,3 +35,4 @@ class Command(BaseCommand):
 
         view._process_due_scheduled_messages()
         self.stdout.write(self.style.SUCCESS('Processed due scheduled SMS messages.'))
+

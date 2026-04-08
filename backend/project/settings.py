@@ -27,6 +27,11 @@ def _env_text(name, default=''):
     return str(value).strip().strip('"').strip("'")
 
 
+def _env_csv_list(name):
+    raw = os.environ.get(name, '')
+    return [item.strip().rstrip('/') for item in raw.split(',') if item.strip()]
+
+
 def _env_secret(name, fallback_name=None):
     primary = _env_text(name, '')
     if primary:
@@ -233,28 +238,50 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
 }
 
-# CORS for local development
-cors_allowed_origins = os.environ.get('CORS_ALLOWED_ORIGINS', '')
-if cors_allowed_origins.strip():
-    CORS_ALLOWED_ORIGINS = [item.strip() for item in cors_allowed_origins.split(',') if item.strip()]
-    CORS_ALLOW_ALL_ORIGINS = False
-else:
-    CORS_ALLOW_ALL_ORIGINS = DEBUG
+# CORS / CSRF trusted frontend origins.
+# In production, set CORS_ALLOWED_ORIGINS and CSRF_TRUSTED_ORIGINS explicitly when possible.
+CORS_ALLOWED_ORIGINS = _env_csv_list('CORS_ALLOWED_ORIGINS')
+CORS_ALLOW_ALL_ORIGINS = False if CORS_ALLOWED_ORIGINS else DEBUG
+
+# Convenience fallback: if explicit CORS list is absent, accept a single frontend URL variable.
+frontend_origin = (
+    _env_text('FRONTEND_URL')
+    or _env_text('FRONTEND_ORIGIN')
+    or _env_text('NETLIFY_APP_URL')
+)
+if frontend_origin:
+    normalized_frontend_origin = frontend_origin.rstrip('/')
+    if normalized_frontend_origin.startswith('http://') or normalized_frontend_origin.startswith('https://'):
+        if normalized_frontend_origin not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(normalized_frontend_origin)
+            CORS_ALLOW_ALL_ORIGINS = False
+
+# Optional support for Netlify deploy preview URLs:
+# Example: https://main--your-site.netlify.app
+netlify_site_name = _env_text('NETLIFY_SITE_NAME')
+if netlify_site_name:
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        rf'^https://[a-zA-Z0-9-]+--{netlify_site_name}\.netlify\.app$'
+    ]
 
 cors_allowed_origin_regexes_env = os.environ.get('CORS_ALLOWED_ORIGIN_REGEXES', '')
 if cors_allowed_origin_regexes_env.strip():
-    CORS_ALLOWED_ORIGIN_REGEXES = [
+    _configured_regexes = [
         item.strip()
         for item in cors_allowed_origin_regexes_env.split(',')
         if item.strip()
     ]
+    if 'CORS_ALLOWED_ORIGIN_REGEXES' in globals():
+        CORS_ALLOWED_ORIGIN_REGEXES.extend(_configured_regexes)
+    else:
+        CORS_ALLOWED_ORIGIN_REGEXES = _configured_regexes
 
-csrf_trusted_origins_env = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
-CSRF_TRUSTED_ORIGINS = [
-    item.strip()
-    for item in csrf_trusted_origins_env.split(',')
-    if item.strip()
-]
+CSRF_TRUSTED_ORIGINS = _env_csv_list('CSRF_TRUSTED_ORIGINS')
+if frontend_origin:
+    normalized_frontend_origin = frontend_origin.rstrip('/')
+    if normalized_frontend_origin.startswith('http://') or normalized_frontend_origin.startswith('https://'):
+        if normalized_frontend_origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(normalized_frontend_origin)
 
 csrf_trusted_origin_regexes_env = os.environ.get('CSRF_TRUSTED_ORIGIN_REGEXES', '')
 if csrf_trusted_origin_regexes_env.strip():
@@ -264,28 +291,67 @@ if csrf_trusted_origin_regexes_env.strip():
         if item.strip()
     ]
 
-# Email configuration - REAL SMTP for production
-# For Gmail: https://support.google.com/accounts/answer/185833
-# 1. Enable 2FA on your Google account
-# 2. Generate an app password at https://myaccount.google.com/apppasswords
-# 3. Set EMAIL_USER and EMAIL_PASSWORD in .env file
+# ── Email configuration ────────────────────────────────────────────────────
+# Supported providers (set EMAIL_PROVIDER in Render env):
+#   sendgrid  →  EMAIL_PROVIDER=sendgrid  +  SENDGRID_API_KEY=SG.xxx
+#   mailgun   →  EMAIL_PROVIDER=mailgun   +  EMAIL_USER=postmaster@mg.yourdomain.com
+#                                         +  MAILGUN_SMTP_PASSWORD=xxx
+#   gmail     →  EMAIL_USER=you@gmail.com +  EMAIL_PASSWORD=app_password  (2FA + App Password required)
+#   custom    →  set EMAIL_HOST / EMAIL_PORT / EMAIL_USER / EMAIL_PASSWORD manually
+#
+# For Gmail App Password: Google Account → Security → 2-Step Verification → App passwords
 
-EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'accounts.email_backend.EmailBackend')
-EMAIL_HOST = _env_text('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(_env_text('EMAIL_PORT', 587))
-EMAIL_USE_TLS = _env_bool('EMAIL_USE_TLS', True)
-EMAIL_USE_SSL = _env_bool('EMAIL_USE_SSL', False)
-EMAIL_HOST_USER = _env_text('EMAIL_USER') or _env_text('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = _env_secret('EMAIL_PASSWORD', 'EMAIL_HOST_PASSWORD')
-DEFAULT_FROM_EMAIL = _env_text('EMAIL_FROM', 'no-reply@example.com')
-EMAIL_SSL_CERTFILE = _env_text('EMAIL_SSL_CERTFILE') or None
-EMAIL_SSL_KEYFILE = _env_text('EMAIL_SSL_KEYFILE') or None
-EMAIL_VERIFY_CERTS = _env_bool('EMAIL_VERIFY_CERTS', True)
+_email_provider = _env_text('EMAIL_PROVIDER', '').lower()
+EMAIL_PROVIDER = _email_provider
+
+# Provider-specific defaults (overridden by explicit env vars if present)
+_PROVIDER_DEFAULTS = {
+    'sendgrid': {
+        'host': 'smtp.sendgrid.net',
+        'port': '587',
+        'user': 'apikey',               # SendGrid requires this literal value
+        'password_env': 'SENDGRID_API_KEY',
+        'use_tls': True,
+        'use_ssl': False,
+    },
+    'mailgun': {
+        'host': 'smtp.mailgun.org',
+        'port': '587',
+        'user': None,                   # set via EMAIL_USER
+        'password_env': 'MAILGUN_SMTP_PASSWORD',
+        'use_tls': True,
+        'use_ssl': False,
+    },
+}
+
+_pd = _PROVIDER_DEFAULTS.get(_email_provider, {})
+
+EMAIL_BACKEND     = os.environ.get('EMAIL_BACKEND', 'accounts.email_backend.EmailBackend')
+EMAIL_HOST        = _env_text('EMAIL_HOST',    _pd.get('host', 'smtp.gmail.com'))
+EMAIL_PORT        = int(_env_text('EMAIL_PORT', str(_pd.get('port', 587))))
+EMAIL_USE_TLS     = _env_bool('EMAIL_USE_TLS', _pd.get('use_tls', True))
+EMAIL_USE_SSL     = _env_bool('EMAIL_USE_SSL', _pd.get('use_ssl', False))
+
+# SendGrid requires 'apikey' as the SMTP username; other providers use the real email address.
+_default_smtp_user    = _pd.get('user') or ''
+EMAIL_HOST_USER       = _env_text('EMAIL_USER') or _env_text('EMAIL_HOST_USER') or _default_smtp_user
+
+# Check provider-specific key first (e.g. SENDGRID_API_KEY), then generic keys.
+_pw_env               = _pd.get('password_env', '')
+EMAIL_HOST_PASSWORD   = (
+    (_env_secret(_pw_env) if _pw_env else '')
+    or _env_secret('EMAIL_PASSWORD', 'EMAIL_HOST_PASSWORD')
+)
+
+DEFAULT_FROM_EMAIL         = _env_text('EMAIL_FROM', 'no-reply@example.com')
+EMAIL_SSL_CERTFILE         = _env_text('EMAIL_SSL_CERTFILE') or None
+EMAIL_SSL_KEYFILE          = _env_text('EMAIL_SSL_KEYFILE') or None
+EMAIL_VERIFY_CERTS         = _env_bool('EMAIL_VERIFY_CERTS', True)
 EMAIL_ALLOW_INSECURE_FALLBACK = _env_bool('EMAIL_ALLOW_INSECURE_FALLBACK', True)
-EMAIL_TIMEOUT = int(_env_text('EMAIL_TIMEOUT', 8 if not DEBUG else 20))
-OTP_EMAIL_MAX_ATTEMPTS = int(_env_text('OTP_EMAIL_MAX_ATTEMPTS', 1 if not DEBUG else 2))
-OTP_EMAIL_RETRY_DELAY_MS = int(_env_text('OTP_EMAIL_RETRY_DELAY_MS', 0 if not DEBUG else 500))
-OTP_EMAIL_SUBJECT = _env_text('OTP_EMAIL_SUBJECT', 'Your verification code')
+EMAIL_TIMEOUT              = int(_env_text('EMAIL_TIMEOUT', 8 if not DEBUG else 20))
+OTP_EMAIL_MAX_ATTEMPTS     = int(_env_text('OTP_EMAIL_MAX_ATTEMPTS', 1 if not DEBUG else 2))
+OTP_EMAIL_RETRY_DELAY_MS   = int(_env_text('OTP_EMAIL_RETRY_DELAY_MS', 0 if not DEBUG else 500))
+OTP_EMAIL_SUBJECT          = _env_text('OTP_EMAIL_SUBJECT', 'Your verification code')
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = _env_bool('USE_X_FORWARDED_HOST', not DEBUG)
@@ -332,3 +398,4 @@ SMS_DEFAULT_SENDER_IDS = [
     for sender_id in _env_text('SMS_DEFAULT_SENDER_IDS', '').split(',')
     if sender_id.strip()
 ]
+

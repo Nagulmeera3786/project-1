@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import API from '../api';
 import { useNavigate, Link } from 'react-router-dom';
+import { parseApiError } from '../errorHelpers';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [diagnostics, setDiagnostics] = useState(null);
   const nav = useNavigate();
 
   const submit = async () => {
@@ -17,6 +19,7 @@ export default function Login() {
 
     setLoading(true);
     setError('');
+    setDiagnostics(null);
 
     try {
       const res = await API.post('login/', { email, password });
@@ -26,23 +29,22 @@ export default function Login() {
       // Use window.location to force refresh and update isLoggedIn state
       window.location.href = '/dashboard';
     } catch (err) {
-      if (!err.response) {
-        setError('Network error while logging in. Please check your internet/API server availability and try again.');
-      } else {
-        const requiresOtp = Boolean(err.response?.data?.requires_otp_verification);
-        if (requiresOtp) {
-          const emailForVerify = err.response?.data?.email || email;
-          nav(`/verify-otp?email=${encodeURIComponent(emailForVerify)}`, {
-            state: {
-              email: emailForVerify,
-              fromLogin: true,
-            },
-            replace: false,
-          });
-          return;
-        }
-        setError(err.response?.data?.detail || 'Login failed: ' + err.message);
+      const requiresOtp = Boolean(err.response?.data?.requires_otp_verification);
+      if (requiresOtp) {
+        const emailForVerify = err.response?.data?.email || email;
+        nav(`/verify-otp?email=${encodeURIComponent(emailForVerify)}`, {
+          state: {
+            email: emailForVerify,
+            fromLogin: true,
+          },
+          replace: false,
+        });
+        return;
       }
+
+      const parsed = parseApiError(err, 'Login failed. Please try again.');
+      setError(parsed.message);
+      setDiagnostics(parsed.diagnostics);
     } finally {
       setLoading(false);
     }
@@ -84,6 +86,17 @@ export default function Login() {
             backgroundColor: '#FFF0F0', borderRadius: '8px',
             fontSize: '13.5px', border: '1px solid #FCA5A5',
           }}>{error}</div>
+        )}
+
+        {diagnostics && (
+          <div style={{
+            color: '#92400E', marginBottom: '16px', padding: '12px 14px',
+            backgroundColor: '#FFF7ED', borderRadius: '8px',
+            fontSize: '12px', border: '1px solid #FED7AA',
+          }}>
+            {diagnostics.errorCode && <div><strong>Error:</strong> {diagnostics.errorCode}</div>}
+            {diagnostics.nextStep && <div><strong>Next Step:</strong> {diagnostics.nextStep}</div>}
+          </div>
         )}
 
         <div style={{ marginBottom: '16px' }}>
@@ -164,4 +177,5 @@ export default function Login() {
     </div>
   );
 }
+
 

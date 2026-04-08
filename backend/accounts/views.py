@@ -78,6 +78,41 @@ def _find_user_by_email(email):
     return User.objects.filter(email__iexact=normalized_email).order_by('-is_active', '-id').first()
 
 
+def _otp_email_diagnostics(email_sent):
+    configured_provider = str(getattr(settings, 'EMAIL_PROVIDER', '') or '').strip().lower()
+    backend = str(getattr(settings, 'EMAIL_BACKEND', '') or '').strip()
+    host = str(getattr(settings, 'EMAIL_HOST', '') or '').strip()
+
+    if configured_provider:
+        provider = configured_provider
+    elif 'sendgrid' in host.lower():
+        provider = 'sendgrid'
+    elif 'mailgun' in host.lower():
+        provider = 'mailgun'
+    elif 'gmail' in host.lower() or 'google' in host.lower():
+        provider = 'gmail'
+    elif host:
+        provider = 'custom-smtp'
+    else:
+        provider = 'unknown'
+
+    diagnostics = {
+        'otp_generated': True,
+        'email_delivery': {
+            'sent': bool(email_sent),
+            'provider': provider,
+            'backend': backend,
+            'host': host,
+        },
+    }
+
+    if not email_sent:
+        diagnostics['error_code'] = 'OTP_EMAIL_DELIVERY_FAILED'
+        diagnostics['next_step'] = 'Check Render logs and provider credentials/API key.'
+
+    return diagnostics
+
+
 def _get_sms_provider_config():
     cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
     if cred:
@@ -406,13 +441,16 @@ class SignupView(generics.CreateAPIView):
             existing_user.save()
 
             email_sent = send_otp_via_email(existing_user, otp)
+            diagnostics = _otp_email_diagnostics(email_sent)
             return Response(
                 {
                     'requires_otp': True,
                     'email_sent': email_sent,
                     'detail': 'Account exists but is not verified. A new OTP has been generated and sent.',
+                    **diagnostics,
                 },
                 status=200,
+                headers={'X-OTP-Email-Sent': 'true' if email_sent else 'false'},
             )
 
         serializer = self.get_serializer(data={
@@ -439,6 +477,7 @@ class SignupView(generics.CreateAPIView):
         user.save()
 
         email_sent = send_otp_via_email(user, otp)
+        diagnostics = _otp_email_diagnostics(email_sent)
 
         if admin_auto_login:
             refresh = RefreshToken.for_user(user)
@@ -452,8 +491,9 @@ class SignupView(generics.CreateAPIView):
         return Response({
             'requires_otp': True,
             'email_sent': email_sent,
-            'detail': 'OTP generated. If email is not received, check SMTP credentials/server logs.'
-        }, status=201)
+            'detail': 'OTP generated. If email is not received, check SMTP credentials/server logs.',
+            **diagnostics,
+        }, status=201, headers={'X-OTP-Email-Sent': 'true' if email_sent else 'false'})
 
 class OTPVerifyView(generics.GenericAPIView):
     serializer_class = OTPVerifySerializer
@@ -534,15 +574,27 @@ class ForgotPasswordView(generics.GenericAPIView):
         user.otp_created = timezone.now()
         user.save()
         email_sent = send_otp_via_email(user, otp)
+        diagnostics = _otp_email_diagnostics(email_sent)
+        headers = {'X-OTP-Email-Sent': 'true' if email_sent else 'false'}
         if not email_sent:
             return Response(
                 {
                     'detail': 'OTP generated. Email sending failed; verify server EMAIL_* configuration and mail provider logs.',
                     'email_sent': False,
+                    **diagnostics,
                 },
                 status=200,
+                headers=headers,
             )
-        return Response({'detail': 'OTP sent successfully.', 'email_sent': True}, status=200)
+        return Response(
+            {
+                'detail': 'OTP sent successfully.',
+                'email_sent': True,
+                **diagnostics,
+            },
+            status=200,
+            headers=headers,
+        )
 
 
 class ResendOTPView(generics.GenericAPIView):
@@ -562,13 +614,17 @@ class ResendOTPView(generics.GenericAPIView):
         user.otp_created = timezone.now()
         user.save(update_fields=['otp_code', 'otp_created'])
         email_sent = send_otp_via_email(user, otp)
+        diagnostics = _otp_email_diagnostics(email_sent)
+        headers = {'X-OTP-Email-Sent': 'true' if email_sent else 'false'}
 
         return Response(
             {
                 'detail': 'OTP sent successfully.' if email_sent else 'OTP generated but email sending failed.',
                 'email_sent': email_sent,
+                **diagnostics,
             },
             status=200,
+            headers=headers,
         )
 
 class ResetPasswordView(generics.GenericAPIView):
@@ -2223,3 +2279,4 @@ class UserNotificationReadView(generics.GenericAPIView):
             recipient.save(update_fields=['is_read', 'read_at'])
 
         return Response(UserNotificationSerializer(recipient).data)
+

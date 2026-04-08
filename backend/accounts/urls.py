@@ -53,3 +53,4 @@ urlpatterns = [
     path('notifications/my/<int:recipient_id>/read/', UserNotificationReadView.as_view(), name='notifications-my-read'),
 ]
 
+

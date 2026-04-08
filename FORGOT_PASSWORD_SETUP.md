@@ -133,3 +133,4 @@ Your OTP is 123456
 - Common passwords not allowed
 - Cannot be entirely numeric
 - Enhanced validation for security
+
