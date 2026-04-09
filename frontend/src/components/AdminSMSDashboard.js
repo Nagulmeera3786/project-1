@@ -18,6 +18,7 @@ export default function AdminSMSDashboard() {
   const [senderSuggestions, setSenderSuggestions] = useState({});
   const [savingUserId, setSavingUserId] = useState(null);
   const [deletingUserId, setDeletingUserId] = useState(null);
+  const [grantingAdminUserId, setGrantingAdminUserId] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -260,6 +261,83 @@ export default function AdminSMSDashboard() {
       alert('Failed to delete user: ' + (err.response?.data?.detail || err.message));
     } finally {
       setDeletingUserId(null);
+    }
+  };
+
+  const grantAdminAccess = async (user) => {
+    if (!window.confirm(`Grant full admin access to ${user.username}? This enables all admin functionalities.`)) {
+      return;
+    }
+
+    setGrantingAdminUserId(user.id);
+    try {
+      const response = await API.patch(`admin/users/${user.id}/permissions/`, {
+        is_staff: true,
+        is_superuser: true,
+        is_active: true,
+        is_sms_enabled: true,
+      });
+
+      setUsers((prevUsers) =>
+        prevUsers.map((item) =>
+          item.id === user.id
+            ? {
+                ...item,
+                is_staff: Boolean(response.data.is_staff),
+                is_superuser: Boolean(response.data.is_superuser),
+                is_active: Boolean(response.data.is_active),
+                is_sms_enabled: Boolean(response.data.is_sms_enabled),
+              }
+            : item
+        )
+      );
+
+      setUserDrafts((prev) => ({
+        ...prev,
+        [user.id]: {
+          ...(prev[user.id] || {}),
+          is_active: true,
+          is_sms_enabled: true,
+        },
+      }));
+
+      alert(`${user.username} now has full admin access.`);
+    } catch (err) {
+      alert('Failed to grant admin access: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setGrantingAdminUserId(null);
+    }
+  };
+
+  const revokeAdminAccess = async (user) => {
+    if (!window.confirm(`Revoke admin access for ${user.username}? User will become a normal user.`)) {
+      return;
+    }
+
+    setGrantingAdminUserId(user.id);
+    try {
+      const response = await API.patch(`admin/users/${user.id}/permissions/`, {
+        is_staff: false,
+        is_superuser: false,
+      });
+
+      setUsers((prevUsers) =>
+        prevUsers.map((item) =>
+          item.id === user.id
+            ? {
+                ...item,
+                is_staff: Boolean(response.data.is_staff),
+                is_superuser: Boolean(response.data.is_superuser),
+              }
+            : item
+        )
+      );
+
+      alert(`${user.username} admin access has been revoked.`);
+    } catch (err) {
+      alert('Failed to revoke admin access: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setGrantingAdminUserId(null);
     }
   };
 
@@ -762,6 +840,48 @@ export default function AdminSMSDashboard() {
                             }}
                           >
                             <FaSave /> {savingUserId === user.id ? 'Saving...' : 'Save User'}
+                          </button>
+                          <button
+                            onClick={() => grantAdminAccess(user)}
+                            disabled={grantingAdminUserId === user.id || user.is_superuser}
+                            style={{
+                              padding: '6px 10px',
+                              backgroundColor: user.is_superuser ? '#607d8b' : '#6a1b9a',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              cursor: grantingAdminUserId === user.id || user.is_superuser ? 'not-allowed' : 'pointer',
+                              fontSize: '12px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '5px',
+                            }}
+                            title={user.is_superuser ? 'Already full admin' : 'Grant full admin access'}
+                          >
+                            {grantingAdminUserId === user.id
+                              ? 'Granting...'
+                              : user.is_superuser
+                              ? 'Full Admin'
+                              : 'Grant Admin Access'}
+                          </button>
+                          <button
+                            onClick={() => revokeAdminAccess(user)}
+                            disabled={grantingAdminUserId === user.id || !user.is_staff}
+                            style={{
+                              padding: '6px 10px',
+                              backgroundColor: !user.is_staff ? '#9e9e9e' : '#455a64',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              cursor: grantingAdminUserId === user.id || !user.is_staff ? 'not-allowed' : 'pointer',
+                              fontSize: '12px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '5px',
+                            }}
+                            title={!user.is_staff ? 'User is not admin/staff' : 'Revoke admin/staff access'}
+                          >
+                            Revoke Admin Access
                           </button>
                           <button
                             onClick={() => deleteUser(user)}

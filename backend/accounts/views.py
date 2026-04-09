@@ -52,6 +52,23 @@ def _is_primary_admin_email(email):
     return email.strip().lower() == getattr(settings, 'PRIMARY_ADMIN_EMAIL', '').strip().lower()
 
 
+def _has_primary_admin_access(user):
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    return bool(
+        _is_primary_admin_email(getattr(user, 'email', '') or '')
+        and getattr(user, 'is_active', False)
+        and getattr(user, 'is_staff', False)
+        and getattr(user, 'is_superuser', False)
+    )
+
+
+def _primary_admin_guard(request):
+    if _has_primary_admin_access(request.user):
+        return None
+    return Response({'detail': 'Primary admin access required'}, status=status.HTTP_403_FORBIDDEN)
+
+
 def _promote_primary_admin(user):
     if _is_primary_admin_email(user.email):
         changed = False
@@ -188,7 +205,12 @@ def _get_free_trial_mediator_user():
         if primary_admin:
             return primary_admin
 
-    return User.objects.filter(is_staff=True, is_active=True).order_by('id').first()
+    return User.objects.filter(
+        email__iexact=getattr(settings, 'PRIMARY_ADMIN_EMAIL', '').strip().lower(),
+        is_staff=True,
+        is_superuser=True,
+        is_active=True,
+    ).order_by('id').first()
 
 
 def _resolve_free_trial_sender_id(user, provider_config):
@@ -211,7 +233,7 @@ def _resolve_free_trial_sender_id(user, provider_config):
         # Auto-fallback lets normal users use free-trial flow even if admin skipped selecting a dedicated default.
         resolved_sender_id = available_sender_ids[0]
 
-    if user and not user.is_staff and user_sender_id != resolved_sender_id:
+    if user and not _has_primary_admin_access(user) and user_sender_id != resolved_sender_id:
         try:
             user.free_trial_sender_id = resolved_sender_id
             user.save(update_fields=['free_trial_sender_id'])
@@ -373,7 +395,7 @@ def _get_users_for_notification_filter(audience_filter):
 
 
 def _get_user_sms_usage_summary(user):
-    if user.is_staff:
+    if _has_primary_admin_access(user):
         total_limit = 1000
         used_messages = (
             SMSMessage.objects.filter(sender=user)
@@ -553,7 +575,8 @@ class LoginView(generics.GenericAPIView):
         return Response({
             'refresh': str(refresh),
             'access': str(refresh.access_token),
-            'is_admin': user.is_staff
+            'is_admin': _has_primary_admin_access(user),
+            'is_primary_admin': _has_primary_admin_access(user),
         })
 
 class ForgotPasswordView(generics.GenericAPIView):
@@ -672,6 +695,7 @@ class UserProfileView(generics.GenericAPIView):
             'is_active': user.is_active,
             'is_staff': user.is_staff,
             'is_superuser': user.is_superuser,
+            'is_primary_admin': _has_primary_admin_access(user),
             'is_sms_enabled': user.is_sms_enabled,
             'sender_id_type': user.sender_id_type,
             'sender_id': user.sender_id,
@@ -757,11 +781,9 @@ class AdminUsersListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def list(self, request, *args, **kwargs):
-        if not request.user.is_staff:
-            return Response(
-                {'detail': 'Admin access required'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
         
         users = User.objects.all().values(
             'id', 'first_name', 'last_name', 'username', 'email', 'phone_number',
@@ -775,8 +797,9 @@ class AdminUserPermissionView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, user_id):
-        if not request.user.is_staff:
-            return Response({'detail': 'Admin access required'}, status=403)
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
 
         try:
             user = User.objects.get(id=user_id)
@@ -796,7 +819,7 @@ class AdminUserPermissionView(generics.GenericAPIView):
                 return Response({'detail': 'Phone number must contain at least 10 digits'}, status=status.HTTP_400_BAD_REQUEST)
             user.phone_number = normalized_phone if raw_phone else None
 
-        for field in ['is_staff', 'is_active', 'is_sms_enabled']:
+        for field in ['is_staff', 'is_superuser', 'is_active', 'is_sms_enabled']:
             if field in request.data:
                 setattr(user, field, bool(request.data[field]))
 
@@ -872,6 +895,7 @@ class AdminUserPermissionView(generics.GenericAPIView):
             'email': user.email,
             'phone_number': user.phone_number,
             'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
             'is_active': user.is_active,
             'is_sms_enabled': user.is_sms_enabled,
             'sender_id_type': user.sender_id_type,
@@ -880,8 +904,9 @@ class AdminUserPermissionView(generics.GenericAPIView):
         }, status=200)
 
     def delete(self, request, user_id):
-        if not request.user.is_staff:
-            return Response({'detail': 'Admin access required'}, status=403)
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
 
         try:
             user = User.objects.get(id=user_id)
@@ -904,8 +929,9 @@ class SMSSendView(generics.CreateAPIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def create(self, request, *args, **kwargs):
-        if not request.user.is_staff:
-            return Response({'detail': 'Only admins can send SMS'}, status=status.HTTP_403_FORBIDDEN)
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
 
         self._process_due_scheduled_messages()
 
@@ -1630,7 +1656,7 @@ class SMSUsageSummaryView(generics.GenericAPIView):
     def get(self, request):
         summary = _get_user_sms_usage_summary(request.user)
         summary['free_trial_limit'] = FREE_TRIAL_MESSAGE_LIMIT
-        summary['is_admin'] = request.user.is_staff
+        summary['is_admin'] = _has_primary_admin_access(request.user)
         summary['verified_numbers_count'] = FreeTrialVerifiedNumber.objects.filter(owner=request.user, is_verified=True).count()
         return Response(summary, status=status.HTTP_200_OK)
 
@@ -1651,7 +1677,7 @@ class FreeTrialSendOTPView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        if request.user.is_staff:
+        if _has_primary_admin_access(request.user):
             return Response({'detail': 'Admin users already have full SMS access'}, status=status.HTTP_400_BAD_REQUEST)
 
         recipient_number = _normalize_phone_number(request.data.get('recipient_number'))
@@ -1733,7 +1759,7 @@ class FreeTrialVerifyOTPView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        if request.user.is_authenticated and request.user.is_staff:
+        if request.user.is_authenticated and _has_primary_admin_access(request.user):
             return Response({'detail': 'Admin users do not require free trial OTP'}, status=status.HTTP_400_BAD_REQUEST)
 
         recipient_number = _normalize_phone_number(request.data.get('recipient_number'))
@@ -1799,7 +1825,7 @@ class FreeTrialSendSMSView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        if request.user.is_staff:
+        if _has_primary_admin_access(request.user):
             return Response({'detail': 'Admin users should use regular SMS sending'}, status=status.HTTP_400_BAD_REQUEST)
 
         usage_summary = _get_user_sms_usage_summary(request.user)
@@ -1902,7 +1928,7 @@ class SMSMessageListView(generics.ListAPIView):
             pass
 
         user = self.request.user
-        if user.is_staff:
+        if _has_primary_admin_access(user):
             return SMSMessage.objects.all()
         return SMSMessage.objects.filter(Q(sender=user) | Q(recipient_user=user))
 
@@ -1918,6 +1944,9 @@ class SMSCredentialView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
         cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
         if not cred:
             env_user = getattr(settings, 'SMS_PROVIDER_USER', '').strip()
@@ -1936,6 +1965,9 @@ class SMSCredentialView(generics.GenericAPIView):
         return Response(self.get_serializer(cred).data)
 
     def patch(self, request):
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
         cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
         if not cred:
             cred = SMSCredential.objects.create(
@@ -2080,8 +2112,9 @@ class UserSMSEligibilityView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, user_id):
-        if not request.user.is_staff:
-            return Response({'detail': 'Admin only'}, status=status.HTTP_403_FORBIDDEN)
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
 
         try:
             user = User.objects.get(id=user_id)
@@ -2100,7 +2133,7 @@ class AdminUsersSMSListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        if not self.request.user.is_staff:
+        if not _has_primary_admin_access(self.request.user):
             return User.objects.none()
         return User.objects.all().order_by('-date_joined')
 
@@ -2110,11 +2143,9 @@ class AdminUsersExportView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def get(self, request):
-        if not request.user.is_staff:
-            return Response(
-                {'detail': 'Admin access required'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
         
         try:
             import openpyxl
@@ -2193,8 +2224,9 @@ class AdminNotificationPreviewView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        if not request.user.is_staff:
-            return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
 
         audience_filter = request.query_params.get('audience_filter', 'all_users')
         users = _get_users_for_notification_filter(audience_filter).order_by('-date_joined')
@@ -2212,8 +2244,9 @@ class AdminNotificationSendView(generics.GenericAPIView):
     serializer_class = AdminNotificationSendSerializer
 
     def post(self, request):
-        if not request.user.is_staff:
-            return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -2252,7 +2285,7 @@ class AdminNotificationHistoryView(generics.ListAPIView):
     serializer_class = AdminNotificationHistorySerializer
 
     def get_queryset(self):
-        if not self.request.user.is_staff:
+        if not _has_primary_admin_access(self.request.user):
             return InternalNotification.objects.none()
         return InternalNotification.objects.select_related('created_by').all()
 
@@ -2279,4 +2312,85 @@ class UserNotificationReadView(generics.GenericAPIView):
             recipient.save(update_fields=['is_read', 'read_at'])
 
         return Response(UserNotificationSerializer(recipient).data)
+
+
+
+class ConfirmAdminPromotionView(generics.GenericAPIView):
+    """Handle email confirmation link for admin promotion"""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        token = request.query_params.get('token', '').strip()
+        user_id = request.query_params.get('user_id')
+        promotion_type = request.query_params.get('type', '').strip().lower()  # optional
+
+        if not token or not user_id:
+            return Response(
+                {'detail': 'Invalid confirmation link', 'success': False},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            user = User.objects.get(id=int(user_id))
+        except (User.DoesNotExist, ValueError):
+            return Response(
+                {'detail': 'User not found', 'success': False},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Check if token matches and is not expired (24 hours)
+        if user.admin_promotion_token != token:
+            return Response(
+                {'detail': 'Invalid or expired confirmation token', 'success': False},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not user.pending_admin_promotion:
+            return Response(
+                {'detail': 'No pending admin promotion for this user', 'success': False},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if user.admin_promotion_requested_at:
+            expiry_time = user.admin_promotion_requested_at + timedelta(hours=24)
+            if timezone.now() > expiry_time:
+                user.pending_admin_promotion = False
+                user.admin_promotion_token = None
+                user.admin_promotion_requested_at = None
+                user.save()
+                return Response(
+                    {'detail': 'Confirmation link has expired (24 hours)', 'success': False},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Infer type from token prefix when not explicitly provided.
+        inferred_type = 'staff' if token.startswith('staff::') else 'full_admin'
+        resolved_type = promotion_type if promotion_type in ['full_admin', 'staff'] else inferred_type
+
+        # Confirm the promotion
+        if resolved_type == 'full_admin':
+            user.is_staff = True
+            user.is_superuser = True
+            promotion_label = 'FULL ADMIN'
+        else:
+            user.is_staff = True
+            user.is_superuser = False
+            promotion_label = 'STAFF'
+
+        user.pending_admin_promotion = False
+        user.admin_promotion_token = None
+        user.admin_promotion_requested_at = None
+        user.save()
+
+        return Response(
+            {
+                'detail': f'✓ Congratulations! You have been successfully promoted to {promotion_label}.',
+                'success': True,
+                'promotion_type': resolved_type,
+                'user_email': user.email,
+                'next_step': 'You can now log in with your admin credentials at /admin/',
+            },
+            status=status.HTTP_200_OK
+        )
 

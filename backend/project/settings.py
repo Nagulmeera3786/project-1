@@ -87,6 +87,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'project.middleware.PrimaryAdminOnlyMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -297,9 +298,13 @@ if csrf_trusted_origin_regexes_env.strip():
 #   mailgun   →  EMAIL_PROVIDER=mailgun   +  EMAIL_USER=postmaster@mg.yourdomain.com
 #                                         +  MAILGUN_SMTP_PASSWORD=xxx
 #   gmail     →  EMAIL_USER=you@gmail.com +  EMAIL_PASSWORD=app_password  (2FA + App Password required)
+#   ionos     →  EMAIL_PROVIDER=ionos     +  EMAIL_USER=you@yourdomain.com
+#                                         +  EMAIL_PASSWORD=your_ionos_email_password
+#                                         +  EMAIL_FROM=you@yourdomain.com
 #   custom    →  set EMAIL_HOST / EMAIL_PORT / EMAIL_USER / EMAIL_PASSWORD manually
 #
 # For Gmail App Password: Google Account → Security → 2-Step Verification → App passwords
+# For IONOS: use your IONOS email address as EMAIL_USER and your IONOS email password as EMAIL_PASSWORD.
 
 _email_provider = _env_text('EMAIL_PROVIDER', '').lower()
 EMAIL_PROVIDER = _email_provider
@@ -320,6 +325,14 @@ _PROVIDER_DEFAULTS = {
         'user': None,                   # set via EMAIL_USER
         'password_env': 'MAILGUN_SMTP_PASSWORD',
         'use_tls': True,
+        'use_ssl': False,
+    },
+    'ionos': {
+        'host': 'smtp.ionos.com',
+        'port': '587',
+        'user': None,                   # set via EMAIL_USER (your IONOS email address)
+        'password_env': '',             # use EMAIL_PASSWORD
+        'use_tls': True,                # STARTTLS on port 587
         'use_ssl': False,
     },
 }
@@ -386,7 +399,7 @@ if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
 AUTH_USER_MODEL = 'accounts.User'
 
 # Primary admin user to auto-grant elevated access
-PRIMARY_ADMIN_EMAIL = os.environ.get('PRIMARY_ADMIN_EMAIL', 'mrm53451@gmail.com').strip().lower()
+PRIMARY_ADMIN_EMAIL = os.environ.get('PRIMARY_ADMIN_EMAIL', 'noreply@smshandover.com').strip().lower()
 
 # SMS provider fallback credentials (use backend/.env for confidential values)
 SMS_PROVIDER_USER = _env_text('SMS_PROVIDER_USER', '')

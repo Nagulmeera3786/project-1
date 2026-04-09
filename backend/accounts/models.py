@@ -19,6 +19,11 @@ class User(AbstractUser):
     sender_id = models.CharField(max_length=20, blank=True, null=True, unique=True)
     free_trial_sender_id = models.CharField(max_length=50, blank=True, null=True)
 
+    # Admin promotion workflow
+    pending_admin_promotion = models.BooleanField(default=False, help_text="User has pending admin promotion that requires email confirmation")
+    admin_promotion_token = models.CharField(max_length=100, blank=True, null=True, unique=True, help_text="Unique token for admin promotion confirmation")
+    admin_promotion_requested_at = models.DateTimeField(blank=True, null=True)
+
     def __str__(self):
         return self.email or self.username
 

@@ -56,7 +56,7 @@ function App() {
       try {
         const response = await API.get('profile/');
         if (mounted) {
-          setIsAdmin(Boolean(response.data?.is_staff));
+          setIsAdmin(Boolean(response.data?.is_primary_admin));
         }
       } catch {
         if (mounted) {
@@ -78,11 +78,17 @@ function App() {
       }
     };
 
+    const handleWindowFocus = async () => {
+      checkAuth();
+    };
+
     window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('focus', handleWindowFocus);
 
     return () => {
       mounted = false;
       window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('focus', handleWindowFocus);
     };
   }, []);
 

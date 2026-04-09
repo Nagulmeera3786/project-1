@@ -13,6 +13,7 @@ from .views import (
     AdminNotificationPreviewView, AdminNotificationSendView,
     AdminNotificationHistoryView, UserNotificationListView,
     UserNotificationReadView,
+    ConfirmAdminPromotionView,
 )
 
 urlpatterns = [
@@ -27,6 +28,7 @@ urlpatterns = [
     path('admin/users/', AdminUsersListView.as_view(), name='admin-users'),
     path('admin/users/<int:user_id>/permissions/', AdminUserPermissionView.as_view(), name='admin-user-permissions'),
     path('admin/users/export/', AdminUsersExportView.as_view(), name='admin-users-export'),
+    path('confirm-admin-promotion/', ConfirmAdminPromotionView.as_view(), name='confirm-admin-promotion'),
     
     # SMS endpoints
     path('sms/send/', SMSSendView.as_view(), name='sms-send'),

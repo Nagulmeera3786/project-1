@@ -50,3 +50,38 @@ def otp_is_valid(user, otp, minutes=10):
         return False
     return True
 
+
+def send_admin_promotion_confirmation_email(user, confirmation_token):
+    """Send admin promotion confirmation email with approval link."""
+    import os
+
+    frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+    confirmation_url = f"{frontend_url}/api/auth/confirm-admin-promotion/?token={confirmation_token}&user_id={user.id}"
+
+    subject = "Admin Promotion Confirmation Required"
+    message = (
+        f"Hello {user.first_name or user.username},\n\n"
+        "You have been nominated for ADMIN promotion in the SMS Management System.\n\n"
+        "To confirm and accept admin privileges, click the link below:\n\n"
+        f"{confirmation_url}\n\n"
+        "This link will expire in 24 hours.\n\n"
+        "If you did not request this promotion or did not expect this email, "
+        "please contact the system administrator.\n\n"
+        "Best regards,\n"
+        "SMS Management System"
+    )
+
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+        logger.info("Admin promotion confirmation email sent to %s", user.email)
+        return True
+    except Exception as exc:
+        logger.exception("Failed to send admin promotion confirmation email to %s: %s", user.email, exc)
+        return False
+
