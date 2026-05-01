@@ -73,6 +73,24 @@ class AuthFlowTests(TestCase):
         self.assertEqual(signup_response.data['email_sent'], False)
         self.assertTrue(signup_response.data['requires_otp'])
 
+    @patch('accounts.views.send_otp_via_email', return_value=True)
+    def test_signup_normalizes_country_code_phone_number(self, _mock_send_email):
+        email = 'countrycode@example.com'
+        signup_response = self.client.post(
+            '/api/auth/signup/',
+            {
+                'first_name': 'Country Code',
+                'email': email,
+                'phone_number': '+91 98765 43210',
+                'password': 'StrongPass123!',
+            },
+            format='json',
+        )
+
+        self.assertEqual(signup_response.status_code, 201)
+        user = User.objects.get(email=email)
+        self.assertEqual(user.phone_number, '919876543210')
+
     def test_login_works_with_duplicate_email_records(self):
         email = 'dupe@example.com'
 
@@ -433,6 +451,7 @@ class FreeTrialFlowTests(TestCase):
             email='trial@example.com',
             is_staff=False,
             is_active=True,
+            phone_number='919876543210',
         )
         self.user.set_password('TrialPass123!')
         self.user.free_trial_sender_id = 'TRIAL'
@@ -447,83 +466,28 @@ class FreeTrialFlowTests(TestCase):
             is_active=True,
         )
 
-    @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'otp-1', 'status': 'sent'})
-    def test_free_trial_send_otp_and_verify(self, _mock_send):
+    def test_free_trial_send_otp_is_disabled(self):
         send_otp_response = self.client.post(
             '/api/auth/sms/free-trial/send-otp/',
             {'recipient_number': '9876543210'},
             format='json',
         )
-        self.assertEqual(send_otp_response.status_code, 200)
-        self.assertTrue(send_otp_response.data.get('otp_sent'))
-        self.assertEqual(send_otp_response.data.get('provider_message_id'), 'otp-1')
-        self.assertEqual(send_otp_response.data.get('delivery_status'), 'sent')
+        self.assertEqual(send_otp_response.status_code, 400)
+        self.assertEqual(send_otp_response.data.get('otp_required'), False)
 
-        otp_log = SMSMessage.objects.filter(
-            recipient_user=self.user,
-            recipient_number='9876543210',
-            batch_reference=f'free-trial-otp-{self.user.id}',
-        ).order_by('-id').first()
-        self.assertIsNotNone(otp_log)
-        self.assertEqual(otp_log.sender_id, self.admin_user.id)
-        self.assertEqual(otp_log.status, 'sent')
-
-        record = FreeTrialVerifiedNumber.objects.get(owner=self.user, phone_number='9876543210')
+    def test_free_trial_verify_returns_signup_number_without_otp(self):
         verify_response = self.client.post(
             '/api/auth/sms/free-trial/verify-otp/',
-            {'recipient_number': '9876543210', 'otp': record.otp_code},
-            format='json',
-        )
-        self.assertEqual(verify_response.status_code, 200)
-        self.assertTrue(verify_response.data.get('verified'))
-        self.assertIn('9876543210', verify_response.data.get('verified_numbers', []))
-
-    @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'otp-no-auth-1', 'status': 'sent'})
-    def test_free_trial_verify_otp_allows_missing_auth_header_fallback(self, _mock_send):
-        send_otp_response = self.client.post(
-            '/api/auth/sms/free-trial/send-otp/',
-            {'recipient_number': '9123456789'},
-            format='json',
-        )
-        self.assertEqual(send_otp_response.status_code, 200)
-
-        record = FreeTrialVerifiedNumber.objects.get(owner=self.user, phone_number='9123456789')
-        unauth_client = APIClient()
-        verify_response = unauth_client.post(
-            '/api/auth/sms/free-trial/verify-otp/',
-            {'recipient_number': '9123456789', 'otp': record.otp_code},
+            {'recipient_number': '9123456789', 'otp': '123456'},
             format='json',
         )
 
         self.assertEqual(verify_response.status_code, 200)
         self.assertTrue(verify_response.data.get('verified'))
-        self.assertIn('9123456789', verify_response.data.get('verified_numbers', []))
+        self.assertEqual(verify_response.data.get('verified_numbers'), ['919876543210'])
 
-    @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'otp-auto-1', 'status': 'sent'})
-    def test_free_trial_otp_works_without_admin_selected_default_sender(self, mock_send):
-        from accounts.models import SMSCredential
-
-        SMSCredential.objects.filter(is_active=True).update(
-            sender_ids=['AUTO1', 'AUTO2'],
-            free_trial_default_sender_id='',
-        )
-        self.user.free_trial_sender_id = None
-        self.user.save(update_fields=['free_trial_sender_id'])
-
-        send_otp_response = self.client.post(
-            '/api/auth/sms/free-trial/send-otp/',
-            {'recipient_number': '9988776655'},
-            format='json',
-        )
-
-        self.assertEqual(send_otp_response.status_code, 200)
-        self.user.refresh_from_db()
-        self.assertEqual(self.user.free_trial_sender_id, 'AUTO1')
-        mock_send.assert_called_once()
-        self.assertEqual(mock_send.call_args[0][2], 'AUTO1')
-
-    @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'otp-latest-1', 'status': 'sent'})
-    def test_free_trial_otp_uses_latest_active_sms_credentials(self, mock_send):
+    @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'trial-latest-1', 'status': 'sent'})
+    def test_free_trial_uses_latest_active_sms_credentials(self, mock_send):
         from accounts.models import SMSCredential
 
         SMSCredential.objects.create(
@@ -541,21 +505,21 @@ class FreeTrialFlowTests(TestCase):
             is_active=True,
         )
 
-        send_otp_response = self.client.post(
-            '/api/auth/sms/free-trial/send-otp/',
-            {'recipient_number': '9876543210'},
+        response = self.client.post(
+            '/api/auth/sms/free-trial/send/',
+            {'recipient_number': '1111111111', 'message_content': 'Hello latest sender'},
             format='json',
         )
 
-        self.assertEqual(send_otp_response.status_code, 200)
+        self.assertEqual(response.status_code, 201)
         self.assertTrue(SMSCredential.objects.filter(id=latest_cred.id, is_active=True).exists())
         mock_send.assert_called_once()
         send_args = mock_send.call_args[0]
         self.assertEqual(send_args[0], 'latest-user')
         self.assertEqual(send_args[1], 'latest-pass')
         self.assertEqual(send_args[2], 'LATESTID')
-        self.assertEqual(send_args[3], '9876543210')
-        self.assertIn('Your ABC free trial OTP is', send_args[4])
+        self.assertEqual(send_args[3], '919876543210')
+        self.assertEqual(send_args[4], 'Hello latest sender')
 
     @patch('accounts.views.SMSSendView._send_sms_via_api')
     def test_free_trial_limit_is_three_messages(self, mock_send):
@@ -565,17 +529,11 @@ class FreeTrialFlowTests(TestCase):
             {'message_id': 'trial-3', 'status': 'sent'},
         ]
 
-        FreeTrialVerifiedNumber.objects.create(
-            owner=self.user,
-            phone_number='9876543210',
-            is_verified=True,
-        )
-
         for _ in range(3):
             response = self.client.post(
                 '/api/auth/sms/free-trial/send/',
                 {
-                    'recipient_number': '9876543210',
+                    'recipient_number': '1234567890',
                     'display_sender_id': 'TRIAL',
                     'message_content': 'Hello from trial',
                 },
@@ -586,7 +544,7 @@ class FreeTrialFlowTests(TestCase):
         blocked_response = self.client.post(
             '/api/auth/sms/free-trial/send/',
             {
-                'recipient_number': '9876543210',
+                'recipient_number': '1234567890',
                 'display_sender_id': 'TRIAL',
                 'message_content': 'Should be blocked',
             },
@@ -596,13 +554,7 @@ class FreeTrialFlowTests(TestCase):
         self.assertTrue(blocked_response.data.get('free_trial_complete'))
 
     @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'trial-admin-1', 'status': 'sent'})
-    def test_free_trial_sms_uses_admin_provider_credentials_and_entered_number(self, mock_send):
-        FreeTrialVerifiedNumber.objects.create(
-            owner=self.user,
-            phone_number='919988776655',
-            is_verified=True,
-        )
-
+    def test_free_trial_sms_uses_admin_provider_credentials_and_signup_number(self, mock_send):
         response = self.client.post(
             '/api/auth/sms/free-trial/send/',
             {
@@ -617,23 +569,17 @@ class FreeTrialFlowTests(TestCase):
             'provider-user',
             'provider-pass',
             'TRIAL',
-            '919988776655',
+            '919876543210',
             'Hello from free trial',
         )
 
         sms_log = SMSMessage.objects.filter(
             send_mode='free_trial',
-            recipient_number='919988776655',
+            recipient_number='919876543210',
             recipient_user=self.user,
         ).order_by('-id').first()
         self.assertIsNotNone(sms_log)
-        self.assertEqual(sms_log.sender_id, self.admin_user.id)
-
-        admin_client = APIClient()
-        admin_client.force_authenticate(user=self.admin_user)
-        admin_history = admin_client.get('/api/auth/sms/messages/')
-        self.assertEqual(admin_history.status_code, 200)
-        self.assertTrue(any(item['id'] == sms_log.id for item in admin_history.data))
+        self.assertEqual(sms_log.sender_id, self.user.id)
 
         user_history = self.client.get('/api/auth/sms/messages/')
         self.assertEqual(user_history.status_code, 200)

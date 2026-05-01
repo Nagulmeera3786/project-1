@@ -55,7 +55,9 @@ if allowed_hosts_env.strip():
         if item.strip()
     ]
 else:
-    ALLOWED_HOSTS = ['localhost', '127.0.0.1'] if DEBUG else []
+    # In DEBUG mode allow any host so `runserver 0.0.0.0:PORT` works on LAN/VMs.
+    # In production always set the ALLOWED_HOSTS env var explicitly.
+    ALLOWED_HOSTS = ['*'] if DEBUG else []
 
 # Render exposes the public host via env vars; include it as a safety fallback.
 render_host = _env_text('RENDER_EXTERNAL_HOSTNAME') or _env_text('RENDER_PUBLIC_HOSTNAME')
@@ -301,6 +303,7 @@ if csrf_trusted_origin_regexes_env.strip():
 #   ionos     →  EMAIL_PROVIDER=ionos     +  EMAIL_USER=you@yourdomain.com
 #                                         +  EMAIL_PASSWORD=your_ionos_email_password
 #                                         +  EMAIL_FROM=you@yourdomain.com
+#                                         +  automatic fallback between 465/SSL and 587/TLS
 #   custom    →  set EMAIL_HOST / EMAIL_PORT / EMAIL_USER / EMAIL_PASSWORD manually
 #
 # For Gmail App Password: Google Account → Security → 2-Step Verification → App passwords
@@ -329,11 +332,11 @@ _PROVIDER_DEFAULTS = {
     },
     'ionos': {
         'host': 'smtp.ionos.com',
-        'port': '587',
+        'port': '465',
         'user': None,                   # set via EMAIL_USER (your IONOS email address)
         'password_env': '',             # use EMAIL_PASSWORD
-        'use_tls': True,                # STARTTLS on port 587
-        'use_ssl': False,
+        'use_tls': False,
+        'use_ssl': True,
     },
 }
 
@@ -361,8 +364,8 @@ EMAIL_SSL_CERTFILE         = _env_text('EMAIL_SSL_CERTFILE') or None
 EMAIL_SSL_KEYFILE          = _env_text('EMAIL_SSL_KEYFILE') or None
 EMAIL_VERIFY_CERTS         = _env_bool('EMAIL_VERIFY_CERTS', True)
 EMAIL_ALLOW_INSECURE_FALLBACK = _env_bool('EMAIL_ALLOW_INSECURE_FALLBACK', True)
-EMAIL_TIMEOUT              = int(_env_text('EMAIL_TIMEOUT', 8 if not DEBUG else 20))
-OTP_EMAIL_MAX_ATTEMPTS     = int(_env_text('OTP_EMAIL_MAX_ATTEMPTS', 1 if not DEBUG else 2))
+EMAIL_TIMEOUT              = int(_env_text('EMAIL_TIMEOUT', 15 if not DEBUG else 20))
+OTP_EMAIL_MAX_ATTEMPTS     = int(_env_text('OTP_EMAIL_MAX_ATTEMPTS', 2 if not DEBUG else 2))
 OTP_EMAIL_RETRY_DELAY_MS   = int(_env_text('OTP_EMAIL_RETRY_DELAY_MS', 0 if not DEBUG else 500))
 OTP_EMAIL_SUBJECT          = _env_text('OTP_EMAIL_SUBJECT', 'Your verification code')
 
@@ -406,6 +409,8 @@ SMS_PROVIDER_USER = _env_text('SMS_PROVIDER_USER', '')
 SMS_PROVIDER_PASSWORD = _env_secret('SMS_PROVIDER_PASSWORD')
 SMS_PROVIDER_URL = _env_text('SMS_PROVIDER_URL', 'https://mshastra.com/bsms/buser/send_sms_center.aspx')
 SMS_PROVIDER_JSON_URL = _env_text('SMS_PROVIDER_JSON_URL', 'https://mshastra.com/sendsms_api_json.aspx')
+SMS_PROVIDER_BALANCE_URL = _env_text('SMS_PROVIDER_BALANCE_URL', '')
+SMS_PROVIDER_BALANCE_METHOD = _env_text('SMS_PROVIDER_BALANCE_METHOD', 'GET').upper()
 SMS_DEFAULT_SENDER_IDS = [
     sender_id.strip()
     for sender_id in _env_text('SMS_DEFAULT_SENDER_IDS', '').split(',')

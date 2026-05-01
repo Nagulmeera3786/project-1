@@ -360,6 +360,116 @@ def _format_utc_offset(offset_delta):
 
 FREE_TRIAL_MESSAGE_LIMIT = 3
 FREE_TRIAL_OTP_EXPIRY_MINUTES = 10
+_PROVIDER_BALANCE_CACHE = {'value': None, 'expires_at': None}
+
+
+def _extract_first_numeric_value(text):
+    try:
+        match = re.search(r'-?\d+(?:\.\d+)?', str(text or ''))
+        if not match:
+            return None
+        return float(match.group(0))
+    except Exception:
+        return None
+
+
+def _get_balance_candidate_urls(provider_config):
+    configured_balance_url = str(getattr(settings, 'SMS_PROVIDER_BALANCE_URL', '') or '').strip()
+    if configured_balance_url:
+        return [configured_balance_url]
+
+    send_url = str(getattr(settings, 'SMS_PROVIDER_URL', '') or '').strip().lower()
+    if 'mshastra.com' in send_url:
+        return [
+            'https://mshastra.com/bsms/buser/balance.aspx',
+            'https://mshastra.com/bsms/buser/get_balance.aspx',
+            'https://mshastra.com/bsms/buser/user_balance.aspx',
+        ]
+
+    return []
+
+
+def _extract_balance_from_data(payload):
+    candidate_keys = [
+        'wallet_balance', 'balance', 'points', 'credits', 'available_balance',
+        'available_credits', 'remaining_balance', 'remaining_credits', 'amount'
+    ]
+
+    if isinstance(payload, dict):
+        lowered_map = {str(k).strip().lower(): v for k, v in payload.items()}
+        for key in candidate_keys:
+            if key in lowered_map:
+                value = _extract_first_numeric_value(lowered_map[key])
+                if value is not None:
+                    return max(0.0, value)
+
+        for value in payload.values():
+            nested_value = _extract_balance_from_data(value)
+            if nested_value is not None:
+                return nested_value
+
+    if isinstance(payload, list):
+        for item in payload:
+            nested_value = _extract_balance_from_data(item)
+            if nested_value is not None:
+                return nested_value
+
+    return _extract_first_numeric_value(payload)
+
+
+def _get_provider_wallet_balance():
+    now = timezone.now()
+    cached_value = _PROVIDER_BALANCE_CACHE.get('value')
+    cache_expiry = _PROVIDER_BALANCE_CACHE.get('expires_at')
+    if cache_expiry and cache_expiry > now and cached_value is not None:
+        return cached_value
+
+    provider_config = _get_admin_managed_sms_provider_config() or _get_sms_provider_config()
+    if not provider_config:
+        return None
+
+    candidate_urls = _get_balance_candidate_urls(provider_config)
+    if not candidate_urls:
+        return None
+
+    method = str(getattr(settings, 'SMS_PROVIDER_BALANCE_METHOD', 'GET') or 'GET').strip().upper()
+    method = method if method in ['GET', 'POST'] else 'GET'
+
+    request_params = {
+        'user': provider_config.get('user', ''),
+        'username': provider_config.get('user', ''),
+        'pwd': provider_config.get('password', ''),
+        'password': provider_config.get('password', ''),
+    }
+
+    for balance_url in candidate_urls:
+        try:
+            if method == 'POST':
+                response = requests.post(balance_url, data=request_params, timeout=8)
+            else:
+                response = requests.get(balance_url, params=request_params, timeout=8)
+        except requests.RequestException:
+            continue
+
+        if response.status_code != 200:
+            continue
+
+        parsed_payload = None
+        try:
+            parsed_payload = response.json()
+        except ValueError:
+            parsed_payload = response.text
+
+        balance_value = _extract_balance_from_data(parsed_payload)
+        if balance_value is None:
+            continue
+
+        resolved_balance = round(max(0.0, float(balance_value)), 2)
+        _PROVIDER_BALANCE_CACHE['value'] = resolved_balance
+        _PROVIDER_BALANCE_CACHE['expires_at'] = now + timedelta(seconds=45)
+        return resolved_balance
+
+    return None
 
 
 def _get_users_for_notification_filter(audience_filter):
@@ -403,7 +513,9 @@ def _get_user_sms_usage_summary(user):
             .exclude(Q(batch_reference__startswith='free-trial') & Q(recipient_user__isnull=False))
             .count()
         )
-        wallet_balance = max(0, total_limit - used_messages)
+        fallback_balance = max(0, total_limit - used_messages)
+        provider_wallet_balance = _get_provider_wallet_balance()
+        wallet_balance = provider_wallet_balance if provider_wallet_balance is not None else fallback_balance
     else:
         total_limit = FREE_TRIAL_MESSAGE_LIMIT
         used_messages = SMSMessage.objects.filter(
@@ -435,11 +547,15 @@ class SignupView(generics.CreateAPIView):
     def post(self, request, *args, **kwargs):
         first_name = (request.data.get('first_name') or '').strip()
         email = (request.data.get('email') or '').strip().lower()
-        phone_number = (request.data.get('phone_number') or '').strip()
+        raw_phone_number = (request.data.get('phone_number') or '').strip()
         password = request.data.get('password') or ''
 
-        if not first_name or not email or not phone_number or not password:
+        if not first_name or not email or not raw_phone_number or not password:
             return Response({'detail': 'name, email, phone_number and password are required'}, status=400)
+
+        phone_number = _normalize_phone_number(raw_phone_number)
+        if not phone_number:
+            return Response({'detail': 'Phone number must contain at least 10 digits'}, status=400)
 
         try:
             validate_password(password)
@@ -677,7 +793,7 @@ class UserProfileView(generics.GenericAPIView):
     def get(self, request):
         user = request.user
         usage_summary = _get_user_sms_usage_summary(user)
-        verified_numbers_count = FreeTrialVerifiedNumber.objects.filter(owner=user, is_verified=True).count()
+        verified_numbers_count = 1 if _normalize_phone_number(user.phone_number) and not _has_primary_admin_access(user) else 0
         provider_config = _get_admin_managed_sms_provider_config() or {}
         resolved_free_trial_sender_id = ''
         if provider_config:
@@ -1665,11 +1781,8 @@ class FreeTrialVerifiedNumbersView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        numbers = list(
-            FreeTrialVerifiedNumber.objects.filter(owner=request.user, is_verified=True)
-            .order_by('-verified_at', '-updated_at')
-            .values_list('phone_number', flat=True)
-        )
+        number = _normalize_phone_number(request.user.phone_number)
+        numbers = [number] if number and not _has_primary_admin_access(request.user) else []
         return Response({'verified_numbers': numbers}, status=status.HTTP_200_OK)
 
 
@@ -1680,78 +1793,12 @@ class FreeTrialSendOTPView(generics.GenericAPIView):
         if _has_primary_admin_access(request.user):
             return Response({'detail': 'Admin users already have full SMS access'}, status=status.HTTP_400_BAD_REQUEST)
 
-        recipient_number = _normalize_phone_number(request.data.get('recipient_number'))
-        if not recipient_number:
-            return Response({'detail': 'Enter a valid recipient number (minimum 10 digits)'}, status=status.HTTP_400_BAD_REQUEST)
-
-        provider_config = _get_admin_managed_sms_provider_config()
-        if not provider_config:
-            return Response({'detail': 'Free trial SMS service is temporarily unavailable. Please try again later.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-        try:
-            sender_id = _resolve_free_trial_sender_id(request.user, provider_config)
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        mediator_user = _get_free_trial_mediator_user() or request.user
-
-        record, _ = FreeTrialVerifiedNumber.objects.get_or_create(
-            owner=request.user,
-            phone_number=recipient_number,
-        )
-
-        otp_code = generate_otp()
-        record.otp_code = otp_code
-        record.otp_created = timezone.now()
-        record.is_verified = False
-        record.verified_at = None
-        record.save(update_fields=['otp_code', 'otp_created', 'is_verified', 'verified_at', 'updated_at'])
-
-        otp_message = f'Your ABC free trial OTP is {otp_code}. Valid for {FREE_TRIAL_OTP_EXPIRY_MINUTES} minutes.'
-        masked_otp_log_message = 'Free trial OTP sent for verification'
-
-        otp_sms_log = SMSMessage.objects.create(
-            sender=mediator_user,
-            recipient_number=recipient_number,
-            recipient_user=request.user,
-            display_sender_id=sender_id,
-            message_content=masked_otp_log_message,
-            sms_type='transactional',
-            send_mode='single',
-            schedule_type='instant',
-            status='pending',
-            batch_reference=f'free-trial-otp-{request.user.id}',
-            source_file_name='',
-        )
-
-        try:
-            send_result = SMSSendView()._send_sms_via_api(
-                provider_config['user'],
-                provider_config['password'],
-                sender_id,
-                recipient_number,
-                otp_message,
-            )
-            otp_sms_log.message_id = send_result.get('message_id')
-            otp_sms_log.status = send_result.get('status', 'sent')
-            otp_sms_log.delivery_time = timezone.now() if otp_sms_log.status in ['sent', 'delivered'] else None
-            otp_sms_log.failure_reason = ''
-            otp_sms_log.save(update_fields=['message_id', 'status', 'delivery_time', 'failure_reason', 'updated_at'])
-        except Exception as exc:
-            otp_sms_log.status = 'failed'
-            otp_sms_log.failure_reason = str(exc)
-            otp_sms_log.save(update_fields=['status', 'failure_reason', 'updated_at'])
-            return Response({'detail': 'Unable to send OTP right now. Please retry after some time.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
         return Response(
             {
-                'detail': 'OTP sent successfully',
-                'recipient_number': recipient_number,
-                'otp_sent': True,
-                'provider_message_id': send_result.get('message_id'),
-                'delivery_status': send_result.get('status', 'sent'),
+                'detail': 'Free trial messages can only be sent to your signup mobile number. OTP verification is no longer required.',
+                'otp_required': False,
             },
-            status=status.HTTP_200_OK,
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
 
@@ -1762,58 +1809,15 @@ class FreeTrialVerifyOTPView(generics.GenericAPIView):
         if request.user.is_authenticated and _has_primary_admin_access(request.user):
             return Response({'detail': 'Admin users do not require free trial OTP'}, status=status.HTTP_400_BAD_REQUEST)
 
-        recipient_number = _normalize_phone_number(request.data.get('recipient_number'))
-        otp_code = str(request.data.get('otp') or '').strip()
-
-        if not recipient_number:
-            return Response({'detail': 'Recipient number is required'}, status=status.HTTP_400_BAD_REQUEST)
-        if len(otp_code) < 4:
-            return Response({'detail': 'Enter a valid OTP'}, status=status.HTTP_400_BAD_REQUEST)
-
-        record = None
+        verified_numbers = []
         if request.user.is_authenticated:
-            try:
-                record = FreeTrialVerifiedNumber.objects.get(owner=request.user, phone_number=recipient_number)
-            except FreeTrialVerifiedNumber.DoesNotExist:
-                record = None
-        else:
-            # Fallback for clients that accidentally omit Authorization on this endpoint.
-            record = (
-                FreeTrialVerifiedNumber.objects.filter(phone_number=recipient_number, otp_code=otp_code)
-                .order_by('-updated_at', '-id')
-                .first()
-            )
+            signup_number = _normalize_phone_number(request.user.phone_number)
+            if signup_number:
+                verified_numbers = [signup_number]
 
-        if not record:
-            return Response({'detail': 'OTP not requested for this number'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not record.otp_code:
-            return Response({'detail': 'OTP expired or already used. Please resend OTP.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        expiry_cutoff = timezone.now() - timedelta(minutes=FREE_TRIAL_OTP_EXPIRY_MINUTES)
-        if not record.otp_created or record.otp_created < expiry_cutoff:
-            record.otp_code = ''
-            record.save(update_fields=['otp_code', 'updated_at'])
-            return Response({'detail': 'OTP expired. Please request a new OTP.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if otp_code != record.otp_code:
-            return Response({'detail': 'Invalid OTP', 'verified': False}, status=status.HTTP_400_BAD_REQUEST)
-
-        record.is_verified = True
-        record.verified_at = timezone.now()
-        record.otp_code = ''
-        record.save(update_fields=['is_verified', 'verified_at', 'otp_code', 'updated_at'])
-
-        owner_user = record.owner
-
-        verified_numbers = list(
-            FreeTrialVerifiedNumber.objects.filter(owner=owner_user, is_verified=True)
-            .order_by('-verified_at', '-updated_at')
-            .values_list('phone_number', flat=True)
-        )
         return Response(
             {
-                'detail': 'OTP verified successfully',
+                'detail': 'Free trial messages now go only to your signup mobile number. OTP verification is no longer required.',
                 'verified': True,
                 'verified_numbers': verified_numbers,
             },
@@ -1840,17 +1844,9 @@ class FreeTrialSendSMSView(generics.GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        recipient_number = _normalize_phone_number(request.data.get('recipient_number'))
+        recipient_number = _normalize_phone_number(request.user.phone_number)
         if not recipient_number:
-            return Response({'detail': 'Recipient number is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-        is_verified = FreeTrialVerifiedNumber.objects.filter(
-            owner=request.user,
-            phone_number=recipient_number,
-            is_verified=True,
-        ).exists()
-        if not is_verified:
-            return Response({'detail': 'Recipient number is not OTP verified for free trial'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Add your mobile number in signup/profile before using free trial SMS'}, status=status.HTTP_400_BAD_REQUEST)
 
         message_content = str(request.data.get('message_content') or '').strip()
         if not message_content:
@@ -1905,7 +1901,8 @@ class FreeTrialSendSMSView(generics.GenericAPIView):
         updated_summary = _get_user_sms_usage_summary(request.user)
         return Response(
             {
-                'detail': 'Free trial SMS sent successfully',
+                'detail': 'Free trial SMS sent successfully to your signup mobile number',
+                'recipient_number': recipient_number,
                 'display_sender_id': display_sender_id,
                 'message_id': sms_msg.message_id,
                 'status': sms_msg.status,
