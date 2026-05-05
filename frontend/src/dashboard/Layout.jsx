@@ -2,13 +2,21 @@ import React from "react";
 import LeftSidebar from "./LeftSidebar";
 import TopRightMenu from "./TopRightMenu";
 import Dashboard from "./Dashboard";
+import RechargePaymentsPage from "./RechargePaymentsPage";
+import ContactSupportPage from "./ContactSupportPage";
 import "../App.css";
 
-const Layout = () => {
+const Layout = ({ page = "dashboard" }) => {
+  const pageMap = {
+    dashboard: <Dashboard />,
+    recharge: <RechargePaymentsPage />,
+    contactSupport: <ContactSupportPage />,
+  };
+
   return (
     <div className="layout">
       <div className="layout-header">
-        {/* Brand / Logo area */}
+        {/* Brand / Logo area — LEFT */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div style={{
             width: '38px', height: '38px',
@@ -25,12 +33,13 @@ const Layout = () => {
             ABC Company
           </div>
         </div>
+        {/* TOP RIGHT MENU — RIGHT (Notifications, API Docs, Profile) */}
         <TopRightMenu />
       </div>
       <div className="layout-body">
         <LeftSidebar />
         <div className="main-content">
-          <Dashboard />
+          {pageMap[page] || <Dashboard />}
         </div>
       </div>
     </div>

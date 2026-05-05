@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { FaBell, FaUserCircle, FaSignOutAlt, FaCog, FaUser } from "react-icons/fa";
+import { FaBell, FaBookOpen, FaSignOutAlt, FaCog, FaUser } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import API from "../api";
 import "../App.css";
@@ -30,6 +30,10 @@ const TopRightMenu = () => {
       <button className="top-icon-btn" title="Notifications" onClick={() => navigate('/notifications')}>
         <FaBell />
         <span className="notification-badge" />
+      </button>
+
+      <button className="top-icon-btn" title="API Documentation" onClick={() => navigate('/api-docs')}>
+        <FaBookOpen />
       </button>
 
       {/* User Avatar + Dropdown */}

@@ -16,6 +16,9 @@ import {
   FaHistory,
   FaWhatsapp,
   FaPhoneAlt,
+  FaMoneyBillWave,
+  FaCreditCard,
+  FaWallet,
 } from "react-icons/fa";
 import API from "../api";
 import "../App.css";
@@ -25,6 +28,7 @@ const LeftSidebar = () => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [showBroadcastSubmenu, setShowBroadcastSubmenu] = useState(false);
   const [showPeopleSubmenu, setShowPeopleSubmenu] = useState(false);
+  const [showUtilitiesSubmenu, setShowUtilitiesSubmenu] = useState(false);
   const [groups, setGroups] = useState([]);
   const navigate = useNavigate();
   const location = useLocation();
@@ -50,23 +54,26 @@ const LeftSidebar = () => {
 
   const adminBaseMenuItems = [
     { icon: <FaHome />, label: "Home", path: '/dashboard', action: () => navigate('/dashboard') },
-    { icon: <FaBook />, label: "Guide", path: null, action: null },
     { icon: <FaBroadcastTower />, label: "Channels", path: null, action: null },
     { icon: <FaBroadcastTower />, label: "Broadcast", path: null, action: () => setShowBroadcastSubmenu((prev) => !prev) },
-    { icon: <FaCommentDots />, label: "Moments", path: null, action: null },
     { icon: <FaCommentDots />, label: "Conversations", path: null, action: null },
     { icon: <FaRobot />, label: "Chatbots", path: null, action: null },
     { icon: <FaChartBar />, label: "Analyze", path: null, action: null },
     { icon: <FaUsers />, label: "People", path: null, action: () => setShowPeopleSubmenu((prev) => !prev) },
     { icon: <FaFileAlt />, label: "Content", path: null, action: null },
     { icon: <FaExchangeAlt />, label: "Exchange", path: null, action: null },
+    { icon: <FaMoneyBillWave />, label: "Utilities", path: null, action: () => setShowUtilitiesSubmenu((prev) => !prev) },
+    { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
   ];
 
   const userBaseMenuItems = [
     { icon: <FaHome />, label: "Home", path: '/dashboard', action: () => navigate('/dashboard') },
+    { icon: <FaBook />, label: 'API Documentation', path: '/api-docs', action: () => navigate('/api-docs') },
     { icon: <FaBook />, label: "Guide", path: null, action: null },
     { icon: <FaBroadcastTower />, label: "Broadcast", path: null, action: () => setShowBroadcastSubmenu((prev) => !prev) },
     { icon: <FaUsers />, label: "People", path: null, action: () => setShowPeopleSubmenu((prev) => !prev) },
+    { icon: <FaMoneyBillWave />, label: "Utilities", path: null, action: () => setShowUtilitiesSubmenu((prev) => !prev) },
+    { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
   ];
 
   const baseMenuItems = isAdmin ? adminBaseMenuItems : userBaseMenuItems;
@@ -87,6 +94,12 @@ const LeftSidebar = () => {
       action: () => navigate(isAdmin ? '/sms/send' : '/sms/free-trial'),
     },
     { icon: <FaHistory />, label: 'SMS History', path: '/sms/history', action: () => navigate('/sms/history') },
+  ];
+
+  const utilitiesSubMenuItems = [
+    { icon: <FaCreditCard />, label: 'Credit Details', path: '/dashboard/recharge?tab=credit-details', action: () => navigate('/dashboard/recharge?tab=credit-details') },
+    { icon: <FaWallet />, label: 'Recharge Account', path: '/dashboard/recharge?tab=recharge', action: () => navigate('/dashboard/recharge?tab=recharge') },
+    { icon: <FaMoneyBillWave />, label: 'Payment Details', path: '/dashboard/recharge?tab=payment-details', action: () => navigate('/dashboard/recharge?tab=payment-details') },
   ];
 
   const adminSMSMenuItems = [
@@ -137,7 +150,18 @@ const LeftSidebar = () => {
           )}
         </div>
         <button className="toggle-btn" onClick={() => setIsOpen(!isOpen)} title={isOpen ? 'Collapse' : 'Expand'}>
-          {isOpen ? "<<" : ">"}
+          <span className="toggle-glyph" aria-hidden="true">
+            <span className="toggle-glyph-dots">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="toggle-glyph-lines">
+              <span />
+              <span />
+              <span />
+            </span>
+          </span>
         </button>
       </div>
 
@@ -190,6 +214,31 @@ const LeftSidebar = () => {
                     </div>
                   ))
                 )}
+              </div>
+            )}
+
+            {isOpen && item.label === 'Utilities' && showUtilitiesSubmenu && (
+              <div style={{ marginLeft: '12px', marginBottom: '4px' }}>
+                {utilitiesSubMenuItems.map((subItem, subIndex) => {
+                  const activeSubItem = subItem.path && location.pathname === '/dashboard/recharge' && location.search.includes(subItem.path.split('?')[1]);
+                  return (
+                    <div
+                      key={`utilities-sub-${subIndex}`}
+                      className={`menu-item${activeSubItem ? ' active' : ''}`}
+                      onClick={subItem.action}
+                      style={{
+                        padding: '8px 10px', fontSize: '13px',
+                        cursor: 'pointer',
+                        opacity: 1,
+                        background: activeSubItem ? 'rgba(167,139,250,0.20)' : 'rgba(255,255,255,0.05)',
+                        borderRadius: '6px', margin: '1px 0',
+                      }}
+                    >
+                      <span className="icon">{subItem.icon}</span>
+                      <span className="label">{subItem.label}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </React.Fragment>

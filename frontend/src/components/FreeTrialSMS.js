@@ -1,93 +1,31 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FaArrowLeft, FaBolt, FaCheckCircle, FaCircle, FaExclamationCircle } from 'react-icons/fa';
+import { FaArrowLeft, FaCheckCircle, FaLock, FaPaperPlane } from 'react-icons/fa';
 import API from '../api';
-
-const OTP_LIVE_STEPS = [
-  { key: 'trigger', label: 'Trigger admin SMS gateway' },
-  { key: 'dispatch', label: 'Send OTP to entered number' },
-  { key: 'verify', label: 'OTP received and verified' },
-];
 
 export default function FreeTrialSMS() {
   const navigate = useNavigate();
-
-  const [recipientNumber, setRecipientNumber] = useState('');
-  const [otp, setOtp] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
-  const [otpStatus, setOtpStatus] = useState('');
-  const [verifyingOtp, setVerifyingOtp] = useState(false);
-  const [lastOtpAttempt, setLastOtpAttempt] = useState('');
-
-  const [verifiedNumbers, setVerifiedNumbers] = useState([]);
-  const [selectedNumber, setSelectedNumber] = useState('');
+  const [profile, setProfile] = useState(null);
+  const [signupNumber, setSignupNumber] = useState('');
   const [messageContent, setMessageContent] = useState('');
-
   const [usage, setUsage] = useState({ used_messages: 0, available_messages: 3, total_limit: 3 });
-
-  const [sendingOtp, setSendingOtp] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(true);
-  const [otpLiveStatus, setOtpLiveStatus] = useState({
-    trigger: 'idle',
-    dispatch: 'idle',
-    verify: 'idle',
-    detail: 'Waiting for number entry',
-  });
-  const [otpLiveLog, setOtpLiveLog] = useState([]);
 
   const freeTrialComplete = (usage.available_messages || 0) <= 0;
-
-  const canEditMessageFields = useMemo(
-    () => Boolean(selectedNumber && verifiedNumbers.includes(selectedNumber) && !freeTrialComplete),
-    [selectedNumber, verifiedNumbers, freeTrialComplete]
-  );
-
-  const appendOtpLiveLog = (message) => {
-    const timeLabel = new Date().toLocaleTimeString();
-    setOtpLiveLog((prev) => [`${timeLabel} - ${message}`, ...prev].slice(0, 6));
-  };
-
-  const updateOtpLiveStatus = (updates) => {
-    setOtpLiveStatus((prev) => ({ ...prev, ...updates }));
-  };
-
-  const getStepIcon = (value) => {
-    if (value === 'done') {
-      return <FaCheckCircle color="#2e7d32" size={14} />;
-    }
-    if (value === 'failed') {
-      return <FaExclamationCircle color="#c62828" size={14} />;
-    }
-    return <FaCircle color="#94a3b8" size={10} />;
-  };
 
   useEffect(() => {
     initialize();
   }, []);
 
-  useEffect(() => {
-    const cleanOtp = (otp || '').trim();
-    if (!otpSent || cleanOtp.length < 6 || verifyingOtp) {
-      return;
-    }
-
-    if (cleanOtp === lastOtpAttempt) {
-      return;
-    }
-
-    verifyOtpAuto(cleanOtp);
-  }, [otp, otpSent, verifyingOtp, lastOtpAttempt]);
-
   const initialize = async () => {
     setLoading(true);
     try {
-      const [profileResponse, usageResponse, verifiedResponse] = await Promise.all([
+      const [profileResponse, usageResponse] = await Promise.all([
         API.get('profile/'),
         API.get('sms/usage-summary/'),
-        API.get('sms/free-trial/verified-numbers/'),
       ]);
 
       if (profileResponse.data?.is_staff) {
@@ -95,10 +33,9 @@ export default function FreeTrialSMS() {
         return;
       }
 
+      setProfile(profileResponse.data);
+      setSignupNumber(profileResponse.data?.phone_number || '');
       setUsage(usageResponse.data || { used_messages: 0, available_messages: 3, total_limit: 3 });
-
-      const numbers = verifiedResponse.data?.verified_numbers || [];
-      setVerifiedNumbers(numbers);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to load free trial data');
     } finally {
@@ -115,118 +52,12 @@ export default function FreeTrialSMS() {
     }
   };
 
-  const fetchVerifiedNumbers = async () => {
-    try {
-      const response = await API.get('sms/free-trial/verified-numbers/');
-      const numbers = response.data?.verified_numbers || [];
-      setVerifiedNumbers(numbers);
-      if (selectedNumber && !numbers.includes(selectedNumber)) {
-        setSelectedNumber('');
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleSendOtp = async () => {
-    setError('');
-    setSuccess('');
-
-    const normalizedNumber = recipientNumber.replace(/\D/g, '');
-    if (normalizedNumber.length < 10) {
-      setError('Enter a valid mobile number (minimum 10 digits)');
-      return;
-    }
-
-    setSendingOtp(true);
-    updateOtpLiveStatus({
-      trigger: 'in_progress',
-      dispatch: 'idle',
-      verify: 'idle',
-      detail: `Triggering admin gateway for ${normalizedNumber}`,
-    });
-    appendOtpLiveLog('Admin gateway trigger started');
-
-    try {
-      const response = await API.post('sms/free-trial/send-otp/', {
-        recipient_number: recipientNumber,
-      });
-
-      setOtpSent(true);
-      setOtp('');
-      setLastOtpAttempt('');
-      setOtpStatus('OTP sent. Enter OTP to auto-verify.');
-      updateOtpLiveStatus({
-        trigger: 'done',
-        dispatch: 'done',
-        verify: 'idle',
-        detail: `OTP dispatched to ${response.data?.recipient_number || normalizedNumber}`,
-      });
-      appendOtpLiveLog(`OTP dispatched (${response.data?.delivery_status || 'sent'})`);
-      if (response.data?.provider_message_id) {
-        appendOtpLiveLog(`Provider message id: ${response.data.provider_message_id}`);
-      }
-      setSuccess(response.data?.detail || 'OTP sent successfully');
-    } catch (err) {
-      setOtpSent(false);
-      setOtpStatus('');
-      updateOtpLiveStatus({
-        trigger: 'failed',
-        dispatch: 'failed',
-        verify: 'idle',
-        detail: 'OTP dispatch failed',
-      });
-      appendOtpLiveLog('OTP dispatch failed');
-      setError(err.response?.data?.detail || 'Failed to send OTP');
-    } finally {
-      setSendingOtp(false);
-    }
-  };
-
-  const verifyOtpAuto = async (otpValue) => {
-    setVerifyingOtp(true);
-    setLastOtpAttempt(otpValue);
-    setOtpStatus('Validating OTP...');
-    updateOtpLiveStatus({ verify: 'in_progress', detail: 'Validating OTP received by user' });
-    appendOtpLiveLog('OTP validation started');
-    setError('');
-
-    try {
-      const response = await API.post('sms/free-trial/verify-otp/', {
-        recipient_number: recipientNumber,
-        otp: otpValue,
-      });
-
-      const numbers = response.data?.verified_numbers || [];
-      setVerifiedNumbers(numbers);
-      setSelectedNumber(recipientNumber.replace(/\D/g, ''));
-      setOtpStatus('OTP verified. Message field is now unlocked.');
-      updateOtpLiveStatus({
-        trigger: 'done',
-        dispatch: 'done',
-        verify: 'done',
-        detail: `OTP verified for ${recipientNumber.replace(/\D/g, '')}`,
-      });
-      appendOtpLiveLog('OTP verified successfully');
-      setSuccess('Number verified successfully');
-      setOtp('');
-      await fetchVerifiedNumbers();
-    } catch (err) {
-      setOtpStatus('Invalid OTP. Keep typing correct OTP.');
-      updateOtpLiveStatus({ verify: 'failed', detail: 'OTP verification failed. Retry with correct OTP.' });
-      appendOtpLiveLog('OTP verification failed');
-      setError(err.response?.data?.detail || 'OTP verification failed');
-    } finally {
-      setVerifyingOtp(false);
-    }
-  };
-
   const handleSendFreeTrialSMS = async () => {
     setError('');
     setSuccess('');
 
-    if (!canEditMessageFields) {
-      setError('Please verify a number with OTP first');
+    if (!signupNumber) {
+      setError('Add your mobile number in signup or profile before using free trial SMS');
       return;
     }
 
@@ -238,7 +69,7 @@ export default function FreeTrialSMS() {
     setSendingSms(true);
     try {
       const response = await API.post('sms/free-trial/send/', {
-        recipient_number: selectedNumber,
+        recipient_number: signupNumber,
         message_content: messageContent,
       });
       setSuccess(response.data?.detail || 'Message sent successfully');
@@ -257,18 +88,18 @@ export default function FreeTrialSMS() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f4f6f9', padding: '20px' }}>
-      <div style={{ width: '50vw', maxWidth: '760px', minWidth: '360px', backgroundColor: '#fff', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', padding: '22px' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #F5F1FF 0%, #F0EFFE 100%)', padding: '20px' }}>
+      <div style={{ width: '50vw', maxWidth: '760px', minWidth: '360px', backgroundColor: '#fff', borderRadius: '16px', boxShadow: '0 4px 16px rgba(26, 14, 78, 0.08)', border: '1px solid #EDE8FB', padding: '22px' }}>
         <button
-          onClick={() => navigate('/sms/send')}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', border: 'none', backgroundColor: '#f0f0f0', borderRadius: '6px', padding: '8px 12px', cursor: 'pointer' }}
+          onClick={() => navigate('/dashboard')}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', border: 'none', backgroundColor: '#F5F3FF', borderRadius: '8px', padding: '8px 12px', cursor: 'pointer', color: '#5B3FA8', fontWeight: 600 }}
         >
           <FaArrowLeft /> Back
         </button>
 
-        <h3 style={{ marginTop: 0, color: '#111827' }}>Free Trial Messaging</h3>
+        <h3 style={{ marginTop: 0, color: '#1A0E4E' }}>Free Trial Messaging</h3>
         <p style={{ color: '#555', marginTop: '6px' }}>
-          Free trial allows only single-number messaging. Limit: <strong>{usage.total_limit || 3}</strong> messages.
+          Free trial now sends messages only to the mobile number used during signup. Limit: <strong>{usage.total_limit || 3}</strong> messages.
         </p>
 
         <div style={{ backgroundColor: '#f7f9fc', border: '1px solid #dfe7f2', borderRadius: '8px', padding: '10px', marginBottom: '12px', fontSize: '13px' }}>
@@ -284,124 +115,76 @@ export default function FreeTrialSMS() {
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px', marginBottom: '10px' }}>
-          <div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px', marginBottom: '8px' }}>
-              <input
-                type="tel"
-                value={recipientNumber}
-                onChange={(e) => {
-                  setRecipientNumber(e.target.value);
-                  setOtp('');
-                  setOtpStatus('');
-                  setLastOtpAttempt('');
-                  setSelectedNumber('');
-                  setOtpLiveLog([]);
-                  setOtpLiveStatus({
-                    trigger: 'idle',
-                    dispatch: 'idle',
-                    verify: 'idle',
-                    detail: 'Waiting for number entry',
-                  });
-                }}
-                placeholder="Enter number for OTP verification"
-                style={{ padding: '10px', border: '1px solid #ddd', borderRadius: '6px' }}
-              />
-              <button
-                type="button"
-                disabled={sendingOtp || freeTrialComplete}
-                onClick={handleSendOtp}
-                style={{ border: 'none', borderRadius: '6px', padding: '10px 14px', backgroundColor: sendingOtp ? '#ccc' : '#1976d2', color: '#fff', cursor: sendingOtp || freeTrialComplete ? 'not-allowed' : 'pointer' }}
-              >
-                {sendingOtp ? 'Sending...' : 'Send OTP'}
-              </button>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px', marginBottom: '14px' }}>
+          <div style={{ border: '1px solid #dbe5f0', borderRadius: '10px', padding: '14px', backgroundColor: '#fbfdff' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#1f4d8f', fontWeight: 700, marginBottom: '10px' }}>
+              <FaCheckCircle /> Allowed destination
+            </div>
+            <div style={{ fontSize: '13px', color: '#4b5563', marginBottom: '8px' }}>Your signup mobile number</div>
+            <input
+              type="text"
+              readOnly
+              value={signupNumber || ''}
+              placeholder="No mobile number found"
+              style={{ width: '100%', padding: '10px', border: '1px solid #d5d9e2', borderRadius: '6px', backgroundColor: '#f3f5f9' }}
+            />
+            <div style={{ marginTop: '8px', fontSize: '12px', color: '#6b7280' }}>
+              Free trial users cannot change the destination number.
             </div>
           </div>
 
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px', backgroundColor: '#f8fafc' }}>
-            <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#0f172a', marginBottom: '8px' }}>Live OTP Status</div>
-            <div style={{ display: 'grid', gap: '8px' }}>
-              {OTP_LIVE_STEPS.map((step) => (
-                <div key={step.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#334155' }}>
-                  {getStepIcon(otpLiveStatus[step.key])}
-                  <span>{step.label}</span>
-                </div>
-              ))}
+          <div style={{ border: '1px solid #efe6c8', borderRadius: '10px', padding: '14px', backgroundColor: '#fffaf0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#9a6700', fontWeight: 700, marginBottom: '10px' }}>
+              <FaLock /> Security rule
             </div>
-            <div style={{ marginTop: '8px', fontSize: '12px', color: '#475569' }}>
-              {otpLiveStatus.detail}
+            <div style={{ fontSize: '13px', color: '#6b7280', lineHeight: 1.5 }}>
+              OTP verification for arbitrary recipient numbers has been removed. The free trial can only deliver to the number tied to this account.
             </div>
-            {otpLiveLog.length > 0 && (
-              <div style={{ marginTop: '8px', borderTop: '1px solid #e2e8f0', paddingTop: '6px', maxHeight: '96px', overflowY: 'auto' }}>
-                {otpLiveLog.map((entry) => (
-                  <div key={entry} style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>
-                    {entry}
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
-        </div>
-
-        <input
-          type="text"
-          value={otp}
-          onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-          placeholder="Enter OTP (auto validates)"
-          disabled={!otpSent || freeTrialComplete}
-          style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: '6px', marginBottom: '6px' }}
-        />
-        <small style={{ color: verifyingOtp ? '#1565c0' : '#666' }}>{otpStatus || 'OTP validates automatically when 6 digits are entered.'}</small>
-
-        <div style={{ marginTop: '12px', marginBottom: '10px', fontSize: '13px', color: '#475569' }}>
-          Verified target number: <strong>{selectedNumber || 'Verify the entered number to continue'}</strong>
         </div>
 
         <div style={{ marginBottom: '12px' }}>
-          <label style={{ display: 'block', marginBottom: '6px', fontWeight: 'bold' }}>Message Content</label>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#111827' }}>Message content</label>
           <textarea
+            rows={5}
             value={messageContent}
-            onChange={(e) => setMessageContent(e.target.value.slice(0, 160))}
-            disabled={!canEditMessageFields}
-            placeholder="Type your free trial message"
-            style={{ width: '100%', minHeight: '90px', padding: '10px', border: '1px solid #ddd', borderRadius: '6px', resize: 'none', backgroundColor: canEditMessageFields ? '#fff' : '#f5f5f5' }}
+            onChange={e => setMessageContent(e.target.value.slice(0, 160))}
+            disabled={freeTrialComplete || !signupNumber}
+            placeholder="Type your message"
+            style={{ width: '100%', padding: '12px', border: '1px solid #d1d5db', borderRadius: '8px', resize: 'vertical', boxSizing: 'border-box' }}
           />
-          <small style={{ color: '#666' }}>{messageContent.length}/160</small>
+          <div style={{ marginTop: '6px', fontSize: '12px', color: '#6b7280', textAlign: 'right' }}>{messageContent.length}/160</div>
         </div>
+
+        {!signupNumber && (
+          <div style={{ backgroundColor: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', padding: '10px', borderRadius: '6px', marginBottom: '12px' }}>
+            {profile?.phone_number
+              ? 'Your signup number is unavailable right now. Refresh and try again.'
+              : 'Your profile does not have a signup mobile number yet. Add one in your profile to use free trial messaging.'}
+          </div>
+        )}
 
         <button
           type="button"
           onClick={handleSendFreeTrialSMS}
-          disabled={sendingSms || !canEditMessageFields || freeTrialComplete}
-          style={{ width: '100%', border: 'none', borderRadius: '6px', padding: '11px 14px', backgroundColor: sendingSms || !canEditMessageFields || freeTrialComplete ? '#ccc' : '#4caf50', color: '#fff', cursor: sendingSms || !canEditMessageFields || freeTrialComplete ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
+          disabled={sendingSms || freeTrialComplete || !signupNumber}
+          style={{
+            width: '100%',
+            border: 'none',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            backgroundColor: sendingSms || freeTrialComplete || !signupNumber ? '#cbd5e1' : '#0f766e',
+            color: '#fff',
+            cursor: sendingSms || freeTrialComplete || !signupNumber ? 'not-allowed' : 'pointer',
+            fontWeight: 700,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+          }}
         >
-          {sendingSms ? 'Sending...' : 'Send SMS'}
+          <FaPaperPlane /> {sendingSms ? 'Sending...' : 'Send Free Trial SMS'}
         </button>
-
-        <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #eee' }}>
-          <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px' }}>
-            <FaBolt style={{ marginRight: '6px' }} /> Upgrade for bulk options
-          </div>
-          <small style={{ display: 'block', color: '#666', marginBottom: '8px' }}>
-            Upgrade to use Upload Mobile Number File, Upload Personalized SMS Excel, and Group Messaging.
-          </small>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              type="button"
-              onClick={() => alert('Please contact admin to upgrade your SMS plan.')}
-              style={{ border: 'none', borderRadius: '6px', padding: '8px 12px', backgroundColor: '#ff9800', color: '#fff', cursor: 'pointer' }}
-            >
-              Upgrade
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate('/sms/history')}
-              style={{ border: '1px solid #ddd', borderRadius: '6px', padding: '8px 12px', backgroundColor: '#fff', cursor: 'pointer' }}
-            >
-              View History
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );

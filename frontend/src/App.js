@@ -8,6 +8,7 @@ import ResetPassword from './components/ResetPassword';
 import UserProfile from './components/UserProfile';
 import AdminUsers from './components/AdminUsers';
 import MainPage from './components/MainPage';
+import ApiDocsOverview from './components/ApiDocsOverview';
 
 // SMS components
 import SMSSend from './components/SMSSend';
@@ -118,12 +119,71 @@ function App() {
   return (
     <BrowserRouter>
       {!isLoggedIn && (
-        <nav style={{ padding: '10px', borderBottom: '1px solid #ccc' }}>
-          <Link to="/" style={{ marginRight: 10 }}>Home</Link>
-          <Link to="/signup" style={{ marginRight: 10 }}>Sign up</Link>
-          <Link to="/login" style={{ marginRight: 10 }}>Login</Link>
-        </nav>
+      <nav style={{
+        position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 32px', height: '64px',
+        background: 'linear-gradient(90deg, #1A0E4E 0%, #2D1B69 60%, #3D2B82 100%)',
+        boxShadow: '0 2px 16px rgba(26,14,78,0.45)',
+      }}>
+        {/* Brand */}
+        <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none' }}>
+          <div style={{
+            width: '36px', height: '36px',
+            background: 'linear-gradient(135deg, #7C5DC7, #5B3FA8)',
+            borderRadius: '10px',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: 'white', fontWeight: '800', fontSize: '13px',
+          }}>ABC</div>
+          <span style={{ color: 'white', fontWeight: '700', fontSize: '17px', letterSpacing: '0.3px' }}>ABC Company</span>
+        </Link>
+
+        {/* Nav links — top right */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Link to="/" style={{
+            color: 'rgba(255,255,255,0.85)', textDecoration: 'none',
+            padding: '7px 16px', borderRadius: '8px', fontSize: '14px', fontWeight: '500',
+            transition: 'background 0.2s',
+          }}
+            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >Home</Link>
+
+          {!isLoggedIn ? (
+            <>
+              <Link to="/signup" style={{
+                color: 'rgba(255,255,255,0.85)', textDecoration: 'none',
+                padding: '7px 16px', borderRadius: '8px', fontSize: '14px', fontWeight: '500',
+              }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >Sign Up</Link>
+              <Link to="/login" style={{
+                color: 'white', textDecoration: 'none',
+                padding: '7px 18px', borderRadius: '8px', fontSize: '14px', fontWeight: '600',
+                background: 'linear-gradient(135deg, #5B3FA8, #7C5DC7)',
+                boxShadow: '0 2px 10px rgba(91,63,168,0.45)',
+              }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >Login</Link>
+            </>
+          ) : (
+            <Link to="/dashboard" style={{
+              color: 'white', textDecoration: 'none',
+              padding: '7px 18px', borderRadius: '8px', fontSize: '14px', fontWeight: '600',
+              background: 'linear-gradient(135deg, #5B3FA8, #7C5DC7)',
+              boxShadow: '0 2px 10px rgba(91,63,168,0.45)',
+            }}
+              onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
+              onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+            >Go to Dashboard</Link>
+          )}
+        </div>
+      </nav>
       )}
+      {/* Spacer for fixed navbar */}
+      {!isLoggedIn && <div style={{ height: '64px' }} />}
       <Routes>
         <Route
           path="/signup"
@@ -140,9 +200,12 @@ function App() {
         <Route path="/forgot-password" element={wrapModule('Forgot Password', <ForgotPassword />)} />
         <Route path="/reset-password" element={wrapModule('Reset Password', <ResetPassword />)} />
         <Route path="/profile" element={privateRoute('Profile', <UserProfile />)} />
+        <Route path="/api-docs" element={wrapModule('API Docs', <ApiDocsOverview />)} />
         <Route path="/admin/users" element={adminRoute('Admin Users', <AdminUsers />)} />
-        <Route path="/dashboard" element={privateRoute('Dashboard', <DashboardLayout />)} />
-        
+        <Route path="/dashboard" element={privateRoute('Dashboard', <DashboardLayout page="dashboard" />)} />
+        <Route path="/dashboard/recharge" element={privateRoute('Recharge & Payments', <DashboardLayout page="recharge" />)} />
+        <Route path="/dashboard/contact-support" element={privateRoute('Contact Support', <DashboardLayout page="contactSupport" />)} />
+
         {/* SMS Routes */}
         <Route path="/sms/send" element={adminRoute('SMS Send', <SMSSend />)} />
         <Route path="/sms/free-trial" element={privateRoute('Free Trial SMS', <FreeTrialSMS />)} />

@@ -1,14 +1,44 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import API from '../api';
 import { useNavigate, Link } from 'react-router-dom';
 import { buildOtpDiagnostics, parseApiError } from '../errorHelpers';
+import { COUNTRY_CODES } from './countryCodes';
 
 export default function Signup() {
   const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', confirmPass: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [diagnostics, setDiagnostics] = useState(null);
+  const [countrySearch, setCountrySearch] = useState('');
+  const [showCountryPicker, setShowCountryPicker] = useState(false);
+  const [selectedCountry, setSelectedCountry] = useState(
+    () => COUNTRY_CODES.find(country => country.iso2 === 'IN') || COUNTRY_CODES[0]
+  );
+  const countryPickerRef = useRef(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const handleOutsideClick = event => {
+      if (countryPickerRef.current && !countryPickerRef.current.contains(event.target)) {
+        setShowCountryPicker(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const filteredCountries = useMemo(() => {
+    const query = countrySearch.trim().toLowerCase();
+    if (!query) {
+      return COUNTRY_CODES;
+    }
+
+    return COUNTRY_CODES.filter(country => {
+      const searchTarget = `${country.name} ${country.iso2} ${country.dialCode}`.toLowerCase();
+      return searchTarget.includes(query);
+    });
+  }, [countrySearch]);
 
   const handleSubmit = async e => {
     e.preventDefault();
@@ -30,8 +60,12 @@ export default function Signup() {
       return;
     }
 
-    if (form.phone.length < 10) {
-      setError('Phone number must be at least 10 digits');
+    const normalizedPhone = form.phone.replace(/\D/g, '');
+    const fullPhoneNumber = `${selectedCountry.dialCode}${normalizedPhone}`;
+    const totalDigits = fullPhoneNumber.replace(/\D/g, '').length;
+
+    if (totalDigits < 10 || totalDigits > 15) {
+      setError('Enter a valid mobile number with country code');
       return;
     }
 
@@ -42,7 +76,7 @@ export default function Signup() {
         first_name: form.name,
         username: form.email,
         email: form.email,
-        phone_number: form.phone,
+        phone_number: fullPhoneNumber,
         password: form.password,
       });
 
@@ -148,14 +182,94 @@ export default function Signup() {
           </div>
 
           <div style={fieldStyle}>
-            <label style={labelStyle}>Phone</label>
-            <input
-              type="tel" placeholder="10+ digits"
-              value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })}
-              disabled={loading} style={inputStyle}
-              onFocus={e => e.target.style.borderColor = '#7C5DC7'}
-              onBlur={e => e.target.style.borderColor = '#DDD4F8'}
-            />
+            <label style={labelStyle}>Mobile Number</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: '10px', alignItems: 'start' }}>
+              <div ref={countryPickerRef} style={{ position: 'relative' }}>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => setShowCountryPicker(prev => !prev)}
+                  style={{
+                    ...inputStyle,
+                    textAlign: 'left',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    backgroundColor: loading ? '#F5F3FF' : 'white',
+                    cursor: loading ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <span>{selectedCountry.dialCode} ({selectedCountry.iso2})</span>
+                  <span style={{ color: '#6B6B8A', fontSize: '12px' }}>▼</span>
+                </button>
+
+                {showCountryPicker && (
+                  <div style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 8px)',
+                    left: 0,
+                    right: 0,
+                    backgroundColor: 'white',
+                    border: '1px solid #DDD4F8',
+                    borderRadius: '12px',
+                    boxShadow: '0 18px 40px rgba(45,27,105,0.18)',
+                    padding: '10px',
+                    zIndex: 10,
+                  }}>
+                    <input
+                      type="text"
+                      placeholder="Search country or code"
+                      value={countrySearch}
+                      onChange={e => setCountrySearch(e.target.value)}
+                      style={{ ...inputStyle, marginBottom: '8px', padding: '9px 11px' }}
+                    />
+                    <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
+                      {filteredCountries.map(country => (
+                        <button
+                          key={`${country.iso2}-${country.dialCode}`}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCountry(country);
+                            setCountrySearch('');
+                            setShowCountryPicker(false);
+                          }}
+                          style={{
+                            width: '100%',
+                            border: 'none',
+                            background: country.iso2 === selectedCountry.iso2 && country.dialCode === selectedCountry.dialCode ? '#F5F2FF' : 'transparent',
+                            color: '#1A1A2E',
+                            padding: '9px 10px',
+                            borderRadius: '8px',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            fontSize: '13px',
+                          }}
+                        >
+                          {country.name} · {country.dialCode}
+                        </button>
+                      ))}
+                      {filteredCountries.length === 0 && (
+                        <div style={{ padding: '8px 10px', color: '#6B6B8A', fontSize: '13px' }}>No country code found</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <input
+                type="tel"
+                placeholder="Mobile number"
+                value={form.phone}
+                onChange={e => setForm({ ...form, phone: e.target.value.replace(/\D/g, '').slice(0, 12) })}
+                disabled={loading}
+                style={inputStyle}
+                onFocus={e => e.target.style.borderColor = '#7C5DC7'}
+                onBlur={e => e.target.style.borderColor = '#DDD4F8'}
+              />
+            </div>
+            <div style={{ marginTop: '6px', fontSize: '12px', color: '#6B6B8A' }}>
+              Your account will store {selectedCountry.dialCode} with this mobile number.
+            </div>
           </div>
 
           <div style={fieldStyle}>

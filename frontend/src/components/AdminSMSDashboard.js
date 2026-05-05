@@ -381,7 +381,7 @@ export default function AdminSMSDashboard() {
   }
 
   return (
-    <div className="admin-compact-panel" style={{ padding: '24px' }}>
+    <div className="admin-compact-panel dashboard-shell" style={{ padding: '24px' }}>
       <button
         onClick={() => navigate('/dashboard')}
         style={{
@@ -460,13 +460,13 @@ export default function AdminSMSDashboard() {
           onClick={() => setActiveTab('overview')}
           style={{
             padding: '12px 20px',
-            backgroundColor: activeTab === 'overview' ? '#6D4C41' : 'transparent',
+            backgroundColor: activeTab === 'overview' ? '#5B3FA8' : 'transparent',
             color: activeTab === 'overview' ? 'white' : '#333',
             border: 'none',
             cursor: 'pointer',
             fontSize: '16px',
             fontWeight: 'bold',
-            borderBottom: activeTab === 'overview' ? '3px solid #6D4C41' : 'none',
+            borderBottom: activeTab === 'overview' ? '3px solid #5B3FA8' : 'none',
           }}
         >
           Project Overview
@@ -475,13 +475,13 @@ export default function AdminSMSDashboard() {
           onClick={() => setActiveTab('users')}
           style={{
             padding: '12px 20px',
-            backgroundColor: activeTab === 'users' ? '#4CAF50' : 'transparent',
+            backgroundColor: activeTab === 'users' ? '#3949AB' : 'transparent',
             color: activeTab === 'users' ? 'white' : '#333',
             border: 'none',
             cursor: 'pointer',
             fontSize: '16px',
             fontWeight: 'bold',
-            borderBottom: activeTab === 'users' ? '3px solid #4CAF50' : 'none',
+            borderBottom: activeTab === 'users' ? '3px solid #3949AB' : 'none',
           }}
         >
           Users & SMS Eligibility
@@ -490,13 +490,13 @@ export default function AdminSMSDashboard() {
           onClick={() => setActiveTab('messages')}
           style={{
             padding: '12px 20px',
-            backgroundColor: activeTab === 'messages' ? '#2196F3' : 'transparent',
+            backgroundColor: activeTab === 'messages' ? '#6D4C41' : 'transparent',
             color: activeTab === 'messages' ? 'white' : '#333',
             border: 'none',
             cursor: 'pointer',
             fontSize: '16px',
             fontWeight: 'bold',
-            borderBottom: activeTab === 'messages' ? '3px solid #2196F3' : 'none',
+            borderBottom: activeTab === 'messages' ? '3px solid #6D4C41' : 'none',
           }}
         >
           Message History
@@ -507,14 +507,8 @@ export default function AdminSMSDashboard() {
       {hasAdminAccess && activeTab === 'overview' && (
         <div>
           <h3 style={{ marginBottom: '15px' }}>Complete Project Snapshot</h3>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-              gap: '12px',
-              marginBottom: '20px',
-            }}
-          >
+          <section className="metrics-section" style={{ marginBottom: '20px' }}>
+          <div className="admin-metrics-grid">
             {[
               ['Customers', overview.customerUsers],
               ['All Users', overview.totalUsers],
@@ -528,18 +522,14 @@ export default function AdminSMSDashboard() {
             ].map(([label, value]) => (
               <div
                 key={label}
-                style={{
-                  backgroundColor: 'white',
-                  borderRadius: '10px',
-                  padding: '14px 16px',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-                }}
+                className="admin-metric-card"
               >
                 <div style={{ fontSize: '12px', color: '#666', marginBottom: '6px' }}>{label}</div>
                 <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#111827' }}>{value}</div>
               </div>
             ))}
           </div>
+          </section>
 
           <div
             style={{

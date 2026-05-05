@@ -111,23 +111,23 @@ export default function UserProfile() {
       <div style={{
         background: 'white',
         borderRadius: '16px',
-        boxShadow: '0 10px 30px rgba(0,0,0,0.08)',
-        border: '1px solid #eceaf8',
+        boxShadow: '0 4px 16px rgba(26, 14, 78, 0.08)',
+        border: '1px solid #EDE8FB',
         overflow: 'hidden',
       }}>
-        <div style={{ padding: '18px 22px', borderBottom: '1px solid #f0eef8', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ padding: '18px 22px', borderBottom: '1px solid #F0EFFE', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <button
             onClick={() => navigate('/dashboard')}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
-              backgroundColor: '#f5f3ff',
+              backgroundColor: '#F5F3FF',
               border: 'none',
               padding: '8px 14px',
               borderRadius: '8px',
               cursor: 'pointer',
-              color: '#4b2f92',
+              color: '#5B3FA8',
               fontWeight: 600,
             }}
           >
@@ -140,8 +140,8 @@ export default function UserProfile() {
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
-              background: isDarkMode ? '#10203a' : '#ece8ff',
-              color: isDarkMode ? '#86d8ff' : '#352071',
+              background: isDarkMode ? '#1a0e4e' : '#F5F3FF',
+              color: isDarkMode ? '#A78BFA' : '#5B3FA8',
               border: 'none',
               padding: '8px 14px',
               borderRadius: '999px',
@@ -154,8 +154,8 @@ export default function UserProfile() {
         </div>
 
         <div style={{ padding: '24px 22px 26px' }}>
-          <h2 style={{ marginTop: 0, marginBottom: 4, color: '#1c1748' }}>Profile Settings</h2>
-          <p style={{ marginTop: 0, marginBottom: 20, color: '#6a6790', fontSize: 14 }}>
+          <h2 style={{ marginTop: 0, marginBottom: 4, color: '#1a0e4e' }}>Profile Settings</h2>
+          <p style={{ marginTop: 0, marginBottom: 20, color: '#6B6B8A', fontSize: 14 }}>
             Manage your personal information and sender ID preferences.
           </p>
 

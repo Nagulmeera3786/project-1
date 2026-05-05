@@ -715,9 +715,9 @@ export default function SMSSend() {
 
   if (!isAdmin) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f4f6f9', padding: '20px' }}>
-        <div style={{ width: '50vw', maxWidth: '680px', minWidth: '360px', backgroundColor: '#fff', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', padding: '24px', textAlign: 'center' }}>
-          <h3 style={{ marginTop: 0, color: '#111827' }}>Welcome New User</h3>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #F5F1FF 0%, #F0EFFE 100%)', padding: '20px' }}>
+        <div style={{ width: '50vw', maxWidth: '680px', minWidth: '360px', backgroundColor: '#fff', borderRadius: '16px', boxShadow: '0 4px 16px rgba(26, 14, 78, 0.08)', border: '1px solid #EDE8FB', padding: '24px', textAlign: 'center' }}>
+          <h3 style={{ marginTop: 0, color: '#1A0E4E' }}>Welcome New User</h3>
           <p style={{ color: '#555', marginBottom: '18px' }}>
             You currently have free trial access for SMS. Choose an option to continue.
           </p>
@@ -752,17 +752,19 @@ export default function SMSSend() {
           alignItems: 'center',
           gap: '8px',
           marginBottom: '20px',
-          backgroundColor: '#f0f0f0',
+          backgroundColor: '#F5F3FF',
           border: 'none',
           padding: '8px 15px',
-          borderRadius: '6px',
+          borderRadius: '8px',
           cursor: 'pointer',
+          color: '#5B3FA8',
+          fontWeight: 600,
         }}
       >
         <FaArrowLeft /> Back to Dashboard
       </button>
 
-      <h2 style={{ color: '#111827', marginBottom: '30px' }}>
+      <h2 style={{ color: '#1A0E4E', marginBottom: '30px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
           <span>
             <FaPaperPlane style={{ marginRight: '10px' }} />
@@ -777,8 +779,8 @@ export default function SMSSend() {
                 border: 'none',
                 borderRadius: '999px',
                 padding: '8px 14px',
-                backgroundColor: transport === 'api' ? '#1d4ed8' : 'transparent',
-                color: transport === 'api' ? '#fff' : '#1f2937',
+                backgroundColor: transport === 'api' ? '#5B3FA8' : 'transparent',
+                color: transport === 'api' ? '#fff' : '#4B4B6B',
                 cursor: 'pointer',
                 fontWeight: 'bold',
               }}
@@ -792,8 +794,8 @@ export default function SMSSend() {
                 border: 'none',
                 borderRadius: '999px',
                 padding: '8px 14px',
-                backgroundColor: transport === 'smpp' ? '#0f766e' : 'transparent',
-                color: transport === 'smpp' ? '#fff' : '#1f2937',
+                backgroundColor: transport === 'smpp' ? '#7C5DC7' : 'transparent',
+                color: transport === 'smpp' ? '#fff' : '#4B4B6B',
                 cursor: 'pointer',
                 fontWeight: 'bold',
               }}
