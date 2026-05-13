@@ -1,0 +1,38 @@
+# Dockerfile for React Frontend (Optional for Plesk deployment with Docker)
+# Build Stage
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# ─── Copy Package Files ────────────────────────────────────────
+COPY package.json package-lock.json ./
+
+# ─── Install Dependencies ─────────────────────────────────────
+RUN npm ci --no-audit --no-fund
+
+# ─── Copy Source ──────────────────────────────────────────────
+COPY . .
+
+# ─── Build Application ────────────────────────────────────────
+RUN npm run build
+
+# ─── Production Stage ─────────────────────────────────────────
+FROM node:20-alpine
+
+WORKDIR /app
+
+# ─── Install Serve Package ────────────────────────────────────
+RUN npm install -g serve
+
+# ─── Copy Built App ───────────────────────────────────────────
+COPY --from=builder /app/build ./build
+
+# ─── Create Non-Root User ─────────────────────────────────────
+RUN addgroup -g 1000 node && adduser -D -u 1000 -G node node && chown -R node:node /app
+USER node
+
+# ─── Expose Port ──────────────────────────────────────────────
+EXPOSE 3000
+
+# ─── Start Application ────────────────────────────────────────
+CMD ["serve", "-s", "build", "-l", "3000"]

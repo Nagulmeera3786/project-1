@@ -55,9 +55,11 @@ if allowed_hosts_env.strip():
         if item.strip()
     ]
 else:
-    # In DEBUG mode allow any host so `runserver 0.0.0.0:PORT` works on LAN/VMs.
-    # In production always set the ALLOWED_HOSTS env var explicitly.
-    ALLOWED_HOSTS = ['*'] if DEBUG else []
+    # Default to Plesk production domain when no env variable
+    if DEBUG:
+        ALLOWED_HOSTS = ['*']  # Allow any host in debug mode
+    else:
+        ALLOWED_HOSTS = ['bhisha.com', 'www.bhisha.com', 'localhost', '127.0.0.1']
 
 # Render exposes the public host via env vars; include it as a safety fallback.
 render_host = _env_text('RENDER_EXTERNAL_HOSTNAME') or _env_text('RENDER_PUBLIC_HOSTNAME')
