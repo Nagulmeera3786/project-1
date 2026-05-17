@@ -158,17 +158,7 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 ### 8. Database Configuration
 
-**Current SQLite Setup (for development):**
-```python
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
-```
-
-**For Production on Plesk, Consider PostgreSQL:**
+Use PostgreSQL for both development and production environments.
 
 If Plesk provides PostgreSQL (recommended):
 ```python
@@ -186,23 +176,9 @@ DATABASES = {
 
 In `.env`:
 ```
-DB_PASSWORD=your-secure-database-password
-```
-
-**Or keep SQLite but with proper permissions:**
-```python
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
-```
-
-Make sure to set proper file permissions:
-```bash
-chmod 644 backend/db.sqlite3
-chmod 755 backend/
+DATABASE_URL=postgresql://abc_user:your-secure-database-password@localhost:5432/abc_sms_db
+DB_CONN_MAX_AGE=60
+DB_SSLMODE=prefer
 ```
 
 ## 📝 Complete Plesk .env Template
@@ -221,13 +197,10 @@ ALLOWED_HOSTS=yourdomain.com,www.yourdomain.com
 CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
 CSRF_TRUSTED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
 
-# ─── Database (if using PostgreSQL on Plesk) ──────────────
-DB_ENGINE=django.db.backends.postgresql
-DB_NAME=abc_sms_db
-DB_USER=abc_user
-DB_PASSWORD=your-secure-database-password
-DB_HOST=localhost
-DB_PORT=5432
+# ─── Database (PostgreSQL) ───────────────────────────────
+DATABASE_URL=postgresql://abc_user:your-secure-database-password@localhost:5432/abc_sms_db
+DB_CONN_MAX_AGE=60
+DB_SSLMODE=prefer
 
 # ─── Email Configuration (if using Plesk Mail) ────────────
 EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend

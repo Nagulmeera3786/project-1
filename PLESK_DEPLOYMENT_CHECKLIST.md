@@ -148,7 +148,7 @@ git clone https://github.com/yourusername/yourrepo.git
 - [ ] Check Plesk error logs
 - [ ] Verify `.env` file exists with correct values
 - [ ] Run: `python manage.py check`
-- [ ] Verify database file permissions: `chmod 644 db.sqlite3`
+- [ ] Verify PostgreSQL connectivity and credentials (`DATABASE_URL` or `DB_*`)
 
 ### If Static Files Don't Load
 - [ ] Run: `python manage.py collectstatic --noinput`

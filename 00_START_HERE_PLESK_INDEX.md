@@ -146,7 +146,7 @@ Your Domain: yourdomain.com
         ├─ /admin/ → Django admin
         └─ /static/ → Static files
         ↓
-    SQLite Database (or PostgreSQL)
+   PostgreSQL Database
 ```
 
 ---
@@ -263,7 +263,7 @@ Guide on which files to remove and keep, with file structure reference.
 - **Monitoring ready** - Logs accessible via Plesk
 - **Backup compatible** - Works with Plesk backup system
 - **SSL/HTTPS ready** - Let's Encrypt integration
-- **Database agnostic** - Works with SQLite, PostgreSQL, MySQL
+- **Database ready** - Configured for PostgreSQL
 
 ---
 

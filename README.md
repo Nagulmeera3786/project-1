@@ -58,24 +58,17 @@ EMAIL_FROM=your_email@gmail.com
 EMAIL_VERIFY_CERTS=True
 EMAIL_ALLOW_INSECURE_FALLBACK=True
 
-# Database (local development default)
-DB_ENGINE=django.db.backends.sqlite3
-DB_NAME=db.sqlite3
+# Database (PostgreSQL)
+DATABASE_URL=postgresql://user:password@127.0.0.1:5432/abc_sms
+DB_CONN_MAX_AGE=60
+DB_SSLMODE=prefer
 
-# Production (recommended: managed PostgreSQL)
-# DATABASE_URL=postgresql://user:password@host:5432/database
-# DB_CONN_MAX_AGE=60
-# DB_SSLMODE=require
-
-# Optional MySQL override
-# DB_ENGINE=django.db.backends.mysql
+# Optional explicit PostgreSQL fields when DATABASE_URL is not used
 # DB_NAME=abc_sms
-# DB_USER=root
+# DB_USER=postgres
 # DB_PASSWORD=change-me
 # DB_HOST=127.0.0.1
-# DB_PORT=3306
-# DB_CONN_MAX_AGE=60
-# DB_CHARSET=utf8mb4
+# DB_PORT=5432
 
 # CORS (optional)
 # CORS_ALLOWED_ORIGINS=http://localhost:3000,https://your-frontend-domain
@@ -97,7 +90,7 @@ For frontend API routing in deployment, set one of:
 
 If no frontend API environment variables are set in a production build, the app raises a configuration error by default to prevent silent misrouting. Set `REACT_APP_ALLOW_PRODUCTION_API_FALLBACK=true` only if you intentionally want same-origin fallback `/api/auth/`.
 
-The local `backend/.env`, `frontend/.env`, and `backend/db.sqlite3` files are ignored by git and should not be committed.
+The local `backend/.env` and `frontend/.env` files are ignored by git and should not be committed.
 
 Anything committed to git is potentially public. Never place real credentials in tracked files, markdown examples, or `REACT_APP_*` variables.
 
@@ -105,7 +98,7 @@ Anything committed to git is potentially public. Never place real credentials in
 
 - Backend static files are served with WhiteNoise; run `python manage.py collectstatic --noinput` during deployment.
 - Set `DEBUG=False` and explicit `ALLOWED_HOSTS` in production.
-- Use managed PostgreSQL in production for persistent user/account data. SQLite is for local development only.
+- Use PostgreSQL for all environments and keep credentials in environment variables.
 - Set `CSRF_TRUSTED_ORIGINS=https://your-domain` for any HTTPS domain that serves the frontend.
 - If frontend and backend are deployed on different domains, also set `CORS_ALLOWED_ORIGINS=https://your-frontend-domain`.
 - Use `GET /healthz/` as deployment health check endpoint.
@@ -140,37 +133,17 @@ cd frontend && npm run build
 
 Enjoy the fullstack setup!
 
-## Optional MySQL Migration Steps (from existing SQLite data)
+## PostgreSQL Migration Notes
 
-If you already have data in SQLite and want to move to MySQL:
-
-1. Install MySQL 8.x and create database/user.
-2. Keep `backend/.env` on SQLite just for export:
-   ```bash
-   # temporary SQLite mode for export only
-   DB_ENGINE=django.db.backends.sqlite3
-   DB_NAME=db.sqlite3
-   ```
-3. Export SQLite data:
-   ```bash
-   python backend/manage.py dumpdata --natural-foreign --natural-primary -e contenttypes -e auth.Permission > data.json
-   ```
-4. Update `backend/.env` with MySQL values.
-5. Install/update Python packages:
-   ```bash
-   pip install -r backend/requirements.txt
-   ```
-6. Run migrations on MySQL:
+1. Provision a PostgreSQL database and capture its connection string.
+2. Set `DATABASE_URL`, `DB_CONN_MAX_AGE`, and `DB_SSLMODE` in environment variables.
+3. Run migrations:
    ```bash
    python backend/manage.py migrate
    ```
-7. Import data into MySQL:
+4. Import existing JSON fixture data if needed:
    ```bash
    python backend/manage.py loaddata data.json
-   ```
-8. Create admin user if needed:
-   ```bash
-   python backend/manage.py createsuperuser
    ```
 
 ## Windows PowerShell Fix For `loaddata data.json` UTF-8 Error
@@ -218,7 +191,7 @@ python manage.py loaddata data.json
    ```powershell
    python manage.py migrate
    ```
-7. Import old data (if migrating from SQLite):
+7. Import old data (if needed):
    ```powershell
    python manage.py loaddata data.json
    ```

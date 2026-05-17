@@ -88,7 +88,6 @@ Press `CTRL+X`, then `Y`, then `Enter` to save.
 ```bash
 # 7. Set file permissions (security)
 chmod 600 .env
-chmod 644 db.sqlite3
 chmod 755 ../
 
 # 8. Run database migrations
@@ -194,8 +193,8 @@ python manage.py showmigrations
 # Run specific migration
 python manage.py migrate accounts 0001
 
-# Create database backup
-cp db.sqlite3 db.sqlite3.backup
+# Test PostgreSQL connectivity from Django config
+python manage.py dbshell -c '\\conninfo'
 
 # Clear cache
 python manage.py clear_cache
@@ -228,8 +227,8 @@ source venv/bin/activate
 # Update Python packages
 pip install --upgrade -r requirements.txt
 
-# Create backup before updates
-cp db.sqlite3 db.sqlite3.backup
+# Create PostgreSQL backup before updates
+pg_dump "$DATABASE_URL" > backup_$(date +%Y%m%d).sql
 
 # Apply migrations after updates
 python manage.py migrate
@@ -252,9 +251,6 @@ deactivate
 # Make .env readable only by owner (security)
 chmod 600 /path/to/backend/.env
 
-# Make database world-readable but not writable
-chmod 644 /path/to/backend/db.sqlite3
-
 # Make staticfiles directory accessible
 chmod 755 /path/to/backend/staticfiles
 
@@ -268,7 +264,7 @@ sudo chown -R www-data:www-data /path/to/backend
 
 ```bash
 # Backup database
-cp /path/to/backend/db.sqlite3 /path/to/backend/db.sqlite3.$(date +%Y%m%d)
+pg_dump "$DATABASE_URL" > /path/to/backend/backup_$(date +%Y%m%d).sql
 
 # Backup static files
 tar -czf staticfiles-backup.tar.gz /path/to/backend/staticfiles/
@@ -278,7 +274,7 @@ cp /path/to/backend/.env /path/to/backend/.env.backup
 chmod 600 /path/to/backend/.env.backup
 
 # Restore database
-cp /path/to/backend/db.sqlite3.20260507 /path/to/backend/db.sqlite3
+psql "$DATABASE_URL" < /path/to/backend/backup_20260507.sql
 
 # Restore static files
 tar -xzf staticfiles-backup.tar.gz -C /path/to/backend/

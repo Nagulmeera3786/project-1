@@ -103,7 +103,9 @@ DEBUG=False
 ALLOWED_HOSTS=$DOMAIN,www.$DOMAIN,$VPS_IP
 CORS_ALLOWED_ORIGINS=https://$DOMAIN,https://www.$DOMAIN
 CSRF_TRUSTED_ORIGINS=https://$DOMAIN,https://www.$DOMAIN
-ALLOW_SQLITE_IN_PRODUCTION=True
+DATABASE_URL=postgresql://postgres:change-me@127.0.0.1:5432/abc_sms
+DB_CONN_MAX_AGE=60
+DB_SSLMODE=prefer
 
 # Email settings — fill in your Gmail or IONOS credentials
 # EMAIL_USER=your-email@gmail.com

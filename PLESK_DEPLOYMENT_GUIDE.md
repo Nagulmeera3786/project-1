@@ -97,9 +97,12 @@ DEBUG = False
 # Configure database
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        # Or use PostgreSQL/MySQL provided by Plesk
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'abc_sms_db',
+        'USER': 'abc_user',
+        'PASSWORD': 'your-secure-database-password',
+        'HOST': 'localhost',
+        'PORT': '5432',
     }
 }
 
@@ -124,7 +127,7 @@ Add the following:
 DEBUG=False
 SECRET_KEY=your-very-long-random-secret-key-here
 ALLOWED_HOSTS=yourdomain.com,www.yourdomain.com
-DATABASE_URL=sqlite:///db.sqlite3
+DATABASE_URL=postgresql://abc_user:your-secure-database-password@localhost:5432/abc_sms_db
 CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
 ```
 
@@ -240,16 +243,11 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://yourdomain.com/ap
 
 ## Step 8: Database Setup
 
-### 8.1 For SQLite (Current Setup)
-Database file will be created automatically on first run.
-
-### 8.2 For PostgreSQL/MySQL (Better for production)
-If using PostgreSQL or MySQL via Plesk:
+### 8.1 PostgreSQL Setup (Recommended)
+If using PostgreSQL via Plesk:
 ```bash
 # Install adapter
 pip install psycopg2-binary  # For PostgreSQL
-# or
-pip install mysqlclient  # For MySQL
 
 # Update settings.py with database credentials
 # Then run migrations
@@ -280,7 +278,7 @@ python manage.py createsuperuser
 ### Django Returns 500 Error
 - Check Plesk logs: **Logs** → **Error & Access Logs**
 - Verify `.env` file exists and has correct values
-- Check database permissions: `chmod 644 db.sqlite3`
+- Verify PostgreSQL connectivity and credentials
 - Run migrations: `python manage.py migrate`
 
 ### React Routes Return 404

@@ -198,7 +198,7 @@ Before deploying, ensure:
 - [ ] `ALLOWED_HOSTS` set to your domain(s)
 - [ ] `.env` file created on server (NOT in git)
 - [ ] `.env` file permissions: `chmod 600 .env`
-- [ ] Database file permissions: `chmod 644 db.sqlite3`
+- [ ] PostgreSQL credentials verified (`DATABASE_URL` or `DB_*`)
 - [ ] HTTPS/SSL enabled in Plesk
 - [ ] CORS origins restricted to your domain
 - [ ] CSRF trusted origins configured

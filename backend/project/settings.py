@@ -117,8 +117,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'project.wsgi.application'
 
-db_engine = _env_text('DB_ENGINE', 'django.db.backends.sqlite3')
-db_name_default = str(BASE_DIR / 'db.sqlite3') if db_engine == 'django.db.backends.sqlite3' else 'abc_sms'
 database_url = _env_text('DATABASE_URL', '')
 
 
@@ -126,37 +124,27 @@ def _database_config_from_url(raw_url):
     parsed = urlparse(raw_url)
     scheme = (parsed.scheme or '').lower()
 
-    # Normalize database URL schemes from managed providers.
-    if scheme in ('postgres', 'postgresql', 'postgresql+psycopg2'):
-        engine = 'django.db.backends.postgresql'
-    elif scheme in ('mysql', 'mysql2'):
-        engine = 'django.db.backends.mysql'
-    elif scheme == 'sqlite':
-        engine = 'django.db.backends.sqlite3'
-    else:
+    if scheme not in ('postgres', 'postgresql', 'postgresql+psycopg2'):
         raise ImproperlyConfigured(
-            f"Unsupported DATABASE_URL scheme '{scheme}'. Supported: postgres, mysql, sqlite"
+            f"Unsupported DATABASE_URL scheme '{scheme}'. Supported: postgres"
         )
 
-    if engine == 'django.db.backends.sqlite3':
-        sqlite_path = unquote(parsed.path or '').lstrip('/') or str(BASE_DIR / 'db.sqlite3')
-        return {
-            'ENGINE': engine,
-            'NAME': sqlite_path,
-        }
-
     db_name = unquote((parsed.path or '').lstrip('/'))
+    if not db_name:
+        raise ImproperlyConfigured('DATABASE_URL must include a PostgreSQL database name.')
+
     config = {
-        'ENGINE': engine,
+        'ENGINE': 'django.db.backends.postgresql',
         'NAME': db_name,
         'USER': unquote(parsed.username or ''),
         'PASSWORD': unquote(parsed.password or ''),
         'HOST': parsed.hostname or '',
-        'PORT': str(parsed.port or ''),
+        'PORT': str(parsed.port or '5432'),
+        'CONN_MAX_AGE': int(_env_text('DB_CONN_MAX_AGE', 60)),
     }
 
     query = parse_qs(parsed.query or '')
-    sslmode = query.get('sslmode', [None])[0] or _env_text('DB_SSLMODE', '')
+    sslmode = query.get('sslmode', [None])[0] or _env_text('DB_SSLMODE', 'require' if not DEBUG else 'prefer')
     if sslmode:
         config['OPTIONS'] = {'sslmode': sslmode}
 
@@ -164,43 +152,30 @@ def _database_config_from_url(raw_url):
 
 if database_url:
     DATABASES = {'default': _database_config_from_url(database_url)}
-elif db_engine == 'django.db.backends.sqlite3':
-    DATABASES = {
-        'default': {
-            'ENGINE': db_engine,
-            'NAME': _env_text('DB_NAME', db_name_default),
-        }
-    }
 else:
+    db_name = _env_text('DB_NAME', 'abc_sms')
+    db_user = _env_text('DB_USER', '')
+    db_password = _env_text('DB_PASSWORD', '')
+    db_host = _env_text('DB_HOST', '127.0.0.1')
+    db_port = _env_text('DB_PORT', '5432')
+
+    if not db_name:
+        raise ImproperlyConfigured('Set DB_NAME or DATABASE_URL for PostgreSQL configuration.')
+
     DATABASES = {
         'default': {
-            'ENGINE': db_engine,
-            'NAME': _env_text('DB_NAME', db_name_default),
-            'USER': _env_text('DB_USER', 'root'),
-            'PASSWORD': _env_text('DB_PASSWORD', ''),
-            'HOST': _env_text('DB_HOST', '127.0.0.1'),
-            'PORT': _env_text('DB_PORT', '3306'),
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': db_name,
+            'USER': db_user,
+            'PASSWORD': db_password,
+            'HOST': db_host,
+            'PORT': db_port,
+            'CONN_MAX_AGE': int(_env_text('DB_CONN_MAX_AGE', 60)),
         }
     }
 
-if db_engine == 'django.db.backends.mysql':
-    DATABASES['default']['OPTIONS'] = {
-        'charset': _env_text('DB_CHARSET', 'utf8mb4'),
-    }
-    DATABASES['default']['CONN_MAX_AGE'] = int(_env_text('DB_CONN_MAX_AGE', 60))
-
-if DATABASES['default']['ENGINE'] in ('django.db.backends.postgresql', 'django.db.backends.mysql'):
-    DATABASES['default']['CONN_MAX_AGE'] = int(_env_text('DB_CONN_MAX_AGE', 60))
-
-if not DEBUG and DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
-    DATABASES['default'].setdefault('OPTIONS', {})
-    DATABASES['default']['OPTIONS'].setdefault('sslmode', _env_text('DB_SSLMODE', 'require'))
-
-if not DEBUG and DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3' and not _env_bool('ALLOW_SQLITE_IN_PRODUCTION', False):
-    raise ImproperlyConfigured(
-        'SQLite is disabled in production by default. Use a managed database '
-        'or set ALLOW_SQLITE_IN_PRODUCTION=True with a persistent disk.'
-    )
+DATABASES['default'].setdefault('OPTIONS', {})
+DATABASES['default']['OPTIONS'].setdefault('sslmode', _env_text('DB_SSLMODE', 'require' if not DEBUG else 'prefer'))
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -418,4 +393,20 @@ SMS_DEFAULT_SENDER_IDS = [
     for sender_id in _env_text('SMS_DEFAULT_SENDER_IDS', '').split(',')
     if sender_id.strip()
 ]
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'django.db.backends': {
+            'level': 'DEBUG',
+            'handlers': ['console'],
+        },
+    },
+}
 

@@ -197,7 +197,7 @@ If everything breaks:
 ```bash
 # 1. Delete database
 cd c:\ABC\Project\backend
-del db.sqlite3
+python manage.py flush --noinput
 
 # 2. Migrate fresh
 python manage.py migrate

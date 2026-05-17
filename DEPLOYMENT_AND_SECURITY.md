@@ -4,7 +4,6 @@
 
 - `backend/.env` is local-only and ignored by git.
 - `frontend/.env` is local-only and ignored by git.
-- `backend/db.sqlite3` is local-only and ignored by git.
 - Placeholder files such as `backend/.env.example` and `frontend/.env.example` are safe to push.
 
 If a secret is only present in `backend/.env`, it will not appear on GitHub unless you force-add it, paste it into source code, include it in logs, or previously committed it in another repository.
@@ -19,7 +18,7 @@ Anything committed into the repository is visible to anyone who can access that 
 
 ## Pre-Deployment Checklist
 
-1. Confirm `backend/.env`, `frontend/.env`, and `backend/db.sqlite3` are ignored.
+1. Confirm `backend/.env` and `frontend/.env` are ignored.
 2. Set production values for `SECRET_KEY`, `DEBUG=False`, `ALLOWED_HOSTS`, and `CSRF_TRUSTED_ORIGINS`.
 3. Keep backend-only credentials in server environment variables, not in frontend code.
 4. Run backend checks and tests.
@@ -84,8 +83,7 @@ CORS_ALLOW_CREDENTIALS=False
 ```
 
 Production note:
-- Do not use SQLite for Render production unless you attach a persistent disk and explicitly set `ALLOW_SQLITE_IN_PRODUCTION=True`.
-- Best practice is a managed PostgreSQL instance (Render PostgreSQL) because user auth data must survive restarts and redeployments.
+- Use managed PostgreSQL (Render PostgreSQL or provider equivalent) because user auth data must survive restarts and redeployments.
 
 Deployment steps:
 

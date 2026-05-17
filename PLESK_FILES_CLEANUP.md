@@ -54,7 +54,6 @@ frontend/                             # React app
   package.json                        # Dependencies ✅
   build/                              # Production build (generated) ✅
   src/                                # Source code ✅
-db.sqlite3                            # Database ✅
 ```
 
 ## New Files Added for Plesk
@@ -120,7 +119,6 @@ ABC/Project/
 │   ├── wsgi.ini                           ✅ NEW - Plesk app server config
 │   ├── gunicorn.conf.py                   ✅ NEW - Gunicorn config
 │   ├── Dockerfile                         ✅ NEW - Docker support (optional)
-│   ├── db.sqlite3                         ✅ Keep (or use PostgreSQL on Plesk)
 │   ├── project/
 │   │   ├── settings.py                    ✅ EDIT for Plesk domain
 │   │   ├── wsgi.py                        ✅ Keep
@@ -162,7 +160,7 @@ ABC/Project/
 ## Important Notes
 
 - **Do NOT commit `.env` to git** - Plesk will store it securely
-- **SQLite (`db.sqlite3`) may not be ideal for Plesk production** - Consider using PostgreSQL/MySQL provided by Plesk
+- **PostgreSQL is recommended for Plesk production**
 - **Update `ALLOWED_HOSTS` in `settings.py`** with your actual domain
 - **Test locally first** using `docker-compose up` before deploying to Plesk
 - **Enable HTTPS** in Plesk using Let's Encrypt (free SSL)

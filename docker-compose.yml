@@ -5,6 +5,20 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16
+    container_name: django-abc-postgres
+    environment:
+      - POSTGRES_DB=abc_sms
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
   backend:
     build:
       context: ./backend
@@ -16,7 +30,11 @@ services:
       - DEBUG=True
       - SECRET_KEY=dev-secret-key-for-docker-testing
       - ALLOWED_HOSTS=localhost,127.0.0.1
-      - DATABASE_URL=sqlite:///db.sqlite3
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/abc_sms
+      - DB_CONN_MAX_AGE=60
+      - DB_SSLMODE=disable
+    depends_on:
+      - postgres
     volumes:
       - ./backend:/app
     command: gunicorn project.wsgi:application --bind 0.0.0.0:8000 --reload
@@ -42,3 +60,6 @@ services:
 networks:
   app-network:
     driver: bridge
+
+volumes:
+  postgres-data:

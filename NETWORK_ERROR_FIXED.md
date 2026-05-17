@@ -49,7 +49,7 @@ display_sender_id = models.CharField(max_length=50)        # No conflict
 
 ### Step 5: Reset Database
 ```bash
-rm db.sqlite3        # Delete old database
+python manage.py flush --noinput  # Reset data in the configured database
 python manage.py migrate  # Create fresh with correct schema
 python setup_sms.py  # Recreate admin user
 ```
