@@ -25,12 +25,12 @@ const Layout = ({ page = "dashboard" }) => {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white', fontWeight: '800', fontSize: '14px',
             letterSpacing: '0.5px', flexShrink: 0,
-          }}>ABC</div>
+          }}></div>
           <div style={{
             fontSize: '17px', fontWeight: '700',
             color: '#2D1B69', letterSpacing: '0.3px',
           }}>
-            ABC Company
+            Company
           </div>
         </div>
         {/* TOP RIGHT MENU — RIGHT (Notifications, API Docs, Profile) */}

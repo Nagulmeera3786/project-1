@@ -10,6 +10,9 @@ class PrimaryAdminOnlyMiddleware:
 
     def __call__(self, request):
         path = request.path or ''
+        if not getattr(settings, 'PRIMARY_ADMIN_ENFORCEMENT', not getattr(settings, 'DEBUG', False)):
+            return self.get_response(request)
+
         if path.startswith('/admin') and request.user.is_authenticated:
             primary_admin_email = str(getattr(settings, 'PRIMARY_ADMIN_EMAIL', '') or '').strip().lower()
             request_email = str(getattr(request.user, 'email', '') or '').strip().lower()

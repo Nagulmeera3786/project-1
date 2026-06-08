@@ -143,19 +143,15 @@ const LeftSidebar = () => {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white', fontWeight: '800', fontSize: '11px', letterSpacing: '0.5px',
           }}>
-            ABC
+            B
           </div>
           {isOpen && (
-            <div className="company-name">ABC Company</div>
+            <div className="company-name">Bhisha</div>
           )}
         </div>
         <button className="toggle-btn" onClick={() => setIsOpen(!isOpen)} title={isOpen ? 'Collapse' : 'Expand'}>
           <span className="toggle-glyph" aria-hidden="true">
-            <span className="toggle-glyph-dots">
-              <span />
-              <span />
-              <span />
-            </span>
+            
             <span className="toggle-glyph-lines">
               <span />
               <span />

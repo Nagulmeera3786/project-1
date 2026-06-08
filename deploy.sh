@@ -10,7 +10,7 @@
 
 set -e  # Stop on any error
 
-APP_DIR="/srv/mainpanel"
+APP_DIR="/var/www/vhosts/bhisha.com/project-1"
 REPO_URL=""          # Filled automatically — see STEP 0 below
 DOMAIN=""            # You will be asked to enter this
 VENV="$APP_DIR/backend/venv"
@@ -70,7 +70,7 @@ fi
 echo ""
 echo "[5/10] Cloning project from GitHub..."
 mkdir -p $APP_DIR
-chown -R deploy:deploy /srv/mainpanel
+chown -R deploy:deploy $APP_DIR
 
 if [ -d "$APP_DIR/.git" ]; then
     echo "Repo already cloned. Pulling latest..."

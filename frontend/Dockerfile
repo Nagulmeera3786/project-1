@@ -4,6 +4,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Default single-domain production routing for bhisha.com.
+ARG REACT_APP_USE_SAME_ORIGIN_API=true
+ENV REACT_APP_USE_SAME_ORIGIN_API=${REACT_APP_USE_SAME_ORIGIN_API}
+
 # ─── Copy Package Files ────────────────────────────────────────
 COPY package.json package-lock.json ./
 

@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from datetime import timedelta
 from urllib.parse import parse_qs, unquote, urlparse
@@ -176,6 +177,16 @@ else:
 
 DATABASES['default'].setdefault('OPTIONS', {})
 DATABASES['default']['OPTIONS'].setdefault('sslmode', _env_text('DB_SSLMODE', 'require' if not DEBUG else 'prefer'))
+
+# Prefer SQLite for local test runs to avoid requiring PostgreSQL CREATE DATABASE privileges.
+RUNNING_TESTS = any(arg in ('test', 'pytest') for arg in sys.argv)
+if RUNNING_TESTS and _env_bool('USE_SQLITE_FOR_TESTS', DEBUG):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': str(BASE_DIR / 'test_db.sqlite3'),
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -380,6 +391,7 @@ AUTH_USER_MODEL = 'accounts.User'
 
 # Primary admin user to auto-grant elevated access
 PRIMARY_ADMIN_EMAIL = os.environ.get('PRIMARY_ADMIN_EMAIL', 'noreply@smshandover.com').strip().lower()
+PRIMARY_ADMIN_ENFORCEMENT = _env_bool('PRIMARY_ADMIN_ENFORCEMENT', not DEBUG)
 
 # SMS provider fallback credentials (use backend/.env for confidential values)
 SMS_PROVIDER_USER = _env_text('SMS_PROVIDER_USER', '')

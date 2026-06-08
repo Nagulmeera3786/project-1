@@ -1,6 +1,6 @@
 export const DASHBOARD_LABELS = {
   welcomePrefix: 'Hi',
-  welcomeCompany: 'ABC Company',
+  welcomeCompany: 'Company',
   performanceTitle: 'User Performance',
   whatsappTitle: 'WhatsApp Business',
   whatsappDescription: 'Reach customers instantly and boost engagement using WhatsApp.',

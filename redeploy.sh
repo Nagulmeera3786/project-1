@@ -2,14 +2,24 @@
 # =============================================================================
 # redeploy.sh — Run this every time you push new code to GitHub
 # Usage:
-#   cd /srv/mainpanel
+#   cd /var/www/vhosts/bhisha.com/project-1
 #   bash redeploy.sh
 # =============================================================================
 
 set -e
 
-APP_DIR="/srv/mainpanel"
+APP_DIR="/var/www/vhosts/bhisha.com/project-1"
 VENV="$APP_DIR/backend/venv"
+
+if [ ! -d "$APP_DIR" ]; then
+	APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+	VENV="$APP_DIR/backend/venv"
+fi
+
+FRONTEND_TARGET_DIR="/var/www/vhosts/bhisha.com/httpdocs"
+if [ ! -d "$FRONTEND_TARGET_DIR" ]; then
+	FRONTEND_TARGET_DIR="/var/www/mainpanel"
+fi
 
 echo ""
 echo "================================"
@@ -49,8 +59,8 @@ cd $APP_DIR/frontend
 npm install --silent
 REACT_APP_USE_SAME_ORIGIN_API=true npm run build
 
-sudo rsync -a --delete $APP_DIR/frontend/build/ /var/www/mainpanel/
-sudo chown -R www-data:www-data /var/www/mainpanel
+sudo rsync -a --delete $APP_DIR/frontend/build/ "$FRONTEND_TARGET_DIR"/
+sudo chown -R www-data:www-data "$FRONTEND_TARGET_DIR"
 echo "Frontend updated."
 
 # ── Reload Nginx ──────────────────────────────────────────────────────────────

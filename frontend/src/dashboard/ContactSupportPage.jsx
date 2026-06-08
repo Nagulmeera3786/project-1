@@ -4,27 +4,27 @@ import { FaEnvelope, FaPhoneAlt, FaWhatsapp, FaGlobe, FaClock } from "react-icon
 const contactCards = [
   {
     title: "Email Support",
-    detail: "support@abccompany.com",
+    detail: "info@smshandover.com",
     note: "Best for account, billing, and technical issues.",
     icon: <FaEnvelope />,
     actionLabel: "Send Email",
-    action: () => window.open("mailto:support@abccompany.com", "_self"),
+    action: () => window.open("mailto:info@smshandover.com", "_self"),
   },
   {
     title: "Phone Support",
-    detail: "+91 90000 00000",
+    detail: "+91 9848682327",
     note: "Priority voice support for urgent service concerns.",
     icon: <FaPhoneAlt />,
     actionLabel: "Call Now",
-    action: () => window.open("tel:+919000000000", "_self"),
+    action: () => window.open("tel:+919848682327", "_self"),
   },
   {
     title: "WhatsApp Support",
-    detail: "+91 90000 00000",
+    detail: "+91 9848682327",
     note: "Quick assistance for follow-ups and status updates.",
     icon: <FaWhatsapp />,
     actionLabel: "Open WhatsApp",
-    action: () => window.open("https://wa.me/919000000000", "_blank", "noopener,noreferrer"),
+    action: () => window.open("https://wa.me/919848682327", "_blank", "noopener,noreferrer"),
   },
   {
     title: "Global Availability",
