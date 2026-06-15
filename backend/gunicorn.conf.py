@@ -33,7 +33,7 @@ proc_name = 'django-abc'
 
 # ─── Server Mechanics ─────────────────────────────────────────
 daemon = False
-pidfile = '/run/gunicorn/django-abc.pid'
+pidfile = None
 umask = 0
 user = None
 group = None
