@@ -31,8 +31,8 @@ RUN npm install -g serve
 # ─── Copy Built App ───────────────────────────────────────────
 COPY --from=builder /app/build ./build
 
-# ─── Create Non-Root User ─────────────────────────────────────
-RUN addgroup -g 1000 node && adduser -D -u 1000 -G node node && chown -R node:node /app
+# ─── Use Existing Non-Root User ───────────────────────────────
+RUN chown -R node:node /app
 USER node
 
 # ─── Expose Port ──────────────────────────────────────────────
