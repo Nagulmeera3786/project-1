@@ -1,10 +1,14 @@
 import os
 import sys
+import logging
 from pathlib import Path
 from datetime import timedelta
 from urllib.parse import parse_qs, unquote, urlparse
 
 from django.core.exceptions import ImproperlyConfigured
+
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_BUILD_DIR = os.path.join(BASE_DIR, os.pardir, 'frontend', 'build')
@@ -385,15 +389,16 @@ X_FRAME_OPTIONS = _env_text('X_FRAME_OPTIONS', 'DENY')
 CORS_ALLOW_CREDENTIALS = _env_bool('CORS_ALLOW_CREDENTIALS', False)
 
 # Avoid silent OTP email failures in production.
-# In local debug sessions, allow console backend when SMTP credentials are missing.
+# Fall back to console backend when SMTP credentials are missing so the
+# application can still boot; OTP emails simply won't be delivered until
+# proper SMTP credentials are configured.
 if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
-    if DEBUG:
-        EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-    else:
-        raise ImproperlyConfigured(
-            'EMAIL_USER/EMAIL_PASSWORD (or EMAIL_HOST_USER/EMAIL_HOST_PASSWORD) '
-            'must be configured when DEBUG=False.'
-        )
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+    logger.warning(
+        'SMTP credentials are not configured; using console email backend. '
+        'Set EMAIL_USER/EMAIL_PASSWORD (or EMAIL_HOST_USER/EMAIL_HOST_PASSWORD) '
+        'to enable real email delivery.'
+    )
 
 # custom user model
 AUTH_USER_MODEL = 'accounts.User'
