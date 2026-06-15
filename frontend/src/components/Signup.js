@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import API from '../api';
 import { useNavigate, Link } from 'react-router-dom';
-import { buildOtpDiagnostics, parseApiError } from '../errorHelpers';
+import { parseApiError } from '../errorHelpers';
 import { COUNTRY_CODES } from './countryCodes';
 
 export default function Signup() {
   const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', confirmPass: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [diagnostics, setDiagnostics] = useState(null);
+  const [showBufferingImage, setShowBufferingImage] = useState(false);
   const [countrySearch, setCountrySearch] = useState('');
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState(
@@ -43,7 +43,7 @@ export default function Signup() {
   const handleSubmit = async e => {
     e.preventDefault();
     setError('');
-    setDiagnostics(null);
+    setShowBufferingImage(false);
 
     if (!form.name || !form.email || !form.phone || !form.password || !form.confirmPass) {
       setError('All fields are required');
@@ -87,16 +87,15 @@ export default function Signup() {
         window.location.href = '/dashboard';
       } else {
         if (response.data?.email_sent === false) {
-          setError(response.data?.detail || 'OTP generated but email sending failed.');
-          setDiagnostics(buildOtpDiagnostics(response?.data));
+          setShowBufferingImage(true);
           return;
         }
         navigate(`/verify-otp?email=${encodeURIComponent(form.email)}`, { state: { email: form.email } });
       }
     } catch (err) {
       const parsed = parseApiError(err, 'Signup failed. Please try again.');
-      setError(parsed.message);
-      setDiagnostics(parsed.diagnostics);
+      setShowBufferingImage(Boolean(parsed.isBuffering));
+      setError(parsed.isBuffering ? '' : parsed.message);
     } finally {
       setLoading(false);
     }
@@ -145,16 +144,19 @@ export default function Signup() {
           }}>{error}</div>
         )}
 
-        {diagnostics && (
+        {showBufferingImage && (
           <div style={{
-            color: '#92400E', marginBottom: '16px', padding: '12px 14px',
-            backgroundColor: '#FFF7ED', borderRadius: '8px',
-            fontSize: '12px', border: '1px solid #FED7AA',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}>
-            {diagnostics.errorCode && <div><strong>Error:</strong> {diagnostics.errorCode}</div>}
-            {diagnostics.provider && <div><strong>Email Provider:</strong> {diagnostics.provider}</div>}
-            {diagnostics.host && <div><strong>SMTP Host:</strong> {diagnostics.host}</div>}
-            {diagnostics.nextStep && <div><strong>Next Step:</strong> {diagnostics.nextStep}</div>}
+            <img
+              src="/buffering.svg"
+              alt=""
+              aria-hidden="true"
+              style={{ width: '64px', height: '64px' }}
+            />
           </div>
         )}
 
