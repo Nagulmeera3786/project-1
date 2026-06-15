@@ -95,6 +95,12 @@ const requestTimeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? p
 const allowSameOriginFallbackForBhisha = isProductionBuild && isBhishaDomainBrowserHost;
 
 const resolvedBaseUrl = (() => {
+  // On production bhisha domain, always use nginx same-origin API proxy.
+  // This avoids broken builds where explicit env points to loopback or :8000.
+  if (isProductionBuild && isBhishaDomainBrowserHost) {
+    return '/api/auth/';
+  }
+
   if (runtimeConfigBaseUrl) {
     return runtimeConfigBaseUrl;
   }
