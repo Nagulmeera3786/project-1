@@ -373,7 +373,14 @@ EMAIL_HOST_PASSWORD   = (
     or _env_secret('EMAIL_PASSWORD', 'EMAIL_HOST_PASSWORD')
 )
 
-DEFAULT_FROM_EMAIL         = _env_text('EMAIL_FROM', 'no-reply@example.com')
+_configured_email_from = _env_text('EMAIL_FROM', '')
+if _configured_email_from:
+    DEFAULT_FROM_EMAIL = _configured_email_from
+elif _email_provider == 'ionos' and EMAIL_HOST_USER:
+    # IONOS SMTP commonly rejects messages when FROM doesn't match authenticated mailbox.
+    DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+else:
+    DEFAULT_FROM_EMAIL = 'no-reply@example.com'
 EMAIL_SSL_CERTFILE         = _env_text('EMAIL_SSL_CERTFILE') or None
 EMAIL_SSL_KEYFILE          = _env_text('EMAIL_SSL_KEYFILE') or None
 EMAIL_VERIFY_CERTS         = _env_bool('EMAIL_VERIFY_CERTS', True)
