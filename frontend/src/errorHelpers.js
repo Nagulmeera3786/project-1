@@ -13,7 +13,6 @@ const statusReasonMap = {
 };
 
 const genericBusyMessage = 'Server is busy, please try again later.';
-const backendBufferingMessage = 'Buffering...';
 
 export const buildOtpDiagnostics = (data) => {
   if (!data || typeof data !== 'object') {
@@ -43,13 +42,15 @@ export const parseApiError = (err, fallbackMessage) => {
     return {
       message: genericBusyMessage,
       diagnostics: null,
+      isBuffering: false,
     };
   }
 
   if (!response) {
     return {
-      message: backendBufferingMessage,
+      message: '',
       diagnostics: null,
+      isBuffering: true,
     };
   }
 
@@ -57,6 +58,7 @@ export const parseApiError = (err, fallbackMessage) => {
     return {
       message: data.detail.trim(),
       diagnostics: buildOtpDiagnostics(data),
+      isBuffering: false,
     };
   }
 
@@ -80,6 +82,7 @@ export const parseApiError = (err, fallbackMessage) => {
       return {
         message: pairs.join(' | '),
         diagnostics: buildOtpDiagnostics(data),
+        isBuffering: false,
       };
     }
   }
@@ -88,7 +91,8 @@ export const parseApiError = (err, fallbackMessage) => {
   const shouldMaskServerAvailability = [502, 503, 504].includes(Number(status));
   const reason = shouldMaskServerAvailability ? genericBusyMessage : (statusReasonMap[status] || fallback);
   return {
-    message: shouldMaskServerAvailability ? genericBusyMessage : `HTTP ${status}: ${reason}`,
-    diagnostics: buildOtpDiagnostics(data),
+    message: shouldMaskServerAvailability ? '' : `HTTP ${status}: ${reason}`,
+    diagnostics: shouldMaskServerAvailability ? null : buildOtpDiagnostics(data),
+    isBuffering: shouldMaskServerAvailability,
   };
 };

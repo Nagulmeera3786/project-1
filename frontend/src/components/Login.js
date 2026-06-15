@@ -9,6 +9,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [diagnostics, setDiagnostics] = useState(null);
+  const [showBufferingImage, setShowBufferingImage] = useState(false);
   const nav = useNavigate();
 
   const submit = async () => {
@@ -20,6 +21,7 @@ export default function Login() {
     setLoading(true);
     setError('');
     setDiagnostics(null);
+    setShowBufferingImage(false);
 
     try {
       const res = await API.post('login/', { email, password });
@@ -57,8 +59,9 @@ export default function Login() {
       }
 
       const parsed = parseApiError(err, 'Login failed. Please try again.');
-      setError(parsed.message);
-      setDiagnostics(parsed.diagnostics);
+      setShowBufferingImage(Boolean(parsed.isBuffering));
+      setError(parsed.isBuffering ? '' : parsed.message);
+      setDiagnostics(parsed.isBuffering ? null : parsed.diagnostics);
     } finally {
       setLoading(false);
     }
@@ -100,6 +103,22 @@ export default function Login() {
             backgroundColor: '#FFF0F0', borderRadius: '8px',
             fontSize: '13.5px', border: '1px solid #FCA5A5',
           }}>{error}</div>
+        )}
+
+        {showBufferingImage && (
+          <div style={{
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}>
+            <img
+              src="/buffering.svg"
+              alt=""
+              aria-hidden="true"
+              style={{ width: '64px', height: '64px' }}
+            />
+          </div>
         )}
 
         {diagnostics && (
