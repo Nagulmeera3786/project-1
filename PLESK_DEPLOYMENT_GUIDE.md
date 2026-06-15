@@ -161,7 +161,7 @@ location / {
 }
 
 location /api/ {
-    proxy_pass http://127.0.0.1:8000;
+    proxy_pass http://unix:/run/mainpanel.sock;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -169,11 +169,16 @@ location /api/ {
 }
 
 location /admin/ {
-    proxy_pass http://127.0.0.1:8000;
+    proxy_pass http://unix:/run/mainpanel.sock;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location /healthz/ {
+    proxy_pass http://unix:/run/mainpanel.sock;
+    proxy_set_header Host $host;
 }
 
 location /static/ {
@@ -181,13 +186,15 @@ location /static/ {
 }
 ```
 
+If you prefer a TCP upstream instead of a Unix socket, only use `proxy_pass http://127.0.0.1:8000;` after confirming your app server is actually bound there. A mismatch between Nginx upstream and the running Gunicorn bind target causes `502 Bad Gateway` immediately.
+
 ## Step 6: Start Django Application Server
 
 ### 6.1 Using Gunicorn (Recommended)
 ```bash
 cd /path/to/backend
 source venv/bin/activate
-gunicorn project.wsgi:application --bind 127.0.0.1:8000 --workers 4
+gunicorn project.wsgi:application --bind unix:/run/mainpanel.sock --workers 4
 ```
 
 ### 6.2 Using Waitress
@@ -209,12 +216,14 @@ Type=notify
 User=www-data
 WorkingDirectory=/path/to/backend
 Environment="PATH=/path/to/backend/venv/bin"
-ExecStart=/path/to/backend/venv/bin/gunicorn project.wsgi:application --bind 127.0.0.1:8000 --workers 4
+ExecStart=/path/to/backend/venv/bin/gunicorn project.wsgi:application --bind unix:/run/mainpanel.sock --workers 4
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+If you keep the systemd service on `127.0.0.1:8000`, your Nginx config must use the same TCP upstream. Do not mix the socket-based Nginx config above with a TCP-bound Gunicorn service.
 
 Then:
 ```bash

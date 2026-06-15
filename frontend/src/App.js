@@ -18,6 +18,7 @@ import AdminSMSDashboard from './components/AdminSMSDashboard';
 import AdminSMSCredentials from './components/AdminSMSCredentials';
 import AdminNotifications from './components/AdminNotifications';
 import UserNotifications from './components/UserNotifications';
+import EmailValidation from './components/EmailValidation';
 
 // dashboard components imported from the integrated Main_Panel
 import DashboardLayout from './dashboard/Layout';
@@ -57,7 +58,11 @@ function App() {
       try {
         const response = await API.get('profile/');
         if (mounted) {
-          setIsAdmin(Boolean(response.data?.is_primary_admin));
+          setIsAdmin(Boolean(
+            response.data?.is_primary_admin ||
+            response.data?.is_staff ||
+            response.data?.is_superuser
+          ));
         }
       } catch {
         if (mounted) {
@@ -134,8 +139,8 @@ function App() {
             borderRadius: '10px',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white', fontWeight: '800', fontSize: '13px',
-          }}>ABC</div>
-          <span style={{ color: 'white', fontWeight: '700', fontSize: '17px', letterSpacing: '0.3px' }}>ABC Company</span>
+          }}>BHI</div>
+          <span style={{ color: 'white', fontWeight: '700', fontSize: '17px', letterSpacing: '0.3px' }}>Bhisha</span>
         </Link>
 
         {/* Nav links — top right */}
@@ -216,6 +221,7 @@ function App() {
           element={adminRoute('Admin SMS Credentials', <AdminSMSCredentials />)}
         />
         <Route path="/admin/notifications" element={adminRoute('Admin Notifications', <AdminNotifications />)} />
+        <Route path="/broadcast/email-validation" element={privateRoute('Email Validation', <EmailValidation />)} />
         <Route path="/notifications" element={privateRoute('User Notifications', <UserNotifications />)} />
         
         <Route path="/" element={wrapModule('Home', <MainPage />)} />

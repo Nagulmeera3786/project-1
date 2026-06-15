@@ -128,6 +128,11 @@ class SMSSendSerializer(serializers.Serializer):
     smpp_data_coding = serializers.IntegerField(required=False, min_value=0, max_value=255, default=0, write_only=True)
     smpp_registered_delivery = serializers.BooleanField(required=False, default=True, write_only=True)
 
+    destination_country = serializers.ChoiceField(choices=['IN', 'OTHER'], default='OTHER', required=False)
+    dlt_template_id = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    dlt_entity_id = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    dlt_telemarketer_id = serializers.CharField(max_length=100, required=False, allow_blank=True)
+
     def _validate_api_sender_id(self, value):
         sender_id = (value or '').strip()
         if not sender_id:
@@ -208,11 +213,34 @@ class SMSSendSerializer(serializers.Serializer):
                     raise serializers.ValidationError({field_name: message})
 
             smpp_profile = attrs.get('smpp_profile') or 'standard'
-            if smpp_profile == 'dlt' and not str(attrs.get('smpp_template_id') or '').strip():
+            configured_template_id = str(getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip()
+            if smpp_profile == 'dlt' and not str(attrs.get('smpp_template_id') or '').strip() and not configured_template_id:
                 raise serializers.ValidationError({'smpp_template_id': 'Template ID is required for DLT SMPP sending'})
 
             if delivery_mode == 'scheduled':
                 raise serializers.ValidationError({'delivery_mode': 'Scheduled delivery is not supported for SMPP sends'})
+
+        destination_country = attrs.get('destination_country') or 'OTHER'
+        if destination_country == 'IN':
+            configured_template_id = str(getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip()
+            configured_entity_id = str(getattr(settings, 'SMS_DLT_ENTITY_ID', '') or '').strip()
+            configured_telemarketer_id = str(getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip()
+
+            required_dlt_fields = {
+                'dlt_template_id': 'Template ID is required for Indian numbers',
+                'dlt_entity_id': 'Entity ID is required for Indian numbers',
+                'dlt_telemarketer_id': 'Telemarketer ID is required for Indian numbers',
+            }
+
+            configured_defaults = {
+                'dlt_template_id': configured_template_id,
+                'dlt_entity_id': configured_entity_id,
+                'dlt_telemarketer_id': configured_telemarketer_id,
+            }
+
+            for field_name, message in required_dlt_fields.items():
+                if not str(attrs.get(field_name) or '').strip() and not configured_defaults[field_name]:
+                    raise serializers.ValidationError({field_name: message})
 
         return attrs
 

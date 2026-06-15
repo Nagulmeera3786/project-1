@@ -12,6 +12,12 @@ export default function SMSSend() {
   const [manualSenderId, setManualSenderId] = useState('');
   const [messageContent, setMessageContent] = useState('');
   const [smsType, setSmsType] = useState('transactional');
+  const [destinationCountry, setDestinationCountry] = useState('OTHER');
+  const [dltFields, setDltFields] = useState({
+    templateId: '',
+    entityId: '',
+    telemarketerId: '',
+  });
   const [recipientNumber, setRecipientNumber] = useState('');
   const [recipientUserId, setRecipientUserId] = useState('');
   const [sendMode, setSendMode] = useState('single');
@@ -412,6 +418,13 @@ export default function SMSSend() {
     }));
   };
 
+  const handleDltChange = (field, value) => {
+    setDltFields((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+  };
+
   const handleFileChange = (event) => {
     const file = event.target.files?.[0];
     setFileError('');
@@ -595,6 +608,13 @@ export default function SMSSend() {
     payload.append('sms_type', smsType);
     payload.append('send_mode', sendMode);
     payload.append('delivery_mode', deliveryMode);
+    payload.append('destination_country', destinationCountry);
+
+    if (destinationCountry === 'IN') {
+      payload.append('dlt_template_id', dltFields.templateId.trim());
+      payload.append('dlt_entity_id', dltFields.entityId.trim());
+      payload.append('dlt_telemarketer_id', dltFields.telemarketerId.trim());
+    }
 
     if (isSmppTransport) {
       payload.append('smpp_profile', smppProfile);
@@ -1029,6 +1049,50 @@ export default function SMSSend() {
             <option value="promotional">Promotional</option>
             <option value="service">Service</option>
           </select>
+        </div>
+
+        <div style={{ marginBottom: '20px', border: '1px solid #eee', borderRadius: '8px', padding: '14px' }}>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+            Destination Country
+          </label>
+          <select
+            value={destinationCountry}
+            onChange={(e) => setDestinationCountry(e.target.value)}
+            style={{ width: '240px', padding: '10px 12px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '14px' }}
+          >
+            <option value="OTHER">Other Countries</option>
+            <option value="IN">India</option>
+          </select>
+
+          {destinationCountry === 'IN' && (
+            <div style={{ marginTop: '12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+              <input
+                type="text"
+                value={dltFields.templateId}
+                onChange={(e) => handleDltChange('templateId', e.target.value)}
+                placeholder="Template ID *"
+                style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: '6px' }}
+              />
+              <input
+                type="text"
+                value={dltFields.entityId}
+                onChange={(e) => handleDltChange('entityId', e.target.value)}
+                placeholder="Entity ID *"
+                style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: '6px' }}
+              />
+              <input
+                type="text"
+                value={dltFields.telemarketerId}
+                onChange={(e) => handleDltChange('telemarketerId', e.target.value)}
+                placeholder="Telemarketer ID *"
+                style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: '6px' }}
+              />
+            </div>
+          )}
+
+          <small style={{ color: '#666', display: 'block', marginTop: '8px' }}>
+            For India traffic, DLT identifiers are mandatory. If left empty here, backend will use configured .env defaults.
+          </small>
         </div>
 
         <div style={{ marginBottom: '20px' }}>

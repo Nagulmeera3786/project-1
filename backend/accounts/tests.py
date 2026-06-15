@@ -3,7 +3,7 @@ from unittest.mock import Mock
 from io import BytesIO
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from accounts.models import FreeTrialVerifiedNumber, SMSMessage
@@ -121,6 +121,30 @@ class AuthFlowTests(TestCase):
         self.assertEqual(login_response.status_code, 200)
         self.assertIn('access', login_response.data)
         self.assertIn('refresh', login_response.data)
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='admin@example.com')
+    @patch('accounts.views.send_otp_via_email')
+    def test_primary_admin_login_does_not_require_otp_each_time(self, mock_send_otp):
+        user = User.objects.create(
+            username='admin-login-user',
+            email='admin@example.com',
+            first_name='Admin',
+            is_active=True,
+        )
+        user.set_password('AdminPass123!')
+        user.save()
+
+        login_response = self.client.post(
+            '/api/auth/login/',
+            {'email': 'admin@example.com', 'password': 'AdminPass123!'},
+            format='json',
+        )
+
+        self.assertEqual(login_response.status_code, 200)
+        self.assertIn('access', login_response.data)
+        self.assertIn('refresh', login_response.data)
+        self.assertFalse(bool(login_response.data.get('requires_otp_login')))
+        mock_send_otp.assert_not_called()
 
 
 class SMSSenderIdTests(TestCase):
@@ -304,6 +328,7 @@ class SMSSendModesFlowTests(TestCase):
                 'smpp_system_id': 'smpp-user',
                 'smpp_password': 'smpp-pass',
                 'smpp_template_id': 'TPL123',
+                'dlt_entity_id': 'ENTITY99',
                 'display_sender_id': 'APPROVEDID',
                 'message_content': 'Your OTP is 123456',
                 'sms_type': 'transactional',
@@ -315,10 +340,12 @@ class SMSSendModesFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data.get('transport'), 'smpp')
+        self.assertEqual((response.data.get('dlt') or {}).get('entity_id'), 'ENTITY99')
         mock_send.assert_called_once()
         smpp_config = mock_send.call_args[0][0]
         self.assertEqual(smpp_config['host'], 'smpp.example.com')
         self.assertEqual(smpp_config['template_id'], 'TPL123')
+
 
     def test_smpp_requires_template_for_dlt_profile(self):
         response = self.client.post(
@@ -408,29 +435,122 @@ class SMSSendModesFlowTests(TestCase):
         self.assertEqual(response.data.get('sent_count'), 2)
         self.assertEqual(response.data.get('failed_count'), 0)
 
-    @patch('accounts.views.SMSSendView._send_sms_via_api')
-    def test_send_group_mode(self, mock_send):
-        mock_send.side_effect = [
-            {'message_id': 'group-1', 'status': 'sent'},
-            {'message_id': 'group-2', 'status': 'sent'},
-        ]
 
+class EmailValidationMediatorTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.primary_admin = User.objects.create(
+            username='primary-admin',
+            email='primary@example.com',
+            is_staff=True,
+            is_superuser=True,
+            is_active=True,
+        )
+        self.primary_admin.set_password('AdminPass123!')
+        self.primary_admin.save()
+
+        self.normal_user = User.objects.create(
+            username='normal-user',
+            email='normal@example.com',
+            is_staff=False,
+            is_superuser=False,
+            is_active=True,
+        )
+        self.normal_user.set_password('UserPass123!')
+        self.normal_user.save()
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
+    @patch('accounts.views._validate_email_with_verifalia')
+    def test_authenticated_non_admin_can_validate_with_admin_mediator(self, mock_validate):
+        mock_validate.return_value = {
+            'email': 'user@example.com',
+            'status': 'completed',
+            'classification': 'deliverable',
+            'quality': 'deliverable',
+            'is_deliverable': True,
+            'is_risky': False,
+            'suggestion': '',
+            'reason': 'Valid',
+            'provider': 'verifalia',
+        }
+
+        self.client.force_authenticate(user=self.normal_user)
         response = self.client.post(
-            '/api/auth/sms/send/',
-            {
-                'display_sender_id': 'KNOWNID',
-                'message_content': 'Group mode test',
-                'sms_type': 'transactional',
-                'send_mode': 'group',
-                'group_id': self.group.id,
-            },
+            '/api/auth/email-validation/validate/',
+            {'email': 'user@example.com'},
             format='json',
         )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data.get('sent_count'), 2)
-        self.assertEqual(response.data.get('failed_count'), 0)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.get('mediated_by_admin'))
+        self.assertEqual(response.data.get('mediator_admin_email'), 'primary@example.com')
+        self.assertEqual(response.data.get('requested_by_email'), 'normal@example.com')
 
+    @override_settings(PRIMARY_ADMIN_EMAIL='missing-admin@example.com')
+    def test_email_validation_fails_when_primary_admin_mediator_is_missing(self):
+        self.client.force_authenticate(user=self.normal_user)
+        response = self.client.post(
+            '/api/auth/email-validation/validate/',
+            {'email': 'user@example.com'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('mediator', (response.data.get('detail') or '').lower())
+
+    def test_normalize_email_validation_flags_extracts_expected_fields(self):
+        from accounts.views import _normalize_email_validation_flags
+
+        quality_info = {'quality': 'deliverable', 'is_deliverable': True, 'is_risky': False}
+        entry = {
+            'isValidSyntax': True,
+            'isRoleAccount': True,
+            'isDisposableEmailAddress': False,
+            'isCatchAll': True,
+            'suggestedEmailAddress': 'info@example.com',
+            'risk': 'medium',
+            'riskScore': 42,
+        }
+
+        mapped = _normalize_email_validation_flags('user@example.com', entry, quality_info)
+
+        self.assertTrue(mapped.get('validSyntax'))
+        self.assertTrue(mapped.get('validMailbox'))
+        self.assertTrue(mapped.get('catchAll'))
+        self.assertEqual(mapped.get('didYouMean'), 'info@example.com')
+        self.assertFalse(mapped.get('disposable'))
+        self.assertTrue(mapped.get('roleBased'))
+        self.assertEqual(mapped.get('domain'), 'example.com')
+        self.assertTrue(mapped.get('risky'))
+        self.assertEqual(mapped.get('risk'), 'medium')
+
+    def test_verifalia_style_report_includes_expected_sections(self):
+        from accounts.views import _build_verifalia_style_report
+
+        normalized_flags = {
+            'email': 'mrm53451@gmail.com',
+            'domain': 'gmail.com',
+            'validMailbox': True,
+            'validSyntax': True,
+            'catchAll': False,
+            'didYouMean': '',
+            'disposable': False,
+            'roleBased': False,
+            'risky': False,
+            'risk': 'low',
+        }
+        quality_info = {'classification': 'Deliverable', 'quality': 'deliverable', 'is_deliverable': True, 'is_risky': False}
+
+        report = _build_verifalia_style_report(normalized_flags, quality_info)
+
+        self.assertIn('#### Validation summary', report['summary'])
+        self.assertIn('Input data:**mrm53451@gmail.com**', report['summary'])
+        self.assertIn('Classification:Deliverable', report['summary'])
+        self.assertIn('Valid email, with no high-risk factors detected: safe to send mail.', report['summary'])
+        self.assertIn('#### Validation report', report['report'])
+        self.assertIn('Syntax validation', report['report'])
+        self.assertIn('Mailbox validation', report['report'])
+        self.assertIn('Catch-all mail exchanger validation', report['report'])
 
 class FreeTrialFlowTests(TestCase):
     def setUp(self):

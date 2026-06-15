@@ -71,6 +71,24 @@ def _primary_admin_guard(request):
     return Response({'detail': 'Primary admin access required'}, status=status.HTTP_403_FORBIDDEN)
 
 
+def _get_primary_admin_mediator():
+    primary_email = str(getattr(settings, 'PRIMARY_ADMIN_EMAIL', '') or '').strip()
+    if not primary_email:
+        return None
+
+    return (
+        User.objects
+        .filter(
+            email__iexact=primary_email,
+            is_active=True,
+            is_staff=True,
+            is_superuser=True,
+        )
+        .order_by('-id')
+        .first()
+    )
+
+
 def _promote_primary_admin(user):
     if _is_primary_admin_email(user.email):
         changed = False
@@ -391,6 +409,443 @@ def _get_balance_candidate_urls(provider_config):
     return []
 
 
+def _is_indian_number(number):
+    digits = _normalize_phone_number(number)
+    if not digits:
+        return False
+    if len(digits) == 10 and digits.startswith(('6', '7', '8', '9')):
+        return True
+    if len(digits) == 12 and digits.startswith('91'):
+        return True
+    return False
+
+
+def _map_verifalia_quality(classification, status_text=''):
+    normalized = str(classification or '').strip().lower()
+    normalized_status = str(status_text or '').strip().lower()
+
+    if normalized in ['deliverable', 'safe']:
+        return {
+            'quality': 'deliverable',
+            'is_deliverable': True,
+            'is_risky': False,
+        }
+
+    if normalized in ['undeliverable', 'invalid']:
+        return {
+            'quality': 'invalid',
+            'is_deliverable': False,
+            'is_risky': False,
+        }
+
+    if normalized in ['risky', 'unknown'] or normalized_status in ['inprogress', 'waiting', 'queued']:
+        return {
+            'quality': 'risky',
+            'is_deliverable': False,
+            'is_risky': True,
+        }
+
+    return {
+        'quality': 'unknown',
+        'is_deliverable': False,
+        'is_risky': True,
+    }
+
+
+def _extract_verifalia_entry(result_payload):
+    entries = []
+    if isinstance(result_payload, dict):
+        if isinstance(result_payload.get('entries'), list):
+            entries = result_payload.get('entries')
+        elif isinstance(result_payload.get('data', {}).get('entries'), list):
+            entries = result_payload.get('data', {}).get('entries')
+
+    return entries[0] if entries else {}
+
+
+def _lookup_value_from_nested_dict(payload, candidate_keys):
+    if not isinstance(payload, dict):
+        return None
+
+    queue = [payload]
+    lowered_candidates = [str(key or '').strip().lower() for key in candidate_keys if str(key or '').strip()]
+
+    while queue:
+        current = queue.pop(0)
+        if not isinstance(current, dict):
+            continue
+
+        lowered_map = {str(k).strip().lower(): v for k, v in current.items()}
+        for candidate in lowered_candidates:
+            if candidate in lowered_map:
+                value = lowered_map[candidate]
+                if value not in [None, '']:
+                    return value
+
+        for value in current.values():
+            if isinstance(value, dict):
+                queue.append(value)
+
+    return None
+
+
+def _to_bool_or_none(value):
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ['true', '1', 'yes', 'y']:
+            return True
+        if normalized in ['false', '0', 'no', 'n']:
+            return False
+
+    return None
+
+
+def _normalize_email_validation_flags(email, entry, quality_info):
+    normalized_email = str(email or '').strip().lower()
+    domain = normalized_email.split('@', 1)[1] if '@' in normalized_email else ''
+    suggested_email = str(
+        _lookup_value_from_nested_dict(entry, ['suggestedemailaddress', 'suggestion', 'didyoumean']) or ''
+    ).strip()
+
+    valid_syntax = _to_bool_or_none(
+        _lookup_value_from_nested_dict(
+            entry,
+            ['isvalidsyntax', 'validsyntax', 'hassyntaxvalidity', 'issyntaxvalid', 'syntaxisvalid'],
+        )
+    )
+    if valid_syntax is None:
+        syntax_failure = _to_bool_or_none(
+            _lookup_value_from_nested_dict(entry, ['issyntaxfailure', 'syntaxfailure', 'hassyntaxfailure'])
+        )
+        if syntax_failure is not None:
+            valid_syntax = not syntax_failure
+
+    if valid_syntax is None:
+        valid_syntax = bool('@' in str(email or ''))
+
+    valid_mailbox = _to_bool_or_none(
+        _lookup_value_from_nested_dict(
+            entry,
+            [
+                'isvalidmailbox',
+                'validmailbox',
+                'ismailboxvalid',
+                'hasvalidmailbox',
+                'isdeliverable',
+                'deliverable',
+            ],
+        )
+    )
+    if valid_mailbox is None:
+        valid_mailbox = bool(quality_info.get('is_deliverable'))
+
+    catch_all = _to_bool_or_none(
+        _lookup_value_from_nested_dict(entry, ['iscatchall', 'catchall', 'iscatchallmailbox', 'iscatchalladdress'])
+    )
+    if catch_all is None:
+        catch_all = False
+
+    disposable = _to_bool_or_none(
+        _lookup_value_from_nested_dict(
+            entry,
+            ['isdisposable', 'disposable', 'isdisposableemailaddress', 'isdisposableaddress'],
+        )
+    )
+    if disposable is None:
+        disposable = False
+
+    role_based = _to_bool_or_none(
+        _lookup_value_from_nested_dict(entry, ['isrolebased', 'rolebased', 'isroleaccount', 'isrolerelated'])
+    )
+    if role_based is None:
+        role_based = False
+
+    risk_value = _lookup_value_from_nested_dict(entry, ['risk', 'risklevel', 'risklabel'])
+    risk_score = _lookup_value_from_nested_dict(entry, ['riskscore', 'risk_score', 'score'])
+
+    risk = str(risk_value or '').strip().lower()
+    if not risk:
+        if quality_info.get('quality') == 'deliverable':
+            risk = 'low'
+        elif quality_info.get('quality') == 'invalid':
+            risk = 'none'
+        elif quality_info.get('quality') == 'risky':
+            risk = 'high'
+        else:
+            risk = 'unknown'
+
+    return {
+        'email': normalized_email,
+        'domain': domain,
+        'validSyntax': bool(valid_syntax),
+        'validMailbox': bool(valid_mailbox),
+        'catchAll': bool(catch_all),
+        'didYouMean': suggested_email,
+        'disposable': bool(disposable),
+        'roleBased': bool(role_based),
+        'risky': bool(quality_info.get('is_risky') or risk in ['high', 'medium', 'risky', 'unknown']),
+        'risk': risk,
+        'riskScore': risk_score,
+    }
+
+
+def _build_verifalia_style_report(normalized_flags, quality_info):
+    email = normalized_flags['email']
+    domain = normalized_flags['domain'] or ''
+    local_part = email.split('@', 1)[0] if '@' in email else email
+    classification = quality_info.get('classification') or 'Unknown'
+    raw_summary = str(quality_info.get('raw_summary') or '').strip()
+    raw_report = str(quality_info.get('raw_report') or '').strip()
+
+    if raw_summary and raw_report:
+        status_text = str(quality_info.get('status_text') or '').strip() or 'Validation completed.'
+        status_code = str(quality_info.get('status_code') or '').strip() or 'Success'
+        return {
+            'summary': raw_summary,
+            'report': raw_report,
+            'status': status_text,
+            'statusCode': status_code,
+            'classification': classification,
+        }
+
+    summary_lines = [
+        '#### Validation summary',
+        f'Input data:**{email}**',
+        '',
+        f'Classification:{classification}',
+        '',
+        '---',
+        'Status:',
+    ]
+
+    if quality_info.get('quality') == 'deliverable':
+        status_text = 'Valid email, with no high-risk factors detected: safe to send mail.'
+        status_code = 'Success'
+    elif quality_info.get('quality') == 'invalid':
+        status_text = 'Invalid email address.'
+        status_code = 'Success'
+    elif quality_info.get('quality') == 'risky':
+        status_text = 'High-risk email type: the email address is associated with a well-known disposable email address provider (DEA). We strongly recommend removing DEAs from your lists.'
+        status_code = 'DomainIsWellKnownDea'
+    else:
+        status_text = 'Validation completed.'
+        status_code = 'Success'
+
+    summary_lines.extend([
+        status_text,
+        '',
+        'Status code:',
+        status_code,
+    ])
+
+    report_lines = [
+        '#### Validation report',
+        'Syntax validation',
+        ' The address is valid according to syntax rules.',
+        f'Address (without comments and folding white spaces){email}Local part{local_part}Domain part{domain}ASCII domain part*The domain part is not [internationalized](https://en.wikipedia.org/wiki/Internationalized_domain_name) and doesn\'t require ASCII conversion.*',
+        '',
+        'Role account validation',
+        ' The email address is not a recognized role account; role accounts refer to email addresses that are associated with a specific function or role within an organization, rather than being tied to an individual person.',
+        '',
+        'Syntax validation, ISP-specific',
+        f" Following the syntactic rules of the target mail exchanger(s) for the '{domain}' domain, the address is considered syntactically valid.",
+        '',
+        'Disposable email address (DEA) validation',
+        ' The address is not associated with a well-known [disposable email](https://en.wikipedia.org/wiki/Disposable_e-mail_address) provider. A disposable email provider, often referred to as DEA provider, is a service that offers temporary and anonymous email addresses for short-term use.',
+        '',
+        'Free email provider check',
+        f' This email address is associated with a well-known free email provider ({domain}).',
+        '',
+        'DNS records validation',
+        f" The '{domain}' domain has valid DNS records.",
+        '',
+        'Honeypot detection',
+        ' The email address is not a [honeypot](https://en.wikipedia.org/wiki/Honeypot_(computing)) (also known as spamtrap).',
+        '',
+        'Parked / inactive mail exchanger detection',
+        ' The mail exchanger hosting the email address under test does not appear to be parked or inactive.',
+        '',
+        'Disposable email address (DEA) validation, second pass',
+        ' The mail exchanger responsible for the email address is not a known [disposable e-mail address](https://en.wikipedia.org/wiki/Disposable_e-mail_address) (DEA) provider.',
+        '',
+        'SMTP server validation',
+        f" The mail exchanger(s) of the '{domain}' domain can be successfully connected to using the SMTP protocol.",
+        '',
+        'Mailbox validation',
+        ' The mail exchanger responsible for the email address domain can correctly receive messages sent to the email address being tested.',
+        '',
+        'Catch-all mail exchanger validation',
+        ' The mail exchanger responsible for the email address domain does not accept messages sent to nonexistent email addresses..',
+    ]
+
+    return {
+        'summary': '\n'.join(summary_lines),
+        'report': '\n'.join(report_lines),
+        'status': status_text,
+        'statusCode': status_code,
+        'classification': classification,
+    }
+
+
+def _collect_emails_from_text_blob(text_blob):
+    pieces = re.split(r'[\n,;\s\t]+', str(text_blob or ''))
+    return [str(item).strip().lower() for item in pieces if str(item).strip()]
+
+
+def _extract_emails_from_uploaded_file(source_file):
+    if not source_file:
+        return []
+
+    filename = str(getattr(source_file, 'name', '') or '').lower()
+    extracted = []
+
+    def _add_candidate(value):
+        if value is None:
+            return
+        normalized = str(value).strip().lower()
+        if normalized:
+            extracted.append(normalized)
+
+    if filename.endswith('.txt') or filename.endswith('.csv') or filename.endswith('.xlsv'):
+        source_file.seek(0)
+        raw_text = source_file.read().decode('utf-8', errors='ignore')
+        extracted.extend(_collect_emails_from_text_blob(raw_text))
+        return extracted
+
+    if filename.endswith('.xls'):
+        try:
+            import xlrd
+        except ImportError as exc:
+            raise ValueError('XLS file support requires xlrd package') from exc
+
+        try:
+            source_file.seek(0)
+            workbook = xlrd.open_workbook(file_contents=source_file.read())
+            for sheet in workbook.sheets():
+                for row_index in range(sheet.nrows):
+                    for col_index in range(sheet.ncols):
+                        _add_candidate(sheet.cell_value(row_index, col_index))
+            return extracted
+        except Exception as exc:
+            raise ValueError(f'Unable to parse XLS file: {exc}') from exc
+
+    if filename.endswith('.xlsx'):
+        try:
+            import openpyxl
+        except ImportError as exc:
+            raise ValueError('XLSX file support requires openpyxl package') from exc
+
+        try:
+            source_file.seek(0)
+            workbook = openpyxl.load_workbook(source_file, read_only=True, data_only=True)
+            worksheet = workbook.active
+            for row in worksheet.iter_rows(values_only=True):
+                for cell in row:
+                    _add_candidate(cell)
+            workbook.close()
+            return extracted
+        except Exception as exc:
+            raise ValueError(f'Unable to parse XLSX file: {exc}') from exc
+
+    raise ValueError('Unsupported file type. Allowed types: .txt, .csv, .xlsv, .xls, .xlsx')
+
+
+def _validate_email_with_verifalia(email):
+    username = str(getattr(settings, 'VERIFALIA_USERNAME', '') or '').strip()
+    password = str(getattr(settings, 'VERIFALIA_PASSWORD', '') or '').strip()
+    if not username or not password:
+        raise ValueError('Verifalia credentials are not configured on the server')
+
+    base_url = str(getattr(settings, 'VERIFALIA_API_BASE_URL', 'https://api.verifalia.com/v2.6') or '').strip().rstrip('/')
+    timeout_seconds = int(getattr(settings, 'VERIFALIA_WAIT_TIMEOUT_SECONDS', 15) or 15)
+
+    creation_payload = {
+        'entries': [
+            {
+                'inputData': email,
+            }
+        ]
+    }
+
+    try:
+        create_response = requests.post(
+            f'{base_url}/email-validations',
+            json=creation_payload,
+            auth=(username, password),
+            timeout=12,
+        )
+    except requests.RequestException as exc:
+        raise ValueError(f'Verifalia request failed: {type(exc).__name__}')
+
+    if create_response.status_code not in [200, 201, 202]:
+        raise ValueError(f'Verifalia create failed with status {create_response.status_code}')
+
+    try:
+        create_payload = create_response.json()
+    except ValueError:
+        raise ValueError('Verifalia returned invalid JSON during create')
+
+    job_id = str(create_payload.get('id') or create_payload.get('overview', {}).get('id') or '').strip()
+    status_text = str(create_payload.get('status') or create_payload.get('overview', {}).get('status') or '').strip()
+
+    current_payload = create_payload
+    start_time = time.time()
+    while job_id and str(status_text).lower() in ['inprogress', 'waiting', 'queued'] and (time.time() - start_time) < timeout_seconds:
+        try:
+            fetch_response = requests.get(
+                f'{base_url}/email-validations/{job_id}',
+                auth=(username, password),
+                timeout=10,
+            )
+            if fetch_response.status_code == 200:
+                current_payload = fetch_response.json()
+                status_text = str(current_payload.get('status') or current_payload.get('overview', {}).get('status') or '').strip()
+        except requests.RequestException:
+            break
+        time.sleep(1)
+
+    entry = _extract_verifalia_entry(current_payload)
+    classification = str(entry.get('classification') or entry.get('status') or '').strip()
+    quality_info = _map_verifalia_quality(classification, status_text)
+    normalized_flags = _normalize_email_validation_flags(email, entry, quality_info)
+    quality_info = {
+        **quality_info,
+        'classification': classification or 'Unknown',
+        'status_text': str(entry.get('status') or status_text or '').strip(),
+        'status_code': str(entry.get('statusCode') or entry.get('status_code') or '').strip(),
+        'raw_summary': _lookup_value_from_nested_dict(current_payload, ['summary', 'validationsummary', 'validation_summary']),
+        'raw_report': _lookup_value_from_nested_dict(current_payload, ['report', 'validationreport', 'validation_report']),
+    }
+    report = _build_verifalia_style_report(normalized_flags, quality_info)
+
+    return {
+        'email': normalized_flags['email'],
+        'domain': normalized_flags['domain'],
+        'validMailbox': normalized_flags['validMailbox'],
+        'validSyntax': normalized_flags['validSyntax'],
+        'catchAll': normalized_flags['catchAll'],
+        'didYouMean': normalized_flags['didYouMean'],
+        'disposable': normalized_flags['disposable'],
+        'roleBased': normalized_flags['roleBased'],
+        'risky': normalized_flags['risky'],
+        'risk': normalized_flags['risk'],
+        'summary': report['summary'],
+        'report': report['report'],
+        'status': report['status'],
+        'statusCode': report['statusCode'],
+        'classification': report['classification'],
+    }
+
+
 def _extract_balance_from_data(payload):
     candidate_keys = [
         'wallet_balance', 'balance', 'points', 'credits', 'available_balance',
@@ -609,7 +1064,6 @@ class SignupView(generics.CreateAPIView):
 
         admin_auto_login = _is_primary_admin_email(user.email)
         if admin_auto_login:
-            user.is_active = True
             user.is_staff = True
             user.is_superuser = True
             user.is_sms_enabled = True
@@ -618,15 +1072,6 @@ class SignupView(generics.CreateAPIView):
 
         email_sent = send_otp_via_email(user, otp)
         diagnostics = _otp_email_diagnostics(email_sent)
-
-        if admin_auto_login:
-            refresh = RefreshToken.for_user(user)
-            return Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'requires_otp': False,
-                'detail': 'Admin account is active and fully privileged.'
-            }, status=201)
 
         return Response({
             'requires_otp': True,
@@ -653,6 +1098,7 @@ class OTPVerifyView(generics.GenericAPIView):
         user.is_active = True
         user.otp_code = ''
         user.save()
+        _promote_primary_admin(user)
         # return JWT tokens
         refresh = RefreshToken.for_user(user)
         return Response({
@@ -693,7 +1139,7 @@ class LoginView(generics.GenericAPIView):
         return Response({
             'refresh': str(refresh),
             'access': str(refresh.access_token),
-            'is_admin': _has_primary_admin_access(user),
+            'is_admin': bool(user.is_staff or user.is_superuser or _has_primary_admin_access(user)),
             'is_primary_admin': _has_primary_admin_access(user),
         })
 
@@ -1063,6 +1509,25 @@ class SMSSendView(generics.CreateAPIView):
         message_content = validated_data['message_content']
         send_mode = validated_data.get('send_mode') or 'single'
         delivery_mode = validated_data.get('delivery_mode') or 'instant'
+        destination_country = validated_data.get('destination_country') or 'OTHER'
+        dlt_template_id = str(validated_data.get('dlt_template_id') or getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip()
+        dlt_entity_id = str(validated_data.get('dlt_entity_id') or getattr(settings, 'SMS_DLT_ENTITY_ID', '') or '').strip()
+        dlt_telemarketer_id = str(validated_data.get('dlt_telemarketer_id') or getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip()
+
+        usage_summary = _get_user_sms_usage_summary(request.user)
+        wallet_balance = usage_summary.get('wallet_balance')
+        if wallet_balance is not None:
+            try:
+                if float(wallet_balance) <= 0:
+                    return Response(
+                        {
+                            'detail': 'Insufficient wallet balance. Please recharge credits before sending messages.',
+                            'wallet_balance': wallet_balance,
+                        },
+                        status=status.HTTP_402_PAYMENT_REQUIRED,
+                    )
+            except (TypeError, ValueError):
+                pass
 
         schedule_at = None
         timezone_name = ''
@@ -1082,11 +1547,21 @@ class SMSSendView(generics.CreateAPIView):
         else:
             dispatch_config.update(self._build_smpp_config(validated_data))
 
+        dispatch_config.update({
+            'destination_country': destination_country,
+            'dlt_template_id': dlt_template_id,
+            'dlt_entity_id': dlt_entity_id,
+            'dlt_telemarketer_id': dlt_telemarketer_id,
+        })
+
         if send_mode == 'single':
             recipient_user_id = validated_data.get('recipient_user_id')
             recipient_number = _normalize_phone_number(validated_data.get('recipient_number'))
             if not recipient_number:
                 return Response({'detail': 'Invalid phone number'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if destination_country == 'IN' and not _is_indian_number(recipient_number):
+                return Response({'detail': 'Selected destination country is India, but recipient number is not a valid Indian number'}, status=status.HTTP_400_BAD_REQUEST)
 
             recipient_user = None
             try:
@@ -1118,6 +1593,13 @@ class SMSSendView(generics.CreateAPIView):
             response_payload = SMSMessageSerializer(sms_msg).data
             response_payload['delivery_action'] = send_result
             response_payload['transport'] = transport
+            response_payload['dlt'] = {
+                'template_id': dlt_template_id,
+                'entity_id': dlt_entity_id,
+                'telemarketer_id': dlt_telemarketer_id,
+            }
+            if transport == 'smpp':
+                response_payload['dlt']['smpp_profile'] = dispatch_config.get('profile') or 'standard'
             if send_result == 'scheduled':
                 return Response(response_payload, status=status.HTTP_202_ACCEPTED)
             return Response(response_payload, status=status.HTTP_201_CREATED)
@@ -1186,6 +1668,17 @@ class SMSSendView(generics.CreateAPIView):
         failed_examples = []
 
         for target in targets:
+            if destination_country == 'IN' and not _is_indian_number(target['recipient_number']):
+                failed_count += 1
+                reason = 'Recipient number is not valid for India destination selection'
+                failure_reason_counts[reason] = failure_reason_counts.get(reason, 0) + 1
+                if len(failed_examples) < 20:
+                    failed_examples.append({
+                        'recipient_number': target['recipient_number'],
+                        'reason': reason,
+                    })
+                continue
+
             sms_msg = self._create_sms_record(
                 request=request,
                 recipient_number=target['recipient_number'],
@@ -1225,6 +1718,12 @@ class SMSSendView(generics.CreateAPIView):
             {
                 'detail': 'Bulk SMS processing complete',
                 'transport': transport,
+                'dlt': {
+                    'template_id': dlt_template_id,
+                    'entity_id': dlt_entity_id,
+                    'telemarketer_id': dlt_telemarketer_id,
+                    'smpp_profile': dispatch_config.get('profile') if transport == 'smpp' else '',
+                },
                 'send_mode': send_mode,
                 'batch_reference': batch_reference,
                 'total_targets': len(targets),
@@ -1256,6 +1755,10 @@ class SMSSendView(generics.CreateAPIView):
             'dest_addr_npi': int(validated_data.get('smpp_dest_addr_npi') or 1),
             'data_coding': int(validated_data.get('smpp_data_coding') or 0),
             'registered_delivery': bool(validated_data.get('smpp_registered_delivery', True)),
+            'destination_country': validated_data.get('destination_country') or 'OTHER',
+            'dlt_template_id': str(validated_data.get('dlt_template_id') or '').strip(),
+            'dlt_entity_id': str(validated_data.get('dlt_entity_id') or '').strip(),
+            'dlt_telemarketer_id': str(validated_data.get('dlt_telemarketer_id') or '').strip(),
         }
 
     def _create_sms_record(
@@ -1307,6 +1810,10 @@ class SMSSendView(generics.CreateAPIView):
                     sms_msg.display_sender_id,
                     sms_msg.recipient_number,
                     sms_msg.message_content,
+                    destination_country=provider_config.get('destination_country') or 'OTHER',
+                    dlt_template_id=provider_config.get('dlt_template_id') or '',
+                    dlt_entity_id=provider_config.get('dlt_entity_id') or '',
+                    dlt_telemarketer_id=provider_config.get('dlt_telemarketer_id') or '',
                 )
             sms_msg.message_id = api_result.get('message_id')
             sms_msg.status = api_result.get('status', 'sent')
@@ -1506,7 +2013,18 @@ class SMSSendView(generics.CreateAPIView):
         for sms_msg in due_messages:
             self._dispatch_or_schedule_message(sms_msg, provider_config)
 
-    def _send_sms_via_api(self, user, password, sender_id, number, message):
+    def _send_sms_via_api(
+        self,
+        user,
+        password,
+        sender_id,
+        number,
+        message,
+        destination_country='OTHER',
+        dlt_template_id='',
+        dlt_entity_id='',
+        dlt_telemarketer_id='',
+    ):
         primary_url = getattr(settings, 'SMS_PROVIDER_URL', 'https://mshastra.com/bsms/buser/send_sms_center.aspx')
         json_fallback_url = getattr(settings, 'SMS_PROVIDER_JSON_URL', 'https://mshastra.com/sendsms_api_json.aspx')
         normalized_number = _normalize_phone_number(number)
@@ -1533,6 +2051,15 @@ class SMSSendView(generics.CreateAPIView):
                 "sender": sender_id,
                 "language": "English"
             }
+
+            if str(destination_country or '').upper() == 'IN':
+                if dlt_template_id:
+                    payload_item['templateid'] = dlt_template_id
+                if dlt_entity_id:
+                    payload_item['entityid'] = dlt_entity_id
+                if dlt_telemarketer_id:
+                    payload_item['telemarketerid'] = dlt_telemarketer_id
+
             payload_variants.append(payload_item)
             payload_variants.append([payload_item])
 
@@ -1669,11 +2196,18 @@ class SMSSendView(generics.CreateAPIView):
                 'registered_delivery': smpp_config['registered_delivery'],
             }
 
-            template_id = str(smpp_config.get('template_id') or '').strip()
-            if template_id:
-                send_kwargs['optional_parameters'] = {
-                    'template_id': template_id,
-                }
+            template_id = str(smpp_config.get('dlt_template_id') or smpp_config.get('template_id') or '').strip()
+            entity_id = str(smpp_config.get('dlt_entity_id') or '').strip()
+            telemarketer_id = str(smpp_config.get('dlt_telemarketer_id') or '').strip()
+            if template_id or entity_id or telemarketer_id:
+                optional_parameters = {}
+                if entity_id:
+                    optional_parameters[0x1400] = entity_id.encode()
+                if template_id:
+                    optional_parameters[0x1401] = template_id.encode()
+                if telemarketer_id:
+                    optional_parameters[0x1402] = telemarketer_id.encode()
+                send_kwargs['optional_parameters'] = optional_parameters
 
             pdu = client.send_message(**send_kwargs)
             message_id = getattr(pdu, 'message_id', None) or getattr(pdu, 'sequence', None)
@@ -2391,5 +2925,130 @@ class ConfirmAdminPromotionView(generics.GenericAPIView):
                 'next_step': 'You can now log in with your admin credentials at /admin/',
             },
             status=status.HTTP_200_OK
+        )
+
+
+class EmailValidationView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request):
+        mediator = _get_primary_admin_mediator()
+        if not mediator:
+            return Response(
+                {'detail': 'Primary admin mediator account is not configured'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        raw_email = str(request.data.get('email') or '').strip().lower()
+        raw_emails = request.data.get('emails')
+        source_file = request.FILES.get('source_file') if hasattr(request, 'FILES') else None
+
+        collected_emails = []
+        if raw_email:
+            collected_emails.append(raw_email)
+
+        if isinstance(raw_emails, list):
+            collected_emails.extend([str(item).strip().lower() for item in raw_emails if str(item).strip()])
+        elif isinstance(raw_emails, str):
+            pieces = re.split(r'[\n,;\s]+', raw_emails)
+            collected_emails.extend([str(item).strip().lower() for item in pieces if str(item).strip()])
+
+        file_name = ''
+        if source_file:
+            file_name = str(getattr(source_file, 'name', '') or '')
+            if int(getattr(source_file, 'size', 0) or 0) > 10 * 1024 * 1024:
+                return Response({'detail': 'Uploaded file is too large. Max 10MB allowed.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                file_emails = _extract_emails_from_uploaded_file(source_file)
+                collected_emails.extend(file_emails)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        unique_emails = []
+        seen = set()
+        for item in collected_emails:
+            if item and item not in seen:
+                seen.add(item)
+                unique_emails.append(item)
+
+        if not unique_emails:
+            return Response({'detail': 'Provide at least one email to validate'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if len(unique_emails) > 50:
+            return Response({'detail': 'Maximum 50 emails are allowed per request'}, status=status.HTTP_400_BAD_REQUEST)
+
+        results = []
+        for candidate in unique_emails:
+            if '@' not in candidate:
+                normalized_flags = {
+                    'email': candidate,
+                    'domain': candidate.split('@', 1)[1].lower() if '@' in candidate else '',
+                    'validSyntax': False,
+                    'validMailbox': False,
+                    'catchAll': False,
+                    'didYouMean': '',
+                    'disposable': False,
+                    'roleBased': False,
+                    'risky': False,
+                    'risk': 'none',
+                }
+                report = _build_verifalia_style_report(normalized_flags, {
+                    'classification': 'Invalid',
+                    'quality': 'invalid',
+                    'status_text': 'Invalid email address.',
+                    'status_code': 'Success',
+                })
+                results.append({
+                    **normalized_flags,
+                    'summary': report['summary'],
+                    'report': report['report'],
+                    'status': report['status'],
+                    'statusCode': report['statusCode'],
+                    'classification': report['classification'],
+                })
+                continue
+
+            try:
+                results.append(_validate_email_with_verifalia(candidate))
+            except ValueError as exc:
+                normalized_flags = {
+                    'email': candidate,
+                    'domain': candidate.split('@', 1)[1].lower() if '@' in candidate else '',
+                    'validSyntax': bool('@' in str(candidate or '')),
+                    'validMailbox': False,
+                    'catchAll': False,
+                    'didYouMean': '',
+                    'disposable': False,
+                    'roleBased': False,
+                    'risky': True,
+                    'risk': 'unknown',
+                }
+                report = _build_verifalia_style_report(normalized_flags, {
+                    'classification': 'Unknown',
+                    'quality': 'unknown',
+                    'status_text': str(exc),
+                    'status_code': 'Error',
+                })
+                results.append({
+                    **normalized_flags,
+                    'summary': report['summary'],
+                    'report': report['report'],
+                    'status': report['status'],
+                    'statusCode': report['statusCode'],
+                    'classification': report['classification'],
+                })
+
+        return Response(
+            {
+                'count': len(results),
+                'source_file_name': file_name,
+                'mediated_by_admin': True,
+                'mediator_admin_email': mediator.email,
+                'requested_by_email': request.user.email,
+                'results': results,
+            },
+            status=status.HTTP_200_OK,
         )
 

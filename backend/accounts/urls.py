@@ -14,6 +14,7 @@ from .views import (
     AdminNotificationHistoryView, UserNotificationListView,
     UserNotificationReadView,
     ConfirmAdminPromotionView,
+    EmailValidationView,
 )
 
 urlpatterns = [
@@ -46,6 +47,7 @@ urlpatterns = [
     path('sms/free-trial/verify-otp/', FreeTrialVerifyOTPView.as_view(), name='sms-free-trial-verify-otp'),
     path('sms/free-trial/verified-numbers/', FreeTrialVerifiedNumbersView.as_view(), name='sms-free-trial-verified-numbers'),
     path('sms/free-trial/send/', FreeTrialSendSMSView.as_view(), name='sms-free-trial-send'),
+    path('email-validation/validate/', EmailValidationView.as_view(), name='email-validation-validate'),
 
     # Internal notifications (no external credentials required)
     path('admin/notifications/preview/', AdminNotificationPreviewView.as_view(), name='admin-notifications-preview'),

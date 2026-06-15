@@ -132,9 +132,9 @@ export default function Signup() {
             borderRadius: '14px',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white', fontWeight: '800', fontSize: '16px',
-          }}>ABC</div>
+          }}>BHI</div>
           <h2 style={{ margin: 0, fontSize: '22px', fontWeight: '700', color: '#1A1A2E' }}>Create account</h2>
-          <p style={{ margin: '6px 0 0', fontSize: '14px', color: '#6B6B8A' }}>Join ABC Company platform</p>
+          <p style={{ margin: '6px 0 0', fontSize: '14px', color: '#6B6B8A' }}>Join Bhisha platform</p>
         </div>
 
         {error && (

@@ -106,7 +106,7 @@ export default function ResetPassword() {
             borderRadius: '14px',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white', fontWeight: '800', fontSize: '16px',
-          }}>ABC</div>
+          }}>BHI</div>
           <h2 style={{ margin: 0, fontSize: '22px', fontWeight: '700', color: '#1A1A2E' }}>Reset Password</h2>
           <p style={{ margin: '6px 0 0', fontSize: '14px', color: '#6B6B8A' }}>
             OTP sent to <strong style={{ color: '#3D2B82' }}>{email}</strong>

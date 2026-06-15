@@ -108,6 +108,30 @@ Anything committed to git is potentially public. Never place real credentials in
 - SMS sender ID shown to recipients comes from the sender ID chosen/typed in the UI at send time.
 - Any successfully used sender ID is automatically stored and appears in future dropdown options.
 
+## Docker-Only Full Stack
+
+Run everything in containers (PostgreSQL + Django + React + Nginx):
+
+```bash
+docker compose up -d --build
+```
+
+Use:
+
+- App: `http://127.0.0.1:8080`
+- Health check: `http://127.0.0.1:8080/healthz/`
+
+This Docker flow uses Nginx as a single entrypoint and proxies `/api/` to Django,
+so frontend and backend are same-origin and CORS is not required for normal browser calls.
+
+For VPS production:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Production compose exposes Nginx on port `80`.
+
 For production deployment with GitHub + Netlify and secret-safe setup, see:
 
 - `NETLIFY_GITHUB_DEPLOYMENT.md`

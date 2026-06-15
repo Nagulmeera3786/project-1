@@ -11,8 +11,8 @@ const codeSamples = {
   -H "Authorization: Bearer <access_token>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "display_sender_id": "ABC",
-    "message_content": "Hello from ABC",
+    "display_sender_id": "BHISHA",
+    "message_content": "Hello from Bhisha",
     "recipient_number": "+919876543210"
   }'`,
   JavaScript: `const baseUrl = "${BASE_URL}";
@@ -23,8 +23,8 @@ const response = await fetch(baseUrl + "${API_PREFIX}${SMS_SEND_PATH}", {
     Authorization: 'Bearer ' + accessToken,
   },
   body: JSON.stringify({
-    display_sender_id: 'ABC',
-    message_content: 'Hello from ABC',
+    display_sender_id: 'BHISHA',
+    message_content: 'Hello from Bhisha',
     recipient_number: '+919876543210',
   }),
 });
@@ -37,8 +37,8 @@ response = requests.post(
     base_url + "${API_PREFIX}${SMS_SEND_PATH}",
     headers={'Authorization': f'Bearer {access_token}'},
     json={
-        'display_sender_id': 'ABC',
-        'message_content': 'Hello from ABC',
+        'display_sender_id': 'BHISHA',
+        'message_content': 'Hello from Bhisha',
         'recipient_number': '+919876543210',
     },
 )
@@ -51,8 +51,8 @@ HttpRequest request = HttpRequest.newBuilder()
     .header("Authorization", "Bearer " + accessToken)
     .POST(HttpRequest.BodyPublishers.ofString("""
         {
-          \"display_sender_id\": \"ABC\",
-          \"message_content\": \"Hello from ABC\",
+          \"display_sender_id\": \"BHISHA\",
+          \"message_content\": \"Hello from Bhisha\",
           \"recipient_number\": \"+919876543210\"
         }
         """))
@@ -63,16 +63,16 @@ client.DefaultRequestHeaders.Authorization =
     new AuthenticationHeaderValue("Bearer", accessToken);
 
 var payload = new {
-    display_sender_id = "ABC",
-    message_content = "Hello from ABC",
+    display_sender_id = "BHISHA",
+    message_content = "Hello from Bhisha",
     recipient_number = "+919876543210"
 };
 
 var response = await client.PostAsJsonAsync("${API_PREFIX}${SMS_SEND_PATH}", payload);`,
   PHP: `$baseUrl = '${BASE_URL}';
 $payload = [
-  'display_sender_id' => 'ABC',
-  'message_content' => 'Hello from ABC',
+  'display_sender_id' => 'BHISHA',
+  'message_content' => 'Hello from Bhisha',
   'recipient_number' => '+919876543210',
 ];
 
@@ -84,8 +84,8 @@ curl_setopt($ch, CURLOPT_HTTPHEADER, [
 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));`,
   Go: `baseURL := "${BASE_URL}"
 payload := strings.NewReader(` + "`" + `{
-  "display_sender_id":"ABC",
-  "message_content":"Hello from ABC",
+  "display_sender_id":"BHISHA",
+  "message_content":"Hello from Bhisha",
   "recipient_number":"+919876543210"
 }` + "`" + `)
 
@@ -159,7 +159,9 @@ print(res.status_code, res.json())`,
   "smpp_port": 2775,
   "smpp_system_id": "your_system_id",
   "smpp_password": "your_smpp_password",
-  "smpp_template_id": "DLT_TEMPLATE_1001"
+  "smpp_template_id": "DLT_TEMPLATE_1001",
+  "dlt_entity_id": "DLT_ENTITY_1001",
+  "dlt_telemarketer_id": "DLT_TMK_1001"
 }`,
   },
 ];

@@ -23,6 +23,20 @@ export default function Login() {
 
     try {
       const res = await API.post('login/', { email, password });
+
+      if (res.data?.requires_otp_login) {
+        const emailForVerify = res.data?.email || email;
+        nav(`/verify-otp?email=${encodeURIComponent(emailForVerify)}`, {
+          state: {
+            email: emailForVerify,
+            fromLogin: true,
+            fromAdminLogin: true,
+          },
+          replace: false,
+        });
+        return;
+      }
+
       localStorage.setItem('access', res.data.access);
       localStorage.setItem('refresh', res.data.refresh);
       localStorage.setItem('authToken', res.data.access);
@@ -75,7 +89,7 @@ export default function Login() {
             borderRadius: '14px',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white', fontWeight: '800', fontSize: '16px',
-          }}>ABC</div>
+          }}>BHI</div>
           <h2 style={{ margin: 0, fontSize: '22px', fontWeight: '700', color: '#1A1A2E' }}>Welcome back</h2>
           <p style={{ margin: '6px 0 0', fontSize: '14px', color: '#6B6B8A' }}>Sign in to your account</p>
         </div>

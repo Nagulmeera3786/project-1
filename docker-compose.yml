@@ -1,45 +1,44 @@
-# Docker Compose for Local Development (Optional for Plesk deployment)
-# Useful for testing your app locally before uploading to Plesk
-# Usage: docker-compose up
-
-version: '3.8'
-
 services:
-  postgres:
-    image: postgres:16
-    container_name: django-abc-postgres
+  db:
+    image: postgres:16-alpine
+    container_name: abc-db
+    restart: unless-stopped
     environment:
-      - POSTGRES_DB=abc_sms
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      POSTGRES_DB: ${POSTGRES_DB:-abc_sms}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-    networks:
-      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: django-abc-backend
-    ports:
-      - "8000:8000"
+    container_name: abc-backend
+    restart: unless-stopped
     environment:
-      - DEBUG=True
-      - SECRET_KEY=dev-secret-key-for-docker-testing
-      - ALLOWED_HOSTS=localhost,127.0.0.1
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/abc_sms
-      - DB_CONN_MAX_AGE=60
-      - DB_SSLMODE=disable
+      SECRET_KEY: dev-secret-key-for-docker-testing
+      DEBUG: "True"
+      ALLOWED_HOSTS: localhost,127.0.0.1,nginx
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-abc_sms}
+      DB_SSLMODE: disable
+      DB_CONN_MAX_AGE: 60
     depends_on:
-      - postgres
-    volumes:
-      - ./backend:/app
-    command: gunicorn project.wsgi:application --bind 0.0.0.0:8000 --reload
-    networks:
-      - app-network
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn project.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120"
+    expose:
+      - "8000"
 
   frontend:
     build:
@@ -47,21 +46,22 @@ services:
       dockerfile: Dockerfile
       args:
         REACT_APP_USE_SAME_ORIGIN_API: "true"
-    container_name: react-abc-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - REACT_APP_API_URL=http://localhost:8000
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    command: npm start
-    networks:
-      - app-network
+    container_name: abc-frontend
+    restart: unless-stopped
+    expose:
+      - "3000"
 
-networks:
-  app-network:
-    driver: bridge
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: abc-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.docker.conf:/etc/nginx/conf.d/default.conf:ro
 
 volumes:
   postgres-data:

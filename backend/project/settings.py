@@ -33,6 +33,13 @@ def _env_csv_list(name):
     return [item.strip().rstrip('/') for item in raw.split(',') if item.strip()]
 
 
+def _normalize_origin(value):
+    normalized = str(value or '').strip().rstrip('/')
+    if normalized.startswith('http://') or normalized.startswith('https://'):
+        return normalized
+    return ''
+
+
 def _env_secret(name, fallback_name=None):
     primary = _env_text(name, '')
     if primary:
@@ -234,18 +241,21 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = _env_csv_list('CORS_ALLOWED_ORIGINS')
 CORS_ALLOW_ALL_ORIGINS = False if CORS_ALLOWED_ORIGINS else DEBUG
 
-# Convenience fallback: if explicit CORS list is absent, accept a single frontend URL variable.
-frontend_origin = (
-    _env_text('FRONTEND_URL')
-    or _env_text('FRONTEND_ORIGIN')
-    or _env_text('NETLIFY_APP_URL')
-)
-if frontend_origin:
-    normalized_frontend_origin = frontend_origin.rstrip('/')
-    if normalized_frontend_origin.startswith('http://') or normalized_frontend_origin.startswith('https://'):
-        if normalized_frontend_origin not in CORS_ALLOWED_ORIGINS:
-            CORS_ALLOWED_ORIGINS.append(normalized_frontend_origin)
-            CORS_ALLOW_ALL_ORIGINS = False
+frontend_origin_candidates = [
+    _env_text('FRONTEND_URL'),
+    _env_text('FRONTEND_ORIGIN'),
+    _env_text('FRONTEND_APP_URL'),
+    _env_text('NETLIFY_APP_URL'),
+    _env_text('NETLIFY_URL'),
+    _env_text('NETLIFY_PRIMARY_URL'),
+]
+frontend_origin_candidates.extend(_env_csv_list('PUBLIC_FRONTEND_ORIGINS'))
+
+for _origin_candidate in frontend_origin_candidates:
+    normalized_frontend_origin = _normalize_origin(_origin_candidate)
+    if normalized_frontend_origin and normalized_frontend_origin not in CORS_ALLOWED_ORIGINS:
+        CORS_ALLOWED_ORIGINS.append(normalized_frontend_origin)
+        CORS_ALLOW_ALL_ORIGINS = False
 
 # Optional support for Netlify deploy preview URLs:
 # Example: https://main--your-site.netlify.app
@@ -268,11 +278,10 @@ if cors_allowed_origin_regexes_env.strip():
         CORS_ALLOWED_ORIGIN_REGEXES = _configured_regexes
 
 CSRF_TRUSTED_ORIGINS = _env_csv_list('CSRF_TRUSTED_ORIGINS')
-if frontend_origin:
-    normalized_frontend_origin = frontend_origin.rstrip('/')
-    if normalized_frontend_origin.startswith('http://') or normalized_frontend_origin.startswith('https://'):
-        if normalized_frontend_origin not in CSRF_TRUSTED_ORIGINS:
-            CSRF_TRUSTED_ORIGINS.append(normalized_frontend_origin)
+for _origin_candidate in frontend_origin_candidates:
+    normalized_frontend_origin = _normalize_origin(_origin_candidate)
+    if normalized_frontend_origin and normalized_frontend_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(normalized_frontend_origin)
 
 csrf_trusted_origin_regexes_env = os.environ.get('CSRF_TRUSTED_ORIGIN_REGEXES', '')
 if csrf_trusted_origin_regexes_env.strip():
@@ -405,6 +414,15 @@ SMS_DEFAULT_SENDER_IDS = [
     for sender_id in _env_text('SMS_DEFAULT_SENDER_IDS', '').split(',')
     if sender_id.strip()
 ]
+SMS_DLT_TEMPLATE_ID = _env_text('SMS_DLT_TEMPLATE_ID', '')
+SMS_DLT_ENTITY_ID = _env_text('SMS_DLT_ENTITY_ID', '')
+SMS_DLT_TELEMARKETER_ID = _env_text('SMS_DLT_TELEMARKETER_ID', '')
+
+# Verifalia email validation
+VERIFALIA_API_BASE_URL = _env_text('VERIFALIA_API_BASE_URL', 'https://api.verifalia.com/v2.6')
+VERIFALIA_USERNAME = _env_text('VERIFALIA_USERNAME', '')
+VERIFALIA_PASSWORD = _env_secret('VERIFALIA_PASSWORD')
+VERIFALIA_WAIT_TIMEOUT_SECONDS = int(_env_text('VERIFALIA_WAIT_TIMEOUT_SECONDS', 15))
 
 LOGGING = {
     'version': 1,

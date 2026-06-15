@@ -356,7 +356,7 @@ export default function AdminSMSCredentials() {
               type="text"
               value={senderIds}
               onChange={(e) => setSenderIds(e.target.value)}
-              placeholder="e.g., ABC, MYAPP, SENDER1"
+              placeholder="e.g., BHISHA, MYAPP, SENDER1"
               style={{
                 width: '100%',
                 padding: '12px',

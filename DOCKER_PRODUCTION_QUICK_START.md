@@ -1,6 +1,34 @@
-# Docker-Only Production Quick Start (bhisha.com)
+# Docker-Only Quick Start
 
-This guide switches deployment to Docker only.
+This project can run fully in Docker (database + backend + frontend + nginx).
+
+## Local full-stack (Docker only)
+
+Run from project root:
+
+```bash
+docker compose up -d --build
+```
+
+Open the app at:
+
+```text
+http://127.0.0.1:8080
+```
+
+Health check:
+
+```bash
+curl -I http://127.0.0.1:8080/healthz/
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+## VPS production (Docker only)
 
 ## 1. On VPS, go to app folder
 

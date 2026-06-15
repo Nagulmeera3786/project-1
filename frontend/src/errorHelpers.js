@@ -6,7 +6,7 @@ const statusReasonMap = {
   405: 'Method not allowed by API endpoint.',
   408: 'Request timed out. Try again.',
   429: 'Too many requests. Please wait and retry.',
-  500: 'Server error on backend. Check Render logs.',
+  500: 'Server error on backend. Check backend server logs.',
   502: 'Bad gateway between services. Retry in a moment.',
   503: 'Service temporarily unavailable. Retry shortly.',
   504: 'Gateway timeout. Backend took too long to respond.',
@@ -34,13 +34,24 @@ export const parseApiError = (err, fallbackMessage) => {
   const fallback = fallbackMessage || 'Request failed. Please try again.';
   const response = err?.response;
   const data = response?.data;
+  const errorMessage = String(err?.message || '').trim();
+
+  if (!response && /Frontend API is not configured for production/i.test(errorMessage)) {
+    return {
+      message: errorMessage,
+      diagnostics: {
+        errorCode: 'FRONTEND_API_CONFIG_MISSING',
+        nextStep: 'Set REACT_APP_API_BASE_URL to your Linux VPS backend URL, for example: https://api.your-domain.com/api/auth/',
+      },
+    };
+  }
 
   if (!response) {
     return {
       message: 'Network/CORS error. Backend is unreachable from browser.',
       diagnostics: {
         errorCode: 'NETWORK_OR_CORS_ERROR',
-        nextStep: 'Check Render service status and CORS/CSRF settings for your Netlify domain.',
+        nextStep: 'Check Linux VPS backend health (/healthz/), then verify CORS_ALLOWED_ORIGINS and CSRF_TRUSTED_ORIGINS include your Netlify domain.',
       },
     };
   }

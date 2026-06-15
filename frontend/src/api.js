@@ -81,6 +81,9 @@ const allowProductionApiFallback = process.env.REACT_APP_ALLOW_PRODUCTION_API_FA
 const browserHost = typeof window !== 'undefined' ? window.location.hostname : '';
 const browserProtocol = typeof window !== 'undefined' ? window.location.protocol : 'http:';
 const isLocalBrowserHost = isLoopbackHost(browserHost);
+const normalizedBrowserHost = String(browserHost || '').trim().toLowerCase();
+const isBhishaDomainBrowserHost =
+  normalizedBrowserHost === 'bhisha.com' || normalizedBrowserHost.endsWith('.bhisha.com');
 
 const apiHost = String(process.env.REACT_APP_API_HOST || '').trim();
 const apiPort = String(process.env.REACT_APP_API_PORT || '').trim();
@@ -89,6 +92,7 @@ const isProductionBuild = process.env.NODE_ENV === 'production';
 const parsedTimeout = Number(process.env.REACT_APP_API_TIMEOUT_MS);
 const defaultTimeoutMs = isProductionBuild ? 60000 : 15000;
 const requestTimeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : defaultTimeoutMs;
+const allowSameOriginFallbackForBhisha = isProductionBuild && isBhishaDomainBrowserHost;
 
 const resolvedBaseUrl = (() => {
   if (runtimeConfigBaseUrl) {
@@ -117,7 +121,7 @@ const resolvedBaseUrl = (() => {
 
   // In production, avoid hard-coding machine-local hosts.
   if (isProductionBuild) {
-    return allowProductionApiFallback ? '/api/auth/' : '';
+    return (allowProductionApiFallback || allowSameOriginFallbackForBhisha) ? '/api/auth/' : '';
   }
 
   // Keep localhost default only for local development.
@@ -134,7 +138,8 @@ const missingApiConfigurationInProduction =
   !explicitBaseUrl &&
   !useSameOriginApi &&
   !apiHost &&
-  !allowProductionApiFallback;
+  !allowProductionApiFallback &&
+  !allowSameOriginFallbackForBhisha;
 
 if (typeof window !== 'undefined' && !isLocalBrowserHost && !runtimeConfigBaseUrl && !explicitBaseUrl && !useSameOriginApi && !apiHost) {
   // eslint-disable-next-line no-console

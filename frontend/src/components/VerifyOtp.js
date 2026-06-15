@@ -8,6 +8,7 @@ export default function VerifyOtp() {
   const queryEmail = new URLSearchParams(loc.search).get('email') || '';
   const email = loc.state?.email || queryEmail;
   const fromLogin = Boolean(loc.state?.fromLogin);
+  const fromAdminLogin = Boolean(loc.state?.fromAdminLogin);
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
@@ -131,7 +132,7 @@ export default function VerifyOtp() {
             borderRadius: '14px',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white', fontWeight: '800', fontSize: '16px',
-          }}>ABC</div>
+          }}>BHI</div>
           <h2 style={{ margin: 0, fontSize: '22px', fontWeight: '700', color: '#1A1A2E' }}>Verify Email</h2>
           <p style={{ margin: '6px 0 0', fontSize: '14px', color: '#6B6B8A' }}>
             We sent a 6-digit OTP to <strong style={{ color: '#3D2B82' }}>{email}</strong>
@@ -147,7 +148,9 @@ export default function VerifyOtp() {
             backgroundColor: '#F5F3FF', borderRadius: '8px',
             fontSize: '13px', color: '#4C3A92', border: '1px solid #DDD4F8',
           }}>
-            Your account exists but isn't verified yet. Complete OTP verification to continue.
+            {fromAdminLogin
+              ? 'Admin login requires OTP verification. Enter the OTP sent to your admin email.'
+              : "Your account exists but isn't verified yet. Complete OTP verification to continue."}
           </div>
         )}
 

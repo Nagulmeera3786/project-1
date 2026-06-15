@@ -67,7 +67,7 @@ export default function ForgotPassword() {
             borderRadius: '14px',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white', fontWeight: '800', fontSize: '16px',
-          }}>ABC</div>
+          }}>BHI</div>
           <h2 style={{ margin: 0, fontSize: '22px', fontWeight: '700', color: '#1A1A2E' }}>Forgot Password?</h2>
           <p style={{ margin: '6px 0 0', fontSize: '14px', color: '#6B6B8A' }}>
             Enter your email and we'll send you an OTP to reset your password.
