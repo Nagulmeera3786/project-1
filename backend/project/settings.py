@@ -245,6 +245,12 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = _env_csv_list('CORS_ALLOWED_ORIGINS')
 CORS_ALLOW_ALL_ORIGINS = False if CORS_ALLOWED_ORIGINS else DEBUG
 
+if not DEBUG:
+    for _origin in ['https://bhisha.com', 'https://www.bhisha.com']:
+        if _origin not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(_origin)
+    CORS_ALLOW_ALL_ORIGINS = False
+
 frontend_origin_candidates = [
     _env_text('FRONTEND_URL'),
     _env_text('FRONTEND_ORIGIN'),
@@ -268,6 +274,8 @@ if netlify_site_name:
     CORS_ALLOWED_ORIGIN_REGEXES = [
         rf'^https://[a-zA-Z0-9-]+--{netlify_site_name}\.netlify\.app$'
     ]
+else:
+    CORS_ALLOWED_ORIGIN_REGEXES = [r'^https://[a-zA-Z0-9-]+\.netlify\.app$']
 
 cors_allowed_origin_regexes_env = os.environ.get('CORS_ALLOWED_ORIGIN_REGEXES', '')
 if cors_allowed_origin_regexes_env.strip():
@@ -282,6 +290,11 @@ if cors_allowed_origin_regexes_env.strip():
         CORS_ALLOWED_ORIGIN_REGEXES = _configured_regexes
 
 CSRF_TRUSTED_ORIGINS = _env_csv_list('CSRF_TRUSTED_ORIGINS')
+if not DEBUG:
+    for _origin in ['https://bhisha.com', 'https://www.bhisha.com']:
+        if _origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(_origin)
+
 for _origin_candidate in frontend_origin_candidates:
     normalized_frontend_origin = _normalize_origin(_origin_candidate)
     if normalized_frontend_origin and normalized_frontend_origin not in CSRF_TRUSTED_ORIGINS:
@@ -387,6 +400,8 @@ SECURE_REFERRER_POLICY = _env_text('SECURE_REFERRER_POLICY', 'strict-origin-when
 SECURE_CROSS_ORIGIN_OPENER_POLICY = _env_text('SECURE_CROSS_ORIGIN_OPENER_POLICY', 'same-origin')
 X_FRAME_OPTIONS = _env_text('X_FRAME_OPTIONS', 'DENY')
 CORS_ALLOW_CREDENTIALS = _env_bool('CORS_ALLOW_CREDENTIALS', False)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
 
 # Avoid silent OTP email failures in production.
 # Fall back to console backend when SMTP credentials are missing so the

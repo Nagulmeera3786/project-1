@@ -12,6 +12,8 @@ const statusReasonMap = {
   504: 'Gateway timeout. Backend took too long to respond.',
 };
 
+const genericBusyMessage = 'Server is busy, please try again later.';
+
 export const buildOtpDiagnostics = (data) => {
   if (!data || typeof data !== 'object') {
     return null;
@@ -31,28 +33,22 @@ export const buildOtpDiagnostics = (data) => {
 };
 
 export const parseApiError = (err, fallbackMessage) => {
-  const fallback = fallbackMessage || 'Request failed. Please try again.';
+  const fallback = fallbackMessage || genericBusyMessage;
   const response = err?.response;
   const data = response?.data;
   const errorMessage = String(err?.message || '').trim();
 
   if (!response && /Frontend API is not configured for production/i.test(errorMessage)) {
     return {
-      message: errorMessage,
-      diagnostics: {
-        errorCode: 'FRONTEND_API_CONFIG_MISSING',
-        nextStep: 'Set REACT_APP_API_BASE_URL to your Linux VPS backend URL, for example: https://api.your-domain.com/api/auth/',
-      },
+      message: genericBusyMessage,
+      diagnostics: null,
     };
   }
 
   if (!response) {
     return {
-      message: 'Network/CORS error. Backend is unreachable from browser.',
-      diagnostics: {
-        errorCode: 'NETWORK_OR_CORS_ERROR',
-        nextStep: 'Check Linux VPS backend health (/healthz/), then verify CORS_ALLOWED_ORIGINS and CSRF_TRUSTED_ORIGINS include your Netlify domain.',
-      },
+      message: genericBusyMessage,
+      diagnostics: null,
     };
   }
 
@@ -88,9 +84,10 @@ export const parseApiError = (err, fallbackMessage) => {
   }
 
   const status = response?.status;
-  const reason = statusReasonMap[status] || fallback;
+  const shouldMaskServerAvailability = [502, 503, 504].includes(Number(status));
+  const reason = shouldMaskServerAvailability ? genericBusyMessage : (statusReasonMap[status] || fallback);
   return {
-    message: `HTTP ${status}: ${reason}`,
+    message: shouldMaskServerAvailability ? genericBusyMessage : `HTTP ${status}: ${reason}`,
     diagnostics: buildOtpDiagnostics(data),
   };
 };
