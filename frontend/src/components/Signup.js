@@ -110,10 +110,7 @@ export default function Signup() {
         localStorage.setItem('authToken', response.data.access);
         window.location.href = '/dashboard';
       } else {
-        if (response.data?.email_sent === false) {
-          startBufferingFlow();
-          return;
-        }
+        // Continue to OTP verification even when provider reports delayed delivery.
         navigate(`/verify-otp?email=${encodeURIComponent(form.email)}`, { state: { email: form.email } });
       }
     } catch (err) {
