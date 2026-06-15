@@ -26,13 +26,15 @@ def send_otp_via_email(user, otp):
 
     for attempt in range(1, max_attempts + 1):
         try:
-            send_mail(
+            sent_count = send_mail(
                 subject=subject,
                 message=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
                 fail_silently=False,
             )
+            if int(sent_count or 0) <= 0:
+                raise Exception('SMTP backend did not accept OTP email')
             logger.info("OTP email sent to %s on attempt %s", user.email, attempt)
             return True
         except Exception as exc:

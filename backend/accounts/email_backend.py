@@ -41,7 +41,7 @@ class EmailBackend(DjangoSMTPEmailBackend):
         self.use_ssl = profile['use_ssl']
         self.connection_class = smtplib.SMTP_SSL if self.use_ssl else smtplib.SMTP
 
-    def _send_with_fallback_profiles(self, email_messages):
+    def _send_with_fallback_profiles(self, email_messages, initial_exception=None):
         original = {
             'host': self.host,
             'port': self.port,
@@ -69,6 +69,9 @@ class EmailBackend(DjangoSMTPEmailBackend):
 
         if last_exception:
             raise last_exception
+
+        if initial_exception:
+            raise initial_exception
 
         return 0
 
@@ -105,9 +108,9 @@ class EmailBackend(DjangoSMTPEmailBackend):
                 return super().send_messages(email_messages)
             finally:
                 self._force_unverified_context = False
-        except smtplib.SMTPException:
+        except smtplib.SMTPException as exc:
             # Authentication/handshake/provider SMTP errors can happen when a provider
             # expects a different port/TLS profile. Retry with known fallback profiles.
-            return self._send_with_fallback_profiles(email_messages)
-        except (TimeoutError, socket.timeout, OSError):
-            return self._send_with_fallback_profiles(email_messages)
+            return self._send_with_fallback_profiles(email_messages, exc)
+        except (TimeoutError, socket.timeout, OSError) as exc:
+            return self._send_with_fallback_profiles(email_messages, exc)
