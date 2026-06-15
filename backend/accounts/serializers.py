@@ -214,8 +214,18 @@ class SMSSendSerializer(serializers.Serializer):
 
             smpp_profile = attrs.get('smpp_profile') or 'standard'
             configured_template_id = str(getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip()
-            if smpp_profile == 'dlt' and not str(attrs.get('smpp_template_id') or '').strip() and not configured_template_id:
-                raise serializers.ValidationError({'smpp_template_id': 'Template ID is required for DLT SMPP sending'})
+            configured_entity_id = str(getattr(settings, 'SMS_DLT_ENTITY_ID', '') or '').strip()
+            configured_telemarketer_id = str(getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip()
+
+            if smpp_profile == 'dlt':
+                if not str(attrs.get('smpp_template_id') or '').strip() and not configured_template_id:
+                    raise serializers.ValidationError({'smpp_template_id': 'Template ID is required for DLT SMPP sending'})
+
+                if not str(attrs.get('dlt_entity_id') or '').strip() and not configured_entity_id:
+                    raise serializers.ValidationError({'dlt_entity_id': 'Entity ID is required for DLT SMPP sending'})
+
+                if not str(attrs.get('dlt_telemarketer_id') or '').strip() and not configured_telemarketer_id:
+                    raise serializers.ValidationError({'dlt_telemarketer_id': 'Telemarketer ID is required for DLT SMPP sending'})
 
             if delivery_mode == 'scheduled':
                 raise serializers.ValidationError({'delivery_mode': 'Scheduled delivery is not supported for SMPP sends'})

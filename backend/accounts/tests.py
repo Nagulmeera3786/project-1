@@ -347,6 +347,7 @@ class SMSSendModesFlowTests(TestCase):
         self.assertEqual(smpp_config['template_id'], 'TPL123')
 
 
+    @override_settings(SMS_DLT_TEMPLATE_ID='')
     def test_smpp_requires_template_for_dlt_profile(self):
         response = self.client.post(
             '/api/auth/sms/send/',
@@ -368,6 +369,55 @@ class SMSSendModesFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('smpp_template_id', response.data)
+
+    @override_settings(SMS_DLT_ENTITY_ID='')
+    def test_smpp_dlt_requires_entity_id_when_not_configured(self):
+        response = self.client.post(
+            '/api/auth/sms/send/',
+            {
+                'transport': 'smpp',
+                'smpp_profile': 'dlt',
+                'smpp_host': 'smpp.example.com',
+                'smpp_port': 2775,
+                'smpp_system_id': 'smpp-user',
+                'smpp_password': 'smpp-pass',
+                'smpp_template_id': 'TPL123',
+                'display_sender_id': 'APPROVEDID',
+                'message_content': 'Missing entity id',
+                'sms_type': 'transactional',
+                'send_mode': 'single',
+                'recipient_number': '919876543210',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('dlt_entity_id', response.data)
+
+    @override_settings(SMS_DLT_TELEMARKETER_ID='')
+    def test_smpp_dlt_requires_telemarketer_id_when_not_configured(self):
+        response = self.client.post(
+            '/api/auth/sms/send/',
+            {
+                'transport': 'smpp',
+                'smpp_profile': 'dlt',
+                'smpp_host': 'smpp.example.com',
+                'smpp_port': 2775,
+                'smpp_system_id': 'smpp-user',
+                'smpp_password': 'smpp-pass',
+                'smpp_template_id': 'TPL123',
+                'dlt_entity_id': 'ENTITY1',
+                'display_sender_id': 'APPROVEDID',
+                'message_content': 'Missing telemarketer id',
+                'sms_type': 'transactional',
+                'send_mode': 'single',
+                'recipient_number': '919876543210',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('dlt_telemarketer_id', response.data)
 
     def test_smpp_rejects_scheduled_delivery(self):
         response = self.client.post(

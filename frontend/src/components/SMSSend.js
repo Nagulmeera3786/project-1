@@ -53,6 +53,8 @@ export default function SMSSend() {
     systemId: '',
     password: '',
     templateId: '',
+    entityId: '',
+    telemarketerId: '',
     sourceAddrTon: '5',
     sourceAddrNpi: '0',
     destAddrTon: '1',
@@ -594,10 +596,24 @@ export default function SMSSend() {
         return;
       }
 
-      if (smppProfile === 'dlt' && !smppConfig.templateId.trim()) {
-        setError('Please enter Template ID for DLT SMPP sending');
-        setLoading(false);
-        return;
+      if (smppProfile === 'dlt') {
+        if (!smppConfig.templateId.trim()) {
+          setError('Please enter Template ID for DLT SMPP sending');
+          setLoading(false);
+          return;
+        }
+
+        if (!smppConfig.entityId.trim()) {
+          setError('Please enter Entity ID for DLT SMPP sending');
+          setLoading(false);
+          return;
+        }
+
+        if (!smppConfig.telemarketerId.trim()) {
+          setError('Please enter Telemarketer ID for DLT SMPP sending');
+          setLoading(false);
+          return;
+        }
       }
     }
 
@@ -631,6 +647,9 @@ export default function SMSSend() {
 
       if (smppProfile === 'dlt') {
         payload.append('smpp_template_id', smppConfig.templateId.trim());
+        payload.append('dlt_template_id', smppConfig.templateId.trim());
+        payload.append('dlt_entity_id', smppConfig.entityId.trim());
+        payload.append('dlt_telemarketer_id', smppConfig.telemarketerId.trim());
       }
     }
 
@@ -969,13 +988,27 @@ export default function SMSSend() {
             </div>
 
             {smppProfile === 'dlt' && (
-              <div style={{ marginBottom: '12px' }}>
+              <div style={{ marginBottom: '12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
                 <input
                   type="text"
                   value={smppConfig.templateId}
                   onChange={(e) => handleSmppConfigChange('templateId', e.target.value)}
                   placeholder="DLT Template ID *"
-                  style={{ width: '100%', maxWidth: '280px', padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
+                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
+                />
+                <input
+                  type="text"
+                  value={smppConfig.entityId}
+                  onChange={(e) => handleSmppConfigChange('entityId', e.target.value)}
+                  placeholder="DLT Entity ID *"
+                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
+                />
+                <input
+                  type="text"
+                  value={smppConfig.telemarketerId}
+                  onChange={(e) => handleSmppConfigChange('telemarketerId', e.target.value)}
+                  placeholder="DLT Telemarketer ID *"
+                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
                 />
               </div>
             )}
