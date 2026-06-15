@@ -33,10 +33,11 @@ fi
 export COMPOSE_PARALLEL_LIMIT=1
 
 echo "[1/4] Pulling latest source..."
-git pull
+git fetch origin main
+git checkout main
+git pull --ff-only origin main
 
 echo "[2/4] Building and starting containers (sequential mode)..."
-docker compose -f "$COMPOSE_FILE" up -d db
 docker compose -f "$COMPOSE_FILE" up -d --build --no-deps backend
 docker compose -f "$COMPOSE_FILE" up -d --build --no-deps frontend
 docker compose -f "$COMPOSE_FILE" up -d --build --no-deps nginx
