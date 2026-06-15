@@ -13,6 +13,7 @@ const statusReasonMap = {
 };
 
 const genericBusyMessage = 'Server is busy, please try again later.';
+const backendBufferingMessage = 'Buffering...';
 
 export const buildOtpDiagnostics = (data) => {
   if (!data || typeof data !== 'object') {
@@ -47,7 +48,7 @@ export const parseApiError = (err, fallbackMessage) => {
 
   if (!response) {
     return {
-      message: genericBusyMessage,
+      message: backendBufferingMessage,
       diagnostics: null,
     };
   }
