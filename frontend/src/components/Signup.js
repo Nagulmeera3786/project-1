@@ -15,6 +15,7 @@ export default function Signup() {
     () => COUNTRY_CODES.find(country => country.iso2 === 'IN') || COUNTRY_CODES[0]
   );
   const countryPickerRef = useRef(null);
+  const bufferingTimerRef = useRef(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -26,6 +27,14 @@ export default function Signup() {
 
     document.addEventListener('mousedown', handleOutsideClick);
     return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (bufferingTimerRef.current) {
+        clearTimeout(bufferingTimerRef.current);
+      }
+    };
   }, []);
 
   const filteredCountries = useMemo(() => {
@@ -40,10 +49,25 @@ export default function Signup() {
     });
   }, [countrySearch]);
 
+  const startBufferingFlow = () => {
+    if (bufferingTimerRef.current) {
+      clearTimeout(bufferingTimerRef.current);
+    }
+    setError('');
+    setShowBufferingImage(true);
+    bufferingTimerRef.current = setTimeout(() => {
+      setShowBufferingImage(false);
+      setError('Please try again after sometime.');
+    }, 45000);
+  };
+
   const handleSubmit = async e => {
     e.preventDefault();
     setError('');
     setShowBufferingImage(false);
+    if (bufferingTimerRef.current) {
+      clearTimeout(bufferingTimerRef.current);
+    }
 
     if (!form.name || !form.email || !form.phone || !form.password || !form.confirmPass) {
       setError('All fields are required');
@@ -87,15 +111,19 @@ export default function Signup() {
         window.location.href = '/dashboard';
       } else {
         if (response.data?.email_sent === false) {
-          setShowBufferingImage(true);
+          startBufferingFlow();
           return;
         }
         navigate(`/verify-otp?email=${encodeURIComponent(form.email)}`, { state: { email: form.email } });
       }
     } catch (err) {
       const parsed = parseApiError(err, 'Signup failed. Please try again.');
-      setShowBufferingImage(Boolean(parsed.isBuffering));
-      setError(parsed.isBuffering ? '' : parsed.message);
+      if (parsed.isBuffering) {
+        startBufferingFlow();
+      } else {
+        setShowBufferingImage(false);
+        setError(parsed.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -298,7 +326,7 @@ export default function Signup() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || showBufferingImage}
             style={{
               width: '100%', padding: '12px',
               background: loading ? '#C4B5F0' : 'linear-gradient(135deg, #5B3FA8, #7C5DC7)',
@@ -308,7 +336,7 @@ export default function Signup() {
               boxShadow: loading ? 'none' : '0 4px 16px rgba(91,63,168,0.35)',
             }}
           >
-            {loading ? 'Creating account...' : 'Create Account'}
+            {loading ? 'Creating account...' : (showBufferingImage ? 'Please wait...' : 'Create Account')}
           </button>
         </form>
 

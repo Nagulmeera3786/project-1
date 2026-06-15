@@ -681,13 +681,31 @@ export default function SMSSend() {
       });
 
       const responseData = response.data || {};
+      const isSmppDlt = transport === 'smpp' && smppProfile === 'dlt';
+      const dltMessageIds = [];
+
+      if (responseData?.message_id) {
+        dltMessageIds.push(String(responseData.message_id));
+      }
+
+      if (Array.isArray(responseData?.message_ids)) {
+        responseData.message_ids.forEach((id) => {
+          if (id) {
+            dltMessageIds.push(String(id));
+          }
+        });
+      }
 
       if (responseData?.total_targets) {
-        setSuccess(
-          `Completed via ${responseData.transport === 'smpp' ? 'SMPP' : 'SMS API'}. Total: ${responseData.total_targets}, Sent: ${responseData.sent_count}, Scheduled: ${responseData.scheduled_count}, Failed: ${responseData.failed_count}, Skipped: ${responseData.skipped_rows}`
-        );
+        if (isSmppDlt) {
+          setSuccess(dltMessageIds.length > 0 ? dltMessageIds.join(', ') : 'N/A');
+        } else {
+          setSuccess(
+            `Completed via ${responseData.transport === 'smpp' ? 'SMPP' : 'SMS API'}. Total: ${responseData.total_targets}, Sent: ${responseData.sent_count}, Scheduled: ${responseData.scheduled_count}, Failed: ${responseData.failed_count}, Skipped: ${responseData.skipped_rows}`
+          );
+        }
 
-        if (responseData.failed_count > 0) {
+        if (!isSmppDlt && responseData.failed_count > 0) {
           const summaryText = Array.isArray(responseData.failure_summary)
             ? responseData.failure_summary
               .slice(0, 3)
@@ -712,7 +730,11 @@ export default function SMSSend() {
       } else if (responseData?.delivery_action === 'scheduled') {
         setSuccess('SMS scheduled successfully');
       } else {
-        setSuccess(`${responseData.transport === 'smpp' ? 'SMPP' : 'SMS'} sent successfully! Message ID: ${responseData.message_id || 'N/A'}`);
+        if (isSmppDlt) {
+          setSuccess(dltMessageIds.length > 0 ? dltMessageIds.join(', ') : 'N/A');
+        } else {
+          setSuccess(`${responseData.transport === 'smpp' ? 'SMPP' : 'SMS'} sent successfully! Message ID: ${responseData.message_id || 'N/A'}`);
+        }
       }
 
       if (!isSmppTransport) {
