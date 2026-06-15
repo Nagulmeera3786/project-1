@@ -29,11 +29,17 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+# Work around known docker compose plugin race/panic on some builds.
+export COMPOSE_PARALLEL_LIMIT=1
+
 echo "[1/4] Pulling latest source..."
 git pull
 
-echo "[2/4] Building and starting containers..."
-docker compose -f "$COMPOSE_FILE" up -d --build
+echo "[2/4] Building and starting containers (sequential mode)..."
+docker compose -f "$COMPOSE_FILE" up -d db
+docker compose -f "$COMPOSE_FILE" up -d --build --no-deps backend
+docker compose -f "$COMPOSE_FILE" up -d --build --no-deps frontend
+docker compose -f "$COMPOSE_FILE" up -d --build --no-deps nginx
 
 echo "[3/4] Container status..."
 docker compose -f "$COMPOSE_FILE" ps
