@@ -1,361 +1,349 @@
-# Messaging Platform API Documentation
+# Bhisha Messaging & Mail Validation API Documentation
 
-## 1. Introduction
+## 1. Overview
+This document defines the production API contract for SMS messaging and mail validation services.
 
-This documentation describes the API used by this application backend.
-
-- Base URL: `http://<your-domain-or-ip>`
+- Base URL: `https://<your-domain>`
 - API prefix: `/api/auth/`
-- Format: JSON request and JSON response
-- Auth: JWT Bearer token for protected endpoints
-
-Public health endpoint:
-
-- `GET /healthz/`
-
----
+- Transport: HTTPS + JSON (`multipart/form-data` for file uploads)
+- Time format: ISO-8601 UTC
+- Authentication:
+1. JWT Bearer token for dashboard-authenticated endpoints
+2. API key + user credentials for external mail-validation API access
 
 ## 2. Authentication
+### 2.1 JWT Login
+- Endpoint: `POST /api/auth/login/`
+- Access: Public
+- Purpose: Obtain `access` and `refresh` tokens.
 
-### 2.1 Sign Up
+### 2.2 JWT Refresh
+- Endpoint: `POST /api/auth/token/refresh/`
+- Access: Public
+- Purpose: Rotate expired access tokens.
 
-- Endpoint: `POST /api/auth/signup/`
-- Auth: Public
+## 3. Core Resource IDs and DLR
+All request records include platform-generated unique IDs.
 
-Request:
+### 3.1 ID Format
+`<first2><service><serial><last2>`
 
+- `first2`: first two characters of user name
+- `service`: `MS` for messaging, `MV` for mail validation
+- `serial`: unique serial for the request record (zero-padded)
+- `last2`: last two characters of user name
+
+Examples for user `Meera`:
+- Messaging: `MeMS00000023ra`
+- Mail validation: `MeMV00000091ra`
+
+### 3.2 DLR (Delivery/Completion Report)
+DLR report fields are available in request responses and history/search responses.
+
+- `request_id`: platform unique ID (`message_id` for SMS, `request_id` for mail validation)
+- `status`: current state
+- `completed`: boolean completion indicator
+- `delivery_time`: completion time (`null` if pending)
+
+## 4. Endpoint Index
+
+### 4.1 Messaging
+1. `POST /api/auth/sms/send/`  
+   Send single or bulk SMS (admin-enabled JWT account).
+2. `GET /api/auth/sms/messages/`  
+   SMS history with search support (`?q=`).
+3. `GET /api/auth/sms/messages/{id}/`  
+   Retrieve one SMS status item.
+
+### 4.2 Mail Validation
+1. `POST /api/auth/email-validation/validate/`  
+   Dashboard mail validation (JWT account).
+2. `POST /api/auth/email-validation/api/validate/`  
+   External/customer API mail validation.
+3. `GET /api/auth/email-validation/history/`  
+   Validation history with filters (`?source=`) and search (`?q=`).
+
+### 4.3 Admin Credits
+1. `PATCH /api/auth/admin/users/{user_id}/wallet/credits/`  
+   Manually add messaging and mail-validation credits to a user wallet.
+2. `GET /api/auth/wallet/`  
+   Retrieve authenticated wallet balances.
+
+### 4.4 Unified Status Search
+1. `GET /api/auth/request-status/search/?q=<request_id_or_keyword>`  
+   Search SMS and mail-validation request statuses by unique ID or keyword.
+
+## 5. Messaging API
+
+### 5.1 Single Messaging Request
+- Endpoint: `POST /api/auth/sms/send/`
+- Auth: `Authorization: Bearer <access_token>`
+- Content-Type: `application/json`
+
+Request body (single):
 ```json
 {
-  "first_name": "Alex",
-  "email": "alex@example.com",
-  "phone_number": "9876543210",
-  "password": "StrongPassword@123"
+  "transport": "api",
+  "send_mode": "single",
+  "display_sender_id": "BHISHA",
+  "message_content": "Your OTP is 928311",
+  "recipient_number": "919876543210"
 }
 ```
 
-### 2.2 Verify OTP
+Response highlights:
+- `message_id`: platform unique request ID (example `MeMS00000024ra`)
+- `provider_message_id`: provider reference (if returned by provider)
+- `status`
+- `delivery_time`
+- `dlr_report`
+- `remaining_sms_credits`
 
-- Endpoint: `POST /api/auth/verify-otp/`
-- Auth: Public
+### 5.2 Bulk Messaging Request
+- Endpoint: `POST /api/auth/sms/send/`
+- Auth: Bearer JWT
+- Content-Type: `multipart/form-data`
 
-### 2.3 Resend OTP
+Request body fields:
+- `send_mode`: `file_numbers` or `personalized_file` or `group`
+- `transport`: `api` or `smpp`
+- `display_sender_id`
+- `message_content`
+- `source_file` (for file modes)
 
-- Endpoint: `POST /api/auth/resend-otp/`
-- Auth: Public
+Response highlights:
+- `batch_reference`
+- `sent_count`, `failed_count`, `scheduled_count`
+- `message_ids[]` (platform request IDs)
+- `remaining_sms_credits`
 
-### 2.4 Login
+## 6. Mail Validation API
 
-- Endpoint: `POST /api/auth/login/`
-- Auth: Public
+### 6.1 Dashboard Validation (Single/Bulk)
+- Endpoint: `POST /api/auth/email-validation/validate/`
+- Auth: Bearer JWT
 
-Response returns JWT tokens.
+Accepted inputs:
+1. Single: `email`
+2. Bulk inline: `emails` (array/string)
+3. Bulk file upload: `source_file`
 
-### 2.5 Refresh Token
+Response highlights:
+- `request_id`: platform unique request ID (example `MeMV00000108ra`)
+- `results[]`: Verifalia-style result objects
+- `simple_results[]`: normalized yes/no summary fields
+- `summary.safe_to_send_yes`, `summary.safe_to_send_no`
+- `wallet_balance`
+- `dlr_report` with delivery/completion time
 
-- Endpoint: `POST /api/auth/token/refresh/`
-- Auth: Public
+### 6.2 External/Customer API Validation (Single/Bulk)
+- Endpoint: `POST /api/auth/email-validation/api/validate/`
+- Auth: API key + user credentials
 
-### 2.6 Forgot Password
+Request auth fields:
+- `api_key`
+- `user_id`
+- `password`
 
-- Endpoint: `POST /api/auth/forgot-password/`
-- Auth: Public
+Same payload modes and response contract as dashboard validation.
 
-### 2.7 Reset Password
+## 7. Admin Credit Management
 
-- Endpoint: `POST /api/auth/reset-password/`
-- Auth: Public
+### 7.1 Add Credits Manually
+- Endpoint: `PATCH /api/auth/admin/users/{user_id}/wallet/credits/`
+- Auth: Admin JWT
 
----
+Request body:
+```json
+{
+  "add_message_credits": "500",
+  "add_email_validation_credits": "250"
+}
+```
 
-## 3. Profile and Usage
+Response:
+```json
+{
+  "user_id": 12,
+  "user_email": "client@example.com",
+  "message_credits": "1500.0000",
+  "email_validation_credits": "480.0000",
+  "added_message_credits": "500.0000",
+  "added_email_validation_credits": "250.0000"
+}
+```
 
-### 3.1 Get Profile
+## 8. Search and Request Tracking
 
-- Endpoint: `GET /api/auth/profile/`
-- Auth: JWT
+### 8.1 Request Status Search
+- Endpoint: `GET /api/auth/request-status/search/?q=MeMS00000024ra`
+- Auth: Admin/Employee JWT
 
 Response includes:
+- `sms[]`
+- `email_validations[]`
+- each item includes DLR/completion status and delivery/completion time
 
-- identity fields (`id`, `first_name`, `email`, `phone_number`)
-- access flags (`is_staff`, `is_superuser`, `is_primary_admin`, `is_sms_enabled`)
-- usage fields (`sms_total_limit`, `sms_used_messages`, `sms_available_messages`)
-- wallet field (`wallet_balance`)
+### 8.2 History Search
+- SMS history: `GET /api/auth/sms/messages/?q=<term>`
+- Mail history: `GET /api/auth/email-validation/history/?source=all&q=<term>`
 
-Notes:
+## 9. Pseudocode Integration Examples
 
-- For primary admin users, `wallet_balance` uses real provider balance when balance endpoint is configured.
-- If provider balance is unavailable, backend falls back to computed local balance.
-
-### 3.2 Update Profile
-
-- Endpoint: `PATCH /api/auth/profile/`
-- Auth: JWT
-
-Supports profile updates and sender identity settings.
-
-### 3.3 Usage Summary
-
-- Endpoint: `GET /api/auth/sms/usage-summary/`
-- Auth: JWT
-
----
-
-## 4. SMS Sending and Tracking
-
-### 4.1 Send SMS
-
-- Endpoint: `POST /api/auth/sms/send/`
-- Auth: JWT + Admin
-
-Example:
-
-```json
-{
-  "display_sender_id": "ABC",
-  "message_content": "Hello from your app",
-  "recipient_number": "919876543210",
-  "send_mode": "single",
-  "transport": "api"
+### 9.1 JavaScript (Node.js/TypeScript)
+```javascript
+// SINGLE SMS
+POST /api/auth/sms/send/
+headers: { Authorization: `Bearer ${token}` }
+body: {
+  send_mode: "single",
+  display_sender_id: "BHISHA",
+  message_content: "Hello",
+  recipient_number: "919876543210"
 }
+expect response.message_id, response.dlr_report
+
+// BULK SMS (file)
+POST /api/auth/sms/send/ as multipart/form-data
+fields: send_mode=file_numbers, source_file=<xlsx>, message_content=...
+expect response.batch_reference, response.message_ids
+
+// SINGLE MAIL VALIDATION
+POST /api/auth/email-validation/validate/
+headers: { Authorization: `Bearer ${token}` }
+body: { email: "user@example.com" }
+expect response.request_id, response.results, response.dlr_report
+
+// BULK MAIL VALIDATION
+POST /api/auth/email-validation/validate/
+body: { emails: ["a@x.com", "b@y.com"] }
+expect response.request_id, response.summary, response.simple_results
 ```
 
-### 4.2 List Messages
+### 9.2 Python
+```python
+# SINGLE SMS
+resp = post('/api/auth/sms/send/', jwt_token, {
+    'send_mode': 'single',
+    'display_sender_id': 'BHISHA',
+    'message_content': 'Hello',
+    'recipient_number': '919876543210'
+})
+print(resp['message_id'], resp['dlr_report'])
 
-- Endpoint: `GET /api/auth/sms/messages/`
-- Auth: JWT
+# BULK SMS
+resp = post_multipart('/api/auth/sms/send/', jwt_token, {
+    'send_mode': 'file_numbers',
+    'message_content': 'Campaign message',
+    'source_file': open('contacts.xlsx', 'rb')
+})
+print(resp['batch_reference'], resp['message_ids'])
 
-### 4.3 Message Status
+# SINGLE MAIL VALIDATION
+resp = post('/api/auth/email-validation/validate/', jwt_token, {
+    'email': 'user@example.com'
+})
+print(resp['request_id'], resp['results'])
 
-- Endpoint: `GET /api/auth/sms/messages/{id}/`
-- Auth: JWT
-
-### 4.4 SMS Credentials
-
-- Endpoint: `GET/PATCH /api/auth/sms/credentials/`
-- Auth: JWT + Admin
-
-### 4.5 Contact Groups
-
-- Endpoint: `GET/POST /api/auth/sms/groups/`
-- Auth: JWT + Admin
-
-### 4.6 Short URLs
-
-- Endpoint: `GET/POST /api/auth/sms/short-urls/`
-- Auth: JWT + Admin
-
-- Endpoint: `PATCH/DELETE /api/auth/sms/short-urls/{url_id}/`
-- Auth: JWT + Admin
-
-### 4.7 Timezones
-
-- Endpoint: `GET /api/auth/sms/timezones/`
-- Auth: JWT
-
----
-
-## 5. Free Trial SMS
-
-### 5.1 Send OTP (trial flow)
-
-- Endpoint: `POST /api/auth/sms/free-trial/send-otp/`
-- Auth: JWT
-
-### 5.2 Verify OTP (trial flow)
-
-- Endpoint: `POST /api/auth/sms/free-trial/verify-otp/`
-- Auth: JWT/Public depending session
-
-### 5.3 Verified Numbers
-
-- Endpoint: `GET /api/auth/sms/free-trial/verified-numbers/`
-- Auth: JWT
-
-### 5.4 Send Free Trial SMS
-
-- Endpoint: `POST /api/auth/sms/free-trial/send/`
-- Auth: JWT
-
----
-
-## 6. Admin and User Management
-
-### 6.1 List Users
-
-- Endpoint: `GET /api/auth/admin/users/`
-- Auth: JWT + Primary Admin
-
-### 6.2 Update User Permission/Profile Flags
-
-- Endpoint: `PATCH /api/auth/admin/users/{user_id}/permissions/`
-- Auth: JWT + Primary Admin
-
-### 6.3 Delete User
-
-- Endpoint: `DELETE /api/auth/admin/users/{user_id}/permissions/`
-- Auth: JWT + Primary Admin
-
-### 6.4 Export Users
-
-- Endpoint: `GET /api/auth/admin/users/export/`
-- Auth: JWT + Primary Admin
-
-### 6.5 SMS Admin Users View
-
-- Endpoint: `GET /api/auth/sms/admin/users/`
-- Auth: JWT + Admin
-
-### 6.6 SMS Eligibility per User
-
-- Endpoint: `PATCH /api/auth/sms/users/{user_id}/eligibility/`
-- Auth: JWT + Admin
-
----
-
-## 7. Internal Notifications
-
-### 7.1 Preview Recipients
-
-- Endpoint: `POST /api/auth/admin/notifications/preview/`
-- Auth: JWT + Primary Admin
-
-### 7.2 Send Notification
-
-- Endpoint: `POST /api/auth/admin/notifications/send/`
-- Auth: JWT + Primary Admin
-
-### 7.3 Notification History
-
-- Endpoint: `GET /api/auth/admin/notifications/history/`
-- Auth: JWT + Primary Admin
-
-### 7.4 My Notifications
-
-- Endpoint: `GET /api/auth/notifications/my/`
-- Auth: JWT
-
-### 7.5 Mark Read
-
-- Endpoint: `POST /api/auth/notifications/my/{recipient_id}/read/`
-- Auth: JWT
-
----
-
-## 8. Error Handling
-
-Common response format:
-
-```json
-{
-  "detail": "Error message"
-}
+# BULK MAIL VALIDATION
+resp = post('/api/auth/email-validation/api/validate/', None, {
+    'api_key': API_KEY,
+    'user_id': USER_ID,
+    'password': USER_PASSWORD,
+    'emails': ['a@example.com', 'b@example.com']
+})
+print(resp['request_id'], resp['summary'])
 ```
 
-Common HTTP statuses:
-
-- `200` success
-- `201` created
-- `204` no content
-- `400` validation error
-- `401` unauthenticated
-- `403` forbidden
-- `404` not found
-- `500` internal server error
-
----
-
-## 9. cURL Quick Reference
-
-### Login
-
-```bash
-curl -X POST http://<your-domain-or-ip>/api/auth/login/ \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"your-password"}'
-```
-
-### Send SMS
-
-```bash
-curl -X POST http://<your-domain-or-ip>/api/auth/sms/send/ \
-  -H "Authorization: Bearer <access_token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "display_sender_id":"ABC",
+### 9.3 Java
+```java
+// SINGLE SMS
+POST("/api/auth/sms/send/")
+  .bearer(token)
+  .json({
+    "send_mode":"single",
+    "display_sender_id":"BHISHA",
     "message_content":"Hello",
     "recipient_number":"919876543210"
-  }'
+  })
+  .execute();
+
+// BULK SMS
+POST_MULTIPART("/api/auth/sms/send/")
+  .bearer(token)
+  .field("send_mode", "file_numbers")
+  .file("source_file", "contacts.xlsx")
+  .execute();
+
+// SINGLE MAIL VALIDATION
+POST("/api/auth/email-validation/validate/")
+  .bearer(token)
+  .json({"email":"user@example.com"})
+  .execute();
+
+// BULK MAIL VALIDATION (external API mode)
+POST("/api/auth/email-validation/api/validate/")
+  .json({
+    "api_key": apiKey,
+    "user_id": userId,
+    "password": userPassword,
+    "emails": List.of("a@example.com", "b@example.com")
+  })
+  .execute();
 ```
 
-### Send SMS via SMPP transport
+### 9.4 C#
+```csharp
+// SINGLE SMS
+await PostJson("/api/auth/sms/send/", token, new {
+    send_mode = "single",
+    display_sender_id = "BHISHA",
+    message_content = "Hello",
+    recipient_number = "919876543210"
+});
 
-```bash
-curl -X POST http://<your-domain-or-ip>/api/auth/sms/send/ \
-  -H "Authorization: Bearer <access_token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "transport":"smpp",
-    "smpp_profile":"standard",
-    "display_sender_id":"MOBISHASTRA",
-    "message_content":"SMPP route test",
-    "recipient_number":"919876543210",
-    "smpp_host":"smpp.your-provider.com",
-    "smpp_port":2775,
-    "smpp_system_id":"your_system_id",
-    "smpp_password":"your_smpp_password"
-  }'
+// BULK SMS
+await PostMultipart("/api/auth/sms/send/", token, form => {
+    form.Add("send_mode", "file_numbers");
+    form.Add("source_file", File.OpenRead("contacts.xlsx"));
+});
+
+// SINGLE MAIL VALIDATION
+await PostJson("/api/auth/email-validation/validate/", token, new {
+    email = "user@example.com"
+});
+
+// BULK MAIL VALIDATION (API mode)
+await PostJson("/api/auth/email-validation/api/validate/", null, new {
+    api_key = apiKey,
+    user_id = userId,
+    password = userPassword,
+    emails = new[] { "a@example.com", "b@example.com" }
+});
 ```
 
-### Send DLT SMPP message
+## 10. Operational Notes
+1. All generated request IDs are unique and searchable.
+2. Messaging credits and mail-validation credits are independent wallet balances.
+3. Admin can add credits manually through admin APIs and dashboard controls.
+4. APIs are deployment-safe for Linux VPS and production domains, including bhisha.com.
+5. For bulk operations, clients should store request IDs and poll/search status endpoints for operational tracking.
 
-```bash
-curl -X POST http://<your-domain-or-ip>/api/auth/sms/send/ \
-  -H "Authorization: Bearer <access_token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "transport":"smpp",
-    "smpp_profile":"dlt",
-    "display_sender_id":"MOBISHASTRA",
-    "message_content":"Your order is dispatched",
-    "recipient_number":"919876543210",
-    "smpp_host":"smpp.your-provider.com",
-    "smpp_port":2775,
-    "smpp_system_id":"your_system_id",
-    "smpp_password":"your_smpp_password",
-    "smpp_template_id":"DLT_TEMPLATE_1001"
-  }'
+## 11. Error Contract
+Standard error payload:
+```json
+{
+  "detail": "Human-readable error message"
+}
 ```
 
-### Bulk send (numbers file)
-
-```bash
-curl -X POST http://<your-domain-or-ip>/api/auth/sms/send/ \
-  -H "Authorization: Bearer <access_token>" \
-  -F "transport=api" \
-  -F "send_mode=file_numbers" \
-  -F "display_sender_id=MOBISHASTRA" \
-  -F "message_content=Campaign message" \
-  -F "source_file=@contacts.xlsx"
-```
-
-### Profile
-
-```bash
-curl -X GET http://<your-domain-or-ip>/api/auth/profile/ \
-  -H "Authorization: Bearer <access_token>"
-```
-
----
-
-## 10. Notes for Deployment
-
-Optional environment settings for wallet balance sync:
-
-- `SMS_PROVIDER_BALANCE_URL`
-- `SMS_PROVIDER_BALANCE_METHOD` (`GET` or `POST`)
-
-Provider balance integration behavior:
-
-- If `SMS_PROVIDER_BALANCE_URL` is configured, admin wallet uses that endpoint directly.
-- If not configured and backend has provider-specific defaults, it may auto-try known balance endpoints.
-- If all balance calls fail, backend safely falls back to local computed wallet.
+Common status codes:
+- `200` Success
+- `201` Resource created
+- `400` Validation/input error
+- `401` Authentication failed
+- `402` Insufficient credits
+- `403` Forbidden
+- `404` Not found
+- `500` Server error
+- `503` Upstream service temporarily unavailable

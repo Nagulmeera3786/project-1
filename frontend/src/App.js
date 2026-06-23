@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import Signup from './components/Signup';
 import VerifyOtp from './components/VerifyOtp';
+import EmployeeDualOTP from './components/EmployeeDualOTP';
 import Login from './components/Login';
 import ForgotPassword from './components/ForgotPassword';
 import ResetPassword from './components/ResetPassword';
@@ -29,6 +30,7 @@ import './App.css';
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isSupportUser, setIsSupportUser] = useState(false);
   const [loading, setLoading] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
 
@@ -50,6 +52,7 @@ function App() {
 
       if (!loggedIn) {
         setIsAdmin(false);
+        setIsSupportUser(false);
         setLoading(false);
         return;
       }
@@ -63,10 +66,12 @@ function App() {
             response.data?.is_staff ||
             response.data?.is_superuser
           ));
+          setIsSupportUser(Boolean(response.data?.can_view_support_data || response.data?.is_employee));
         }
       } catch {
         if (mounted) {
           setIsAdmin(false);
+          setIsSupportUser(false);
         }
       } finally {
         if (mounted) {
@@ -108,6 +113,18 @@ function App() {
 
   const privateRoute = (moduleName, element) =>
     wrapModule(moduleName, isLoggedIn ? element : <Navigate to="/login" replace />);
+
+  const supportRoute = (moduleName, element) => {
+    if (!isLoggedIn) {
+      return wrapModule(moduleName, <Navigate to="/login" replace />);
+    }
+
+    if (profileLoading) {
+      return wrapModule(moduleName, <div style={{ padding: '20px' }}>Checking access...</div>);
+    }
+
+    return wrapModule(moduleName, (isAdmin || isSupportUser) ? element : <Navigate to="/dashboard" replace />);
+  };
 
   const adminRoute = (moduleName, element) => {
     if (!isLoggedIn) {
@@ -199,6 +216,10 @@ function App() {
           element={wrapModule('Verify OTP', isLoggedIn ? <Navigate to="/dashboard" replace /> : <VerifyOtp />)}
         />
         <Route
+          path="/employee/verify-dual-otp"
+          element={wrapModule('Employee Dual OTP', isLoggedIn ? <Navigate to="/dashboard" replace /> : <EmployeeDualOTP />)}
+        />
+        <Route
           path="/login"
           element={wrapModule('Login', isLoggedIn ? <Navigate to="/dashboard" replace /> : <Login />)}
         />
@@ -206,7 +227,7 @@ function App() {
         <Route path="/reset-password" element={wrapModule('Reset Password', <ResetPassword />)} />
         <Route path="/profile" element={privateRoute('Profile', <UserProfile />)} />
         <Route path="/api-docs" element={wrapModule('API Docs', <ApiDocsOverview />)} />
-        <Route path="/admin/users" element={adminRoute('Admin Users', <AdminUsers />)} />
+        <Route path="/admin/users" element={supportRoute('Support Users', <AdminUsers />)} />
         <Route path="/dashboard" element={privateRoute('Dashboard', <DashboardLayout page="dashboard" />)} />
         <Route path="/dashboard/recharge" element={privateRoute('Recharge & Payments', <DashboardLayout page="recharge" />)} />
         <Route path="/dashboard/contact-support" element={privateRoute('Contact Support', <DashboardLayout page="contactSupport" />)} />
@@ -215,12 +236,12 @@ function App() {
         <Route path="/sms/send" element={adminRoute('SMS Send', <SMSSend />)} />
         <Route path="/sms/free-trial" element={privateRoute('Free Trial SMS', <FreeTrialSMS />)} />
         <Route path="/sms/history" element={privateRoute('SMS History', <SMSHistory />)} />
-        <Route path="/admin/sms" element={adminRoute('Admin SMS Dashboard', <AdminSMSDashboard />)} />
+        <Route path="/admin/sms" element={supportRoute('Support SMS Dashboard', <AdminSMSDashboard />)} />
         <Route
           path="/admin/sms/credentials"
-          element={adminRoute('Admin SMS Credentials', <AdminSMSCredentials />)}
+          element={supportRoute('Support SMS Credentials', <AdminSMSCredentials />)}
         />
-        <Route path="/admin/notifications" element={adminRoute('Admin Notifications', <AdminNotifications />)} />
+        <Route path="/admin/notifications" element={supportRoute('Support Notifications', <AdminNotifications />)} />
         <Route path="/broadcast/email-validation" element={privateRoute('Email Validation', <EmailValidation />)} />
         <Route path="/notifications" element={privateRoute('User Notifications', <UserNotifications />)} />
         

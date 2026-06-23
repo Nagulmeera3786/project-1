@@ -19,6 +19,7 @@ import {
   FaMoneyBillWave,
   FaCreditCard,
   FaWallet,
+
 } from "react-icons/fa";
 import API from "../api";
 import "../App.css";
@@ -26,6 +27,7 @@ import "../App.css";
 const LeftSidebar = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isSupportUser, setIsSupportUser] = useState(false);
   const [showBroadcastSubmenu, setShowBroadcastSubmenu] = useState(false);
   const [showPeopleSubmenu, setShowPeopleSubmenu] = useState(false);
   const [showUtilitiesSubmenu, setShowUtilitiesSubmenu] = useState(false);
@@ -41,9 +43,11 @@ const LeftSidebar = () => {
           API.get('sms/groups/'),
         ]);
         setIsAdmin(Boolean(profileResponse.data?.is_staff));
+        setIsSupportUser(Boolean(profileResponse.data?.can_view_support_data || profileResponse.data?.is_employee) && !Boolean(profileResponse.data?.is_staff));
         setGroups(groupsResponse.data || []);
       } catch (err) {
         setIsAdmin(false);
+        setIsSupportUser(false);
         setGroups([]);
       }
     };
@@ -62,6 +66,7 @@ const LeftSidebar = () => {
     { icon: <FaUsers />, label: "People", path: null, action: () => setShowPeopleSubmenu((prev) => !prev) },
     { icon: <FaFileAlt />, label: "Content", path: null, action: null },
     { icon: <FaExchangeAlt />, label: "Exchange", path: null, action: null },
+    { icon: <FaKey />, label: "API Keys", path: null, action: null },
     { icon: <FaMoneyBillWave />, label: "Utilities", path: null, action: () => setShowUtilitiesSubmenu((prev) => !prev) },
     { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
   ];
@@ -76,7 +81,17 @@ const LeftSidebar = () => {
     { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
   ];
 
-  const baseMenuItems = isAdmin ? adminBaseMenuItems : userBaseMenuItems;
+  const supportBaseMenuItems = [
+    { icon: <FaHome />, label: "Support Home", path: '/dashboard', action: () => navigate('/dashboard') },
+    { icon: <FaUsers />, label: "Users", path: '/admin/users', action: () => navigate('/admin/users') },
+    { icon: <FaHistory />, label: "Validation History", path: '/broadcast/email-validation?tab=history', action: () => navigate('/broadcast/email-validation?tab=history') },
+    { icon: <FaKey />, label: "API Keys", path: '/broadcast/email-validation?tab=keys', action: () => navigate('/broadcast/email-validation?tab=keys') },
+    { icon: <FaHistory />, label: "SMS History", path: '/sms/history', action: () => navigate('/sms/history') },
+    { icon: <FaWallet />, label: "Wallet & Credits", path: '/broadcast/email-validation', action: () => navigate('/broadcast/email-validation') },
+    { icon: <FaPhoneAlt />, label: "Notifications", path: '/admin/notifications', action: () => navigate('/admin/notifications') },
+  ];
+
+  const baseMenuItems = isAdmin ? adminBaseMenuItems : (isSupportUser ? supportBaseMenuItems : userBaseMenuItems);
 
   const broadcastSubMenuItems = [
     { icon: <FaEnvelope />, label: 'Send SMS', action: () => navigate('/sms/send') },
@@ -90,14 +105,16 @@ const LeftSidebar = () => {
   const smsMenuItems = [
     {
       icon: <FaEnvelope />,
-      label: isAdmin ? 'Send SMS' : 'My SMS',
-      path: isAdmin ? '/sms/send' : '/sms/free-trial',
-      action: () => navigate(isAdmin ? '/sms/send' : '/sms/free-trial'),
+      label: isAdmin ? 'Send SMS' : (isSupportUser ? 'Read SMS' : 'My SMS'),
+      path: isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/free-trial'),
+      action: () => navigate(isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/free-trial')),
     },
     { icon: <FaHistory />, label: 'SMS History', path: '/sms/history', action: () => navigate('/sms/history') },
   ];
 
   const utilitiesSubMenuItems = [
+    { icon: <FaKey />, label: 'API Keys', path: '/broadcast/email-validation?tab=keys', action: () => navigate('/broadcast/email-validation?tab=keys') },
+    { icon: <FaHistory />, label: 'Validation History', path: '/broadcast/email-validation?tab=history', action: () => navigate('/broadcast/email-validation?tab=history') },
     { icon: <FaCreditCard />, label: 'Credit Details', path: '/dashboard/recharge?tab=credit-details', action: () => navigate('/dashboard/recharge?tab=credit-details') },
     { icon: <FaWallet />, label: 'Recharge Account', path: '/dashboard/recharge?tab=recharge', action: () => navigate('/dashboard/recharge?tab=recharge') },
     { icon: <FaMoneyBillWave />, label: 'Payment Details', path: '/dashboard/recharge?tab=payment-details', action: () => navigate('/dashboard/recharge?tab=payment-details') },

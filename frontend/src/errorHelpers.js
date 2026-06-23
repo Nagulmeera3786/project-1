@@ -15,21 +15,8 @@ const statusReasonMap = {
 const genericBusyMessage = 'Server is busy, please try again later.';
 
 export const buildOtpDiagnostics = (data) => {
-  if (!data || typeof data !== 'object') {
-    return null;
-  }
-
-  const diagnostics = {
-    errorCode: data?.error_code || null,
-    provider: data?.email_delivery?.provider || null,
-    host: data?.email_delivery?.host || null,
-    backend: data?.email_delivery?.backend || null,
-    nextStep: data?.next_step || null,
-    otpGenerated: data?.otp_generated,
-  };
-
-  const hasAny = Object.values(diagnostics).some((value) => value !== null && value !== undefined && value !== '');
-  return hasAny ? diagnostics : null;
+  // Never expose backend/provider diagnostic internals to end users.
+  return null;
 };
 
 export const parseApiError = (err, fallbackMessage) => {

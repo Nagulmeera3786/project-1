@@ -5,11 +5,14 @@ import { FaUsers, FaDownload, FaArrowLeft } from 'react-icons/fa';
 
 export default function AdminUsers() {
   const [users, setUsers] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [canManageUsers, setCanManageUsers] = useState(false);
   const [senderDrafts, setSenderDrafts] = useState({});
   const [senderSuggestions, setSenderSuggestions] = useState({});
   const [adminSenderIds, setAdminSenderIds] = useState([]);
+  const [creditDrafts, setCreditDrafts] = useState({});
   const [deletingUserId, setDeletingUserId] = useState(null);
   const navigate = useNavigate();
 
@@ -19,15 +22,26 @@ export default function AdminUsers() {
 
   const fetchUsers = async () => {
     try {
-      const [usersResponse, credentialsResponse] = await Promise.all([
-        API.get('admin/users/'),
-        API.get('sms/credentials/'),
-      ]);
+      const profileResponse = await API.get('profile/');
+      const manageUsers = Boolean(
+        profileResponse.data?.can_manage_support_data ||
+        profileResponse.data?.is_primary_admin ||
+        profileResponse.data?.is_staff ||
+        profileResponse.data?.is_superuser
+      );
 
-      setUsers(usersResponse.data);
+      const usersResponse = await API.get('admin/users/');
+      let credentialsResponse = { data: { sender_ids: [] } };
+      if (manageUsers) {
+        credentialsResponse = await API.get('sms/credentials/');
+      }
+
+      setCanManageUsers(manageUsers);
+      const userRows = Array.isArray(usersResponse.data) ? usersResponse.data : [];
+      setUsers(userRows);
       setAdminSenderIds(credentialsResponse.data?.sender_ids || []);
       const draftMap = {};
-      usersResponse.data.forEach((user) => {
+      userRows.forEach((user) => {
         draftMap[user.id] = {
           sender_id_type: user.sender_id_type || 'alphanumeric',
           sender_id: user.sender_id || '',
@@ -35,9 +49,17 @@ export default function AdminUsers() {
         };
       });
       setSenderDrafts(draftMap);
+      const draftCredits = {};
+      userRows.forEach((user) => {
+        draftCredits[user.id] = {
+          add_message_credits: '',
+          add_email_validation_credits: '',
+        };
+      });
+      setCreditDrafts(draftCredits);
     } catch (err) {
       if (err.response?.status === 403) {
-        setError('You do not have permission to access this page. Admin access required.');
+        setError('You do not have permission to access this page. Support or admin access required.');
       } else {
         setError(err.response?.data?.detail || 'Failed to load users');
       }
@@ -58,6 +80,10 @@ export default function AdminUsers() {
   };
 
   const saveSenderId = async (userId) => {
+    if (!canManageUsers) {
+      return;
+    }
+
     const draft = senderDrafts[userId] || { sender_id_type: 'alphanumeric', sender_id: '' };
     try {
       const response = await API.patch(`admin/users/${userId}/permissions/`, {
@@ -95,6 +121,10 @@ export default function AdminUsers() {
   };
 
   const updatePermission = async (userId, payload) => {
+    if (!canManageUsers) {
+      return;
+    }
+
     try {
       const response = await API.patch(`admin/users/${userId}/permissions/`, payload);
       setUsers((prev) =>
@@ -116,6 +146,10 @@ export default function AdminUsers() {
   };
 
   const deleteUser = async (userId, username) => {
+    if (!canManageUsers) {
+      return;
+    }
+
     if (!window.confirm(`Delete user ${username}? This action cannot be undone.`)) {
       return;
     }
@@ -140,6 +174,78 @@ export default function AdminUsers() {
       setDeletingUserId(null);
     }
   };
+
+  const updateCreditDraft = (userId, field, value) => {
+    setCreditDrafts((prev) => ({
+      ...prev,
+      [userId]: {
+        ...(prev[userId] || {}),
+        [field]: value,
+      },
+    }));
+  };
+
+  const saveWalletCredits = async (userId) => {
+    if (!canManageUsers) {
+      return;
+    }
+
+    const draft = creditDrafts[userId] || {};
+    const addMessage = Number(draft.add_message_credits || 0);
+    const addEmail = Number(draft.add_email_validation_credits || 0);
+
+    if (!Number.isFinite(addMessage) || !Number.isFinite(addEmail)) {
+      alert('Please enter valid credit values');
+      return;
+    }
+
+    try {
+      const response = await API.patch(`admin/users/${userId}/wallet/credits/`, {
+        add_message_credits: String(addMessage),
+        add_email_validation_credits: String(addEmail),
+      });
+
+      setUsers((prev) => prev.map((user) => (
+        user.id === userId
+          ? {
+              ...user,
+              wallet_balance: response.data.message_credits,
+              email_validation_balance: response.data.email_validation_credits,
+            }
+          : user
+      )));
+
+      setCreditDrafts((prev) => ({
+        ...prev,
+        [userId]: {
+          add_message_credits: '',
+          add_email_validation_credits: '',
+        },
+      }));
+    } catch (err) {
+      alert('Failed to update credits: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const filteredUsers = users.filter((user) => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      return true;
+    }
+    const haystack = [
+      user.username,
+      user.first_name,
+      user.last_name,
+      user.email,
+      user.phone_number,
+      user.sender_id,
+      user.free_trial_sender_id,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(query);
+  });
 
   const downloadExcel = async () => {
     try {
@@ -199,30 +305,42 @@ export default function AdminUsers() {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: '30px'
+        marginBottom: '14px'
       }}>
         <h2 style={{ margin: 0, color: '#111827' }}>
           <FaUsers style={{ marginRight: '10px' }} />
           Users Management
         </h2>
-        <button
-          onClick={downloadExcel}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '10px 20px',
-            backgroundColor: '#4CAF50',
-            color: 'white',
-            border: 'none',
-            borderRadius: '6px',
-            cursor: 'pointer',
-            fontSize: '14px',
-            fontWeight: 'bold'
-          }}
-        >
-          <FaDownload /> Download Excel
-        </button>
+        {canManageUsers && (
+          <button
+            onClick={downloadExcel}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '10px 20px',
+              backgroundColor: '#4CAF50',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold'
+            }}
+          >
+            <FaDownload /> Download Excel
+          </button>
+        )}
+      </div>
+
+      <div style={{ marginBottom: '16px' }}>
+        <input
+          type="search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search users by name, email, phone, sender ID..."
+          style={{ width: '100%', maxWidth: '420px', padding: '10px 12px', borderRadius: '8px', border: '1px solid #d1d5db' }}
+        />
       </div>
 
       <div style={{
@@ -254,7 +372,7 @@ export default function AdminUsers() {
             </tr>
           </thead>
           <tbody>
-            {users.map((user, index) => (
+            {filteredUsers.map((user, index) => (
               <tr
                 key={user.id}
                 style={{
@@ -322,95 +440,139 @@ export default function AdminUsers() {
                 </td>
                 <td style={{ padding: '15px', textAlign: 'center' }}>
                   <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
-                    <button
-                      onClick={() => updatePermission(user.id, { is_staff: !user.is_staff })}
-                      style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: user.is_staff ? '#ef5350' : '#42a5f5', color: 'white' }}
-                    >
-                      {user.is_staff ? 'Revoke Admin' : 'Grant Admin'}
-                    </button>
-                    <button
-                      onClick={() => updatePermission(user.id, { is_active: !user.is_active })}
-                      style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: user.is_active ? '#ef5350' : '#66bb6a', color: 'white' }}
-                    >
-                      {user.is_active ? 'Deactivate' : 'Activate'}
-                    </button>
-                    <button
-                      onClick={() => updatePermission(user.id, { is_sms_enabled: !user.is_sms_enabled })}
-                      style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: user.is_sms_enabled ? '#ef5350' : '#66bb6a', color: 'white' }}
-                    >
-                      {user.is_sms_enabled ? 'Disable SMS' : 'Enable SMS'}
-                    </button>
-                    <button
-                      onClick={() => deleteUser(user.id, user.username)}
-                      disabled={deletingUserId === user.id}
-                      style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: deletingUserId === user.id ? 'not-allowed' : 'pointer', backgroundColor: '#c62828', color: 'white' }}
-                    >
-                      {deletingUserId === user.id ? 'Deleting...' : 'Delete User'}
-                    </button>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                    <select
-                      value={senderDrafts[user.id]?.sender_id_type || 'alphanumeric'}
-                      onChange={(e) => updateSenderDraft(user.id, 'sender_id_type', e.target.value)}
-                      style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd' }}
-                    >
-                      <option value="numeric">Numeric</option>
-                      <option value="alphanumeric">Alphanumeric</option>
-                    </select>
-                    <input
-                      type="text"
-                      value={senderDrafts[user.id]?.sender_id || ''}
-                      onChange={(e) => updateSenderDraft(user.id, 'sender_id', e.target.value)}
-                      placeholder="Sender ID"
-                      style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', width: '120px' }}
-                    />
-                    <button
-                      onClick={() => saveSenderId(user.id)}
-                      style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: '#5e35b1', color: 'white' }}
-                    >
-                      Save Sender
-                    </button>
-
-                    <select
-                      value={senderDrafts[user.id]?.free_trial_sender_id || ''}
-                      onChange={(e) => updateSenderDraft(user.id, 'free_trial_sender_id', e.target.value)}
-                      style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', width: '140px' }}
-                    >
-                      <option value="">Trial Sender ID</option>
-                      {adminSenderIds.map((senderId) => (
-                        <option key={`${user.id}-trial-${senderId}`} value={senderId}>{senderId}</option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={() => updatePermission(user.id, { free_trial_sender_id: senderDrafts[user.id]?.free_trial_sender_id || '' })}
-                      style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: '#00897b', color: 'white' }}
-                    >
-                      Save Trial Sender
-                    </button>
-                  </div>
-
-                  {(senderSuggestions[user.id] || []).length > 0 && (
-                    <div style={{ marginTop: '8px', display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                      {senderSuggestions[user.id].map((suggestedId) => (
+                    {canManageUsers ? (
+                      <>
                         <button
-                          key={`${user.id}-${suggestedId}`}
-                          onClick={() => updateSenderDraft(user.id, 'sender_id', suggestedId)}
-                          style={{
-                            padding: '4px 8px',
-                            border: '1px solid #5e35b1',
-                            borderRadius: '14px',
-                            backgroundColor: '#ede7f6',
-                            color: '#5e35b1',
-                            cursor: 'pointer',
-                            fontSize: '12px',
-                          }}
+                          onClick={() => updatePermission(user.id, { is_staff: !user.is_staff })}
+                          style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: user.is_staff ? '#ef5350' : '#42a5f5', color: 'white' }}
                         >
-                          {suggestedId}
+                          {user.is_staff ? 'Revoke Admin' : 'Grant Admin'}
                         </button>
-                      ))}
+                        <button
+                          onClick={() => updatePermission(user.id, { is_active: !user.is_active })}
+                          style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: user.is_active ? '#ef5350' : '#66bb6a', color: 'white' }}
+                        >
+                          {user.is_active ? 'Deactivate' : 'Activate'}
+                        </button>
+                        <button
+                          onClick={() => updatePermission(user.id, { is_sms_enabled: !user.is_sms_enabled })}
+                          style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: user.is_sms_enabled ? '#ef5350' : '#66bb6a', color: 'white' }}
+                        >
+                          {user.is_sms_enabled ? 'Disable SMS' : 'Enable SMS'}
+                        </button>
+                        <button
+                          onClick={() => deleteUser(user.id, user.username)}
+                          disabled={deletingUserId === user.id}
+                          style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: deletingUserId === user.id ? 'not-allowed' : 'pointer', backgroundColor: '#c62828', color: 'white' }}
+                        >
+                          {deletingUserId === user.id ? 'Deleting...' : 'Delete User'}
+                        </button>
+                      </>
+                    ) : (
+                      <span style={{ color: '#6B7280', fontWeight: 600 }}>Read only</span>
+                    )}
+                  </div>
+
+                  {canManageUsers ? (
+                    <>
+                      <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                        <select
+                          value={senderDrafts[user.id]?.sender_id_type || 'alphanumeric'}
+                          onChange={(e) => updateSenderDraft(user.id, 'sender_id_type', e.target.value)}
+                          style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd' }}
+                        >
+                          <option value="numeric">Numeric</option>
+                          <option value="alphanumeric">Alphanumeric</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={senderDrafts[user.id]?.sender_id || ''}
+                          onChange={(e) => updateSenderDraft(user.id, 'sender_id', e.target.value)}
+                          placeholder="Sender ID"
+                          style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', width: '120px' }}
+                        />
+                        <button
+                          onClick={() => saveSenderId(user.id)}
+                          style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: '#5e35b1', color: 'white' }}
+                        >
+                          Save Sender
+                        </button>
+
+                        <select
+                          value={senderDrafts[user.id]?.free_trial_sender_id || ''}
+                          onChange={(e) => updateSenderDraft(user.id, 'free_trial_sender_id', e.target.value)}
+                          style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', width: '140px' }}
+                        >
+                          <option value="">Trial Sender ID</option>
+                          {adminSenderIds.map((senderId) => (
+                            <option key={`${user.id}-trial-${senderId}`} value={senderId}>{senderId}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => updatePermission(user.id, { free_trial_sender_id: senderDrafts[user.id]?.free_trial_sender_id || '' })}
+                          style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: '#00897b', color: 'white' }}
+                        >
+                          Save Trial Sender
+                        </button>
+                      </div>
+
+                      {(senderSuggestions[user.id] || []).length > 0 && (
+                        <div style={{ marginTop: '8px', display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                          {senderSuggestions[user.id].map((suggestedId) => (
+                            <button
+                              key={`${user.id}-${suggestedId}`}
+                              onClick={() => updateSenderDraft(user.id, 'sender_id', suggestedId)}
+                              style={{
+                                padding: '4px 8px',
+                                border: '1px solid #5e35b1',
+                                borderRadius: '14px',
+                                backgroundColor: '#ede7f6',
+                                color: '#5e35b1',
+                                cursor: 'pointer',
+                                fontSize: '12px',
+                              }}
+                            >
+                              {suggestedId}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{ marginTop: '8px', color: '#6B7280', fontSize: '12px' }}>Sender and admin settings are hidden in support mode.</div>
+                  )}
+
+                  {canManageUsers && (
+                    <div style={{ marginTop: '10px', display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        type="number"
+                        step="0.0001"
+                        value={creditDrafts[user.id]?.add_message_credits || ''}
+                        onChange={(e) => updateCreditDraft(user.id, 'add_message_credits', e.target.value)}
+                        placeholder="+ Messaging"
+                        style={{ width: '110px', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd' }}
+                      />
+                      <input
+                        type="number"
+                        step="0.0001"
+                        value={creditDrafts[user.id]?.add_email_validation_credits || ''}
+                        onChange={(e) => updateCreditDraft(user.id, 'add_email_validation_credits', e.target.value)}
+                        placeholder="+ Mail"
+                        style={{ width: '110px', padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd' }}
+                      />
+                      <button
+                        onClick={() => saveWalletCredits(user.id)}
+                        style={{ padding: '6px 10px', border: 'none', borderRadius: '6px', cursor: 'pointer', backgroundColor: '#1d4ed8', color: 'white' }}
+                      >
+                        Add Credits
+                      </button>
                     </div>
                   )}
+
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#334155' }}>
+                    <div><strong>Messaging Credits:</strong> {user.wallet_balance || '0'}</div>
+                    <div><strong>Mail Credits:</strong> {user.email_validation_balance || '0'}</div>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -420,9 +582,9 @@ export default function AdminUsers() {
       </div>
 
       <div style={{ marginTop: '20px', color: '#666', fontSize: '14px' }}>
-        <p>Total Users: <strong>{users.length}</strong></p>
-        <p>Verified: <strong style={{ color: '#2e7d32' }}>{users.filter(u => u.is_active).length}</strong></p>
-        <p>Not Verified: <strong style={{ color: '#c62828' }}>{users.filter(u => !u.is_active).length}</strong></p>
+        <p>Total Users: <strong>{filteredUsers.length}</strong></p>
+        <p>Verified: <strong style={{ color: '#2e7d32' }}>{filteredUsers.filter(u => u.is_active).length}</strong></p>
+        <p>Not Verified: <strong style={{ color: '#c62828' }}>{filteredUsers.filter(u => !u.is_active).length}</strong></p>
       </div>
     </div>
   );

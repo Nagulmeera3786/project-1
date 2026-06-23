@@ -15,6 +15,20 @@ from .views import (
     UserNotificationReadView,
     ConfirmAdminPromotionView,
     EmailValidationView,
+    UserWalletView,
+    UserAPIKeyListCreateView,
+    UserAPIKeyDetailView,
+    APIEmailValidationView,
+    ValidationHistoryListView,
+    AdminLatestValidationHistoryView,
+    AdminUserValidationHistoryView,
+    AdminCreditSettingsView,
+    AdminUserWalletCreditsView,
+    RequestStatusSearchView,
+    EmployeeSignupView,
+    EmployeeVerifyDualOTPView,
+    EmployeeLoginView,
+    AdminEmployeeListView,
 )
 
 urlpatterns = [
@@ -47,7 +61,25 @@ urlpatterns = [
     path('sms/free-trial/verify-otp/', FreeTrialVerifyOTPView.as_view(), name='sms-free-trial-verify-otp'),
     path('sms/free-trial/verified-numbers/', FreeTrialVerifiedNumbersView.as_view(), name='sms-free-trial-verified-numbers'),
     path('sms/free-trial/send/', FreeTrialSendSMSView.as_view(), name='sms-free-trial-send'),
+
+    # Email validation platform endpoints
+    path('wallet/', UserWalletView.as_view(), name='wallet'),
     path('email-validation/validate/', EmailValidationView.as_view(), name='email-validation-validate'),
+    path('email-validation/history/', ValidationHistoryListView.as_view(), name='email-validation-history'),
+    path('email-validation/api-keys/', UserAPIKeyListCreateView.as_view(), name='email-validation-api-keys'),
+    path('email-validation/api-keys/<uuid:key_id>/', UserAPIKeyDetailView.as_view(), name='email-validation-api-key-detail'),
+    path('email-validation/api/validate/', APIEmailValidationView.as_view(), name='email-validation-api-validate'),
+    path('admin/email-validation/history/latest/', AdminLatestValidationHistoryView.as_view(), name='admin-email-validation-history-latest'),
+    path('admin/email-validation/history/users/<int:user_id>/', AdminUserValidationHistoryView.as_view(), name='admin-email-validation-history-user'),
+    path('admin/email-validation/credit-settings/', AdminCreditSettingsView.as_view(), name='admin-email-validation-credit-settings'),
+    path('admin/users/<int:user_id>/wallet/credits/', AdminUserWalletCreditsView.as_view(), name='admin-user-wallet-credits'),
+    path('request-status/search/', RequestStatusSearchView.as_view(), name='request-status-search'),
+
+    # Employee auth flow
+    path('employee/signup/', EmployeeSignupView.as_view(), name='employee-signup'),
+    path('employee/verify-dual-otp/', EmployeeVerifyDualOTPView.as_view(), name='employee-verify-dual-otp'),
+    path('employee/login/', EmployeeLoginView.as_view(), name='employee-login'),
+    path('admin/employees/', AdminEmployeeListView.as_view(), name='admin-employees-list'),
 
     # Internal notifications (no external credentials required)
     path('admin/notifications/preview/', AdminNotificationPreviewView.as_view(), name='admin-notifications-preview'),

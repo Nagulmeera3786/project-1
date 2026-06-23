@@ -1,7 +1,10 @@
+import secrets
+import uuid
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
 from django.conf import settings
+
 
 class User(AbstractUser):
     SENDER_ID_TYPE_CHOICES = [
@@ -64,6 +67,7 @@ class SMSMessage(models.Model):
     source_file_name = models.CharField(max_length=255, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     message_id = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    provider_message_id = models.CharField(max_length=150, blank=True, default='')
     failure_reason = models.TextField(blank=True, default='')
     delivery_time = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -195,4 +199,117 @@ class InternalNotificationRecipient(models.Model):
 
     def __str__(self):
         return f"Notification {self.notification_id} -> User {self.user_id}"
+
+
+# ─── New feature models ────────────────────────────────────────────────────────
+
+class UserWallet(models.Model):
+    """Stores user credits / balance."""
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='wallet')
+    balance = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    email_validation_balance = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.email} wallet: {self.balance}"
+
+
+class PlatformSetting(models.Model):
+    """Admin-controlled key-value settings (e.g. email_validation_cost_per_request)."""
+    key = models.CharField(max_length=100, unique=True)
+    value = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default='')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.key}={self.value}"
+
+
+class UserAPIKey(models.Model):
+    """Per-user API keys for external access to email validation endpoints."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='api_keys')
+    name = models.CharField(max_length=100, blank=True, default='Default Key')
+    key = models.CharField(max_length=64, unique=True, db_index=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    @classmethod
+    def generate_key(cls):
+        return secrets.token_hex(32)
+
+    def __str__(self):
+        return f"{self.user.email} - {self.name}"
+
+
+class EmailValidationHistory(models.Model):
+    """Tracks every email validation request including source (dashboard/api)."""
+    SOURCE_DASHBOARD = 'dashboard'
+    SOURCE_API = 'api'
+    SOURCE_CHOICES = [
+        (SOURCE_DASHBOARD, 'Dashboard'),
+        (SOURCE_API, 'API'),
+    ]
+    STATUS_PENDING = 'pending'
+    STATUS_COMPLETED = 'completed'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='email_validations')
+    api_key = models.ForeignKey(UserAPIKey, on_delete=models.SET_NULL, null=True, blank=True, related_name='validations')
+    request_id = models.CharField(max_length=80, unique=True, blank=True, default='')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_DASHBOARD)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    # email(s) requested
+    email_count = models.PositiveIntegerField(default=1)
+    emails_requested = models.JSONField(default=list)
+    # compact results stored as JSON
+    results_summary = models.JSONField(default=list)
+    # cost deducted
+    cost_deducted = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    file_name = models.CharField(max_length=255, blank=True, default='')
+    completed_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user.email} validated {self.email_count} email(s) via {self.source}"
+
+
+class Employee(models.Model):
+    """Employee profile linked to a User account with dual-OTP signup."""
+    STATUS_PENDING = 'pending'
+    STATUS_ACTIVE = 'active'
+    STATUS_INACTIVE = 'inactive'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_INACTIVE, 'Inactive'),
+    ]
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='employee_profile')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    # OTP sent to admin for approval
+    admin_otp = models.CharField(max_length=6, blank=True, default='')
+    admin_otp_created = models.DateTimeField(blank=True, null=True)
+    admin_otp_verified = models.BooleanField(default=False)
+    # OTP sent to employee
+    employee_otp_verified = models.BooleanField(default=False)
+    department = models.CharField(max_length=100, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Employee: {self.user.email} ({self.status})"
 

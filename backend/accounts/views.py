@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import transaction
 from django.db.models import Q, Count, F
+from decimal import Decimal, InvalidOperation
 from django.http import HttpResponseRedirect, Http404
 from django.views import View
 import requests
@@ -30,10 +31,21 @@ from .serializers import (
     AdminNotificationSendSerializer,
     AdminNotificationHistorySerializer,
     UserNotificationSerializer,
+    UserWalletSerializer,
+    PlatformSettingSerializer,
+    UserAPIKeySerializer,
+    AdminUserAPIKeySerializer,
+    EmailValidationHistorySerializer,
+    EmployeeSignupSerializer,
+    EmployeeVerifySerializer,
+    EmployeeLoginSerializer,
+    EmployeeSerializer,
 )
 from .utils import generate_otp, send_otp_via_email, otp_is_valid
+from .serializers import EmployeeSignupSerializer, EmployeeDualOTPVerifySerializer, EmployeeLoginSerializer
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken
+from .models import Employee
 from .models import (
     SMSMessage,
     SMSCredential,
@@ -43,6 +55,11 @@ from .models import (
     FreeTrialVerifiedNumber,
     InternalNotification,
     InternalNotificationRecipient,
+    UserWallet,
+    PlatformSetting,
+    UserAPIKey,
+    EmailValidationHistory,
+    Employee,
 )
 
 User = get_user_model()
@@ -63,12 +80,35 @@ def _has_primary_admin_access(user):
     )
 
 
+def _is_active_employee(user):
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    return Employee.objects.filter(user=user, status=Employee.STATUS_ACTIVE).exists()
+
+
+def _has_admin_access(user):
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    return bool(
+        getattr(user, 'is_active', False)
+        and (
+            _has_primary_admin_access(user)
+            or getattr(user, 'is_staff', False)
+            or getattr(user, 'is_superuser', False)
+        )
+    )
+
+
+def _has_support_read_access(user):
+    return _has_admin_access(user) or _is_active_employee(user)
+
+
 def _primary_admin_guard(request):
     if not getattr(settings, 'PRIMARY_ADMIN_ENFORCEMENT', not getattr(settings, 'DEBUG', False)):
         return None
-    if _has_primary_admin_access(request.user):
+    if _has_admin_access(request.user):
         return None
-    return Response({'detail': 'Primary admin access required'}, status=status.HTTP_403_FORBIDDEN)
+    return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
 
 
 def _get_primary_admin_mediator():
@@ -381,6 +421,7 @@ def _format_utc_offset(offset_delta):
 FREE_TRIAL_MESSAGE_LIMIT = 3
 FREE_TRIAL_OTP_EXPIRY_MINUTES = 10
 _PROVIDER_BALANCE_CACHE = {'value': None, 'expires_at': None}
+_VERIFALIA_CREDITS_CACHE = {'value': None, 'expires_at': None}
 
 
 def _extract_first_numeric_value(text):
@@ -453,18 +494,81 @@ def _map_verifalia_quality(classification, status_text=''):
 
 
 def _extract_verifalia_entry(result_payload):
-    entries = []
-    if isinstance(result_payload, dict):
-        if isinstance(result_payload.get('entries'), list):
-            entries = result_payload.get('entries')
-        elif isinstance(result_payload.get('data', {}).get('entries'), list):
-            entries = result_payload.get('data', {}).get('entries')
+    def _collect_entries(node, bucket):
+        if isinstance(node, dict):
+            entries = node.get('entries')
+            if isinstance(entries, list) and entries:
+                bucket.extend([entry for entry in entries if isinstance(entry, dict)])
+            for value in node.values():
+                _collect_entries(value, bucket)
+        elif isinstance(node, list):
+            for value in node:
+                _collect_entries(value, bucket)
 
-    return entries[0] if entries else {}
+    entries = []
+    _collect_entries(result_payload, entries)
+    if not entries:
+        return {}
+
+    def _entry_score(entry):
+        if not isinstance(entry, dict):
+            return -1
+
+        score = 0
+        lowered_keys = {str(key).strip().lower() for key in entry.keys()}
+        for candidate in ['classification', 'statuscode', 'status_code', 'status', 'details', 'risk', 'quality']:
+            if candidate in lowered_keys:
+                score += 1
+
+        details = entry.get('details')
+        if isinstance(details, dict):
+            score += len(details.keys())
+
+        # Pure input-only entries are frequently returned before full results.
+        if lowered_keys == {'inputdata'}:
+            score -= 10
+
+        return score
+
+    return max(entries, key=_entry_score)
+
+
+def _normalize_verifalia_status_text(value):
+    if isinstance(value, dict):
+        for candidate in ['description', 'message', 'text', 'name', 'status', 'value']:
+            extracted = value.get(candidate)
+            if extracted not in [None, '']:
+                return str(extracted).strip()
+        return ''
+    return str(value or '').strip()
+
+
+def _extract_verifalia_status_code(entry, payload):
+    direct_code = _lookup_value_from_nested_dict(entry, ['statuscode', 'status_code'])
+    if direct_code not in [None, '']:
+        return str(direct_code).strip()
+
+    direct_payload_code = _lookup_value_from_nested_dict(payload, ['statuscode', 'status_code'])
+    if direct_payload_code not in [None, '']:
+        return str(direct_payload_code).strip()
+
+    status_node = _lookup_value_from_nested_dict(entry, ['status'])
+    if isinstance(status_node, dict):
+        nested_status_code = _lookup_value_from_nested_dict(status_node, ['code', 'statuscode', 'status_code'])
+        if nested_status_code not in [None, '']:
+            return str(nested_status_code).strip()
+
+    payload_status_node = _lookup_value_from_nested_dict(payload, ['status'])
+    if isinstance(payload_status_node, dict):
+        nested_payload_status_code = _lookup_value_from_nested_dict(payload_status_node, ['code', 'statuscode', 'status_code'])
+        if nested_payload_status_code not in [None, '']:
+            return str(nested_payload_status_code).strip()
+
+    return ''
 
 
 def _lookup_value_from_nested_dict(payload, candidate_keys):
-    if not isinstance(payload, dict):
+    if not isinstance(payload, (dict, list)):
         return None
 
     queue = [payload]
@@ -472,6 +576,11 @@ def _lookup_value_from_nested_dict(payload, candidate_keys):
 
     while queue:
         current = queue.pop(0)
+
+        if isinstance(current, list):
+            queue.extend(current)
+            continue
+
         if not isinstance(current, dict):
             continue
 
@@ -485,6 +594,8 @@ def _lookup_value_from_nested_dict(payload, candidate_keys):
         for value in current.values():
             if isinstance(value, dict):
                 queue.append(value)
+            elif isinstance(value, list):
+                queue.extend(value)
 
     return None
 
@@ -557,11 +668,25 @@ def _normalize_email_validation_flags(email, entry, quality_info):
     disposable = _to_bool_or_none(
         _lookup_value_from_nested_dict(
             entry,
-            ['isdisposable', 'disposable', 'isdisposableemailaddress', 'isdisposableaddress'],
+            [
+                'isdisposable',
+                'disposable',
+                'isdisposableemailaddress',
+                'isdisposableaddress',
+                'isdea',
+                'iswellknowndea',
+            ],
         )
     )
+    status_code_hint = str(quality_info.get('status_code') or '').strip().lower()
+    status_text_hint = str(quality_info.get('status_text') or '').strip().lower()
     if disposable is None:
-        disposable = False
+        disposable = bool(
+            'dea' in status_code_hint
+            or 'disposable' in status_text_hint
+            or 'wellknowndea' in status_code_hint
+            or 'domainiswellknowndea' in status_code_hint
+        )
 
     role_based = _to_bool_or_none(
         _lookup_value_from_nested_dict(entry, ['isrolebased', 'rolebased', 'isroleaccount', 'isrolerelated'])
@@ -596,6 +721,47 @@ def _normalize_email_validation_flags(email, entry, quality_info):
         'risk': risk,
         'riskScore': risk_score,
     }
+
+
+def _to_client_validation_result(item):
+    entered_email = str(item.get('email') or '').strip().lower()
+    did_you_mean = str(item.get('didYouMean') or '').strip()
+    risk = str(item.get('risk') or 'unknown').strip().lower() or 'unknown'
+    classification = str(item.get('classification') or 'Unknown').strip() or 'Unknown'
+    status_text = str(item.get('status') or 'Validation completed.').strip() or 'Validation completed.'
+    status_code = str(item.get('statusCode') or item.get('status_code') or 'Success').strip() or 'Success'
+
+    return {
+        'email': entered_email,
+        'validMailbox': bool(item.get('validMailbox')),
+        'validSyntax': bool(item.get('validSyntax')),
+        'catchAll': bool(item.get('catchAll')),
+        'didYouMean': did_you_mean or entered_email,
+        'disposable': bool(item.get('disposable')),
+        'roleBased': bool(item.get('roleBased')),
+        'risk': risk,
+        'providerMessageId': str(item.get('providerMessageId') or '').strip(),
+        'classification': classification,
+        'status': status_text,
+        'statusCode': status_code,
+        'summary': str(item.get('summary') or '').strip(),
+        'report': str(item.get('report') or '').strip(),
+    }
+
+
+def _is_high_risk_value(value):
+    risk = str(value or '').strip().lower()
+    return risk in {'high', 'very_high', 'medium', 'risky', 'unknown'}
+
+
+def _is_safe_client_validation_result(item):
+    return bool(
+        item.get('validMailbox')
+        and item.get('validSyntax')
+        and not item.get('disposable')
+        and not item.get('roleBased')
+        and not _is_high_risk_value(item.get('risk'))
+    )
 
 
 def _build_verifalia_style_report(normalized_flags, quality_info):
@@ -814,36 +980,101 @@ def _validate_email_with_verifalia(email):
         time.sleep(1)
 
     entry = _extract_verifalia_entry(current_payload)
-    classification = str(entry.get('classification') or entry.get('status') or '').strip()
+    classification = str(
+        _lookup_value_from_nested_dict(entry, ['classification', 'quality', 'verdict'])
+        or _lookup_value_from_nested_dict(current_payload, ['classification', 'quality', 'verdict'])
+        or ''
+    ).strip()
+    resolved_status_text = _normalize_verifalia_status_text(
+        _lookup_value_from_nested_dict(entry, ['status', 'statustext', 'status_text'])
+    ) or str(status_text or '').strip()
+    resolved_status_code = _extract_verifalia_status_code(entry, current_payload)
     quality_info = _map_verifalia_quality(classification, status_text)
-    normalized_flags = _normalize_email_validation_flags(email, entry, quality_info)
     quality_info = {
         **quality_info,
         'classification': classification or 'Unknown',
-        'status_text': str(entry.get('status') or status_text or '').strip(),
-        'status_code': str(entry.get('statusCode') or entry.get('status_code') or '').strip(),
+        'status_text': resolved_status_text,
+        'status_code': resolved_status_code,
         'raw_summary': _lookup_value_from_nested_dict(current_payload, ['summary', 'validationsummary', 'validation_summary']),
         'raw_report': _lookup_value_from_nested_dict(current_payload, ['report', 'validationreport', 'validation_report']),
     }
-    report = _build_verifalia_style_report(normalized_flags, quality_info)
+    normalized_flags = _normalize_email_validation_flags(email, entry, quality_info)
+    provider_report = _build_verifalia_style_report(normalized_flags, quality_info)
 
     return {
         'email': normalized_flags['email'],
-        'domain': normalized_flags['domain'],
         'validMailbox': normalized_flags['validMailbox'],
         'validSyntax': normalized_flags['validSyntax'],
         'catchAll': normalized_flags['catchAll'],
         'didYouMean': normalized_flags['didYouMean'],
         'disposable': normalized_flags['disposable'],
         'roleBased': normalized_flags['roleBased'],
-        'risky': normalized_flags['risky'],
         'risk': normalized_flags['risk'],
-        'summary': report['summary'],
-        'report': report['report'],
-        'status': report['status'],
-        'statusCode': report['statusCode'],
-        'classification': report['classification'],
+        'providerMessageId': job_id,
+        'summary': provider_report['summary'],
+        'report': provider_report['report'],
+        'status': provider_report['status'],
+        'statusCode': provider_report['statusCode'],
+        'classification': provider_report['classification'],
     }
+
+
+def _get_verifalia_admin_credits():
+    now = timezone.now()
+    cached_value = _VERIFALIA_CREDITS_CACHE.get('value')
+    cache_expiry = _VERIFALIA_CREDITS_CACHE.get('expires_at')
+    if cache_expiry and cache_expiry > now and cached_value is not None:
+        return cached_value
+
+    username = str(getattr(settings, 'VERIFALIA_USERNAME', '') or '').strip()
+    password = str(getattr(settings, 'VERIFALIA_PASSWORD', '') or '').strip()
+    if not username or not password:
+        return None
+
+    base_url = str(getattr(settings, 'VERIFALIA_API_BASE_URL', 'https://api.verifalia.com/v2.6') or '').strip().rstrip('/')
+    configured_endpoint = str(getattr(settings, 'VERIFALIA_CREDITS_ENDPOINT', '') or '').strip()
+
+    candidate_urls = []
+    if configured_endpoint:
+        if configured_endpoint.startswith('http://') or configured_endpoint.startswith('https://'):
+            candidate_urls.append(configured_endpoint)
+        else:
+            candidate_urls.append(f'{base_url}/{configured_endpoint.lstrip("/")}')
+
+    candidate_urls.extend([
+        f'{base_url}/credits-balance',
+        f'{base_url}/credits/balance',
+    ])
+
+    checked = set()
+    for candidate_url in candidate_urls:
+        if candidate_url in checked:
+            continue
+        checked.add(candidate_url)
+
+        try:
+            response = requests.get(candidate_url, auth=(username, password), timeout=10)
+        except requests.RequestException:
+            continue
+
+        if response.status_code != 200:
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = response.text
+
+        credits_value = _extract_balance_from_data(payload)
+        if credits_value is None:
+            continue
+
+        resolved_credits = round(max(0.0, float(credits_value)), 4)
+        _VERIFALIA_CREDITS_CACHE['value'] = resolved_credits
+        _VERIFALIA_CREDITS_CACHE['expires_at'] = now + timedelta(seconds=45)
+        return resolved_credits
+
+    return None
 
 
 def _extract_balance_from_data(payload):
@@ -962,30 +1193,21 @@ def _get_users_for_notification_filter(audience_filter):
 
 
 def _get_user_sms_usage_summary(user):
-    if _has_primary_admin_access(user):
-        total_limit = 1000
-        used_messages = (
-            SMSMessage.objects.filter(sender=user)
-            .exclude(status='failed')
-            .exclude(Q(batch_reference__startswith='free-trial') & Q(recipient_user__isnull=False))
-            .count()
-        )
-        fallback_balance = max(0, total_limit - used_messages)
-        provider_wallet_balance = _get_provider_wallet_balance()
-        wallet_balance = provider_wallet_balance if provider_wallet_balance is not None else fallback_balance
-    else:
-        total_limit = FREE_TRIAL_MESSAGE_LIMIT
-        used_messages = SMSMessage.objects.filter(
-            send_mode='free_trial',
-            status__in=['sent', 'delivered'],
-        ).filter(
-            Q(sender=user) | Q(recipient_user=user),
-        ).count()
-        wallet_balance = max(0, total_limit - used_messages)
+    wallet = _get_or_create_wallet(user)
+    wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
+    sms_cost = _get_sms_cost_per_request()
+    total_limit = int(wallet_balance // sms_cost) if sms_cost > 0 else 0
 
-    available_messages = max(0, total_limit - used_messages)
-    used_percentage = round((used_messages / total_limit) * 100, 2) if total_limit > 0 else 0
-    available_percentage = round((available_messages / total_limit) * 100, 2) if total_limit > 0 else 0
+    used_messages = (
+        SMSMessage.objects.filter(sender=user)
+        .exclude(status='failed')
+        .exclude(Q(batch_reference__startswith='free-trial') & Q(recipient_user__isnull=False))
+        .count()
+    )
+
+    available_messages = max(0, total_limit)
+    used_percentage = 0
+    available_percentage = 100 if total_limit > 0 else 0
 
     return {
         'total_limit': total_limit,
@@ -993,8 +1215,331 @@ def _get_user_sms_usage_summary(user):
         'available_messages': available_messages,
         'used_percentage': used_percentage,
         'available_percentage': available_percentage,
-        'wallet_balance': wallet_balance,
+        'wallet_balance': float(wallet_balance),
     }
+
+
+def _get_or_create_wallet(user):
+    wallet, _ = UserWallet.objects.get_or_create(user=user, defaults={'balance': Decimal('0')})
+    return wallet
+
+
+def _get_email_validation_wallet_balance(user):
+    if _has_admin_access(user):
+        verifalia_credits = _get_verifalia_admin_credits()
+        if verifalia_credits is None:
+            return None
+        try:
+            return Decimal(str(verifalia_credits)).quantize(Decimal('0.0001'))
+        except (InvalidOperation, TypeError, ValueError):
+            return Decimal('0.0000')
+
+    wallet = _get_or_create_wallet(user)
+    return Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
+
+
+def _get_email_validation_cost_per_request():
+    setting = PlatformSetting.objects.filter(key='email_validation_cost_per_request').first()
+    if not setting:
+        return Decimal('0')
+    try:
+        cost = Decimal(str(setting.value or '1'))
+        return cost if cost > 0 else Decimal('0')
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal('0')
+
+
+def _yes_no(value):
+    return 'yes' if bool(value) else 'no'
+
+
+def _build_bh_service_prefix(service_code, target_date):
+    date_part = target_date.strftime('%Y%m%d')
+    return f'BH-{service_code}-{date_part}-'
+
+
+def _build_bh_service_request_id(prefix, serial_number):
+    return f'{prefix}{int(serial_number):012d}'
+
+
+def _next_service_serial(model_cls, field_name, prefix):
+    current_count = model_cls.objects.filter(**{f'{field_name}__startswith': prefix}).count()
+    return current_count + 1
+
+
+def _resolve_sms_service_code(sms_message):
+    sms_type = str(getattr(sms_message, 'sms_type', '') or '').strip().lower()
+    if sms_type in {'whatsapp', 'wa'}:
+        return 'WA'
+    if sms_type in {'rcs'}:
+        return 'RCS'
+    return 'SMS'
+
+
+def _assign_sms_request_id(sms_message, user_for_id=None):
+    if not sms_message or sms_message.message_id:
+        return sms_message.message_id
+
+    created_at = getattr(sms_message, 'created_at', None) or timezone.now()
+    service_code = _resolve_sms_service_code(sms_message)
+    prefix = _build_bh_service_prefix(service_code, timezone.localtime(created_at).date())
+    serial_number = _next_service_serial(SMSMessage, 'message_id', prefix)
+    generated_id = _build_bh_service_request_id(prefix, serial_number)
+    while SMSMessage.objects.filter(message_id=generated_id).exists():
+        serial_number += 1
+        generated_id = _build_bh_service_request_id(prefix, serial_number)
+
+    sms_message.message_id = generated_id
+    sms_message.save(update_fields=['message_id', 'updated_at'])
+    return generated_id
+
+
+def _assign_email_validation_request_id(history):
+    if not history or history.request_id:
+        return history.request_id
+
+    created_at = getattr(history, 'created_at', None) or timezone.now()
+    prefix = _build_bh_service_prefix('EMAIL', timezone.localtime(created_at).date())
+    serial_number = _next_service_serial(EmailValidationHistory, 'request_id', prefix)
+    generated_id = _build_bh_service_request_id(prefix, serial_number)
+    while EmailValidationHistory.objects.filter(request_id=generated_id).exists():
+        serial_number += 1
+        generated_id = _build_bh_service_request_id(prefix, serial_number)
+
+    history.request_id = generated_id
+    history.save(update_fields=['request_id'])
+    return generated_id
+
+
+def _get_sms_cost_per_request():
+    setting = PlatformSetting.objects.filter(key='sms_cost_per_request').first()
+    if not setting:
+        return Decimal('1')
+
+    try:
+        cost = Decimal(str(setting.value or '1'))
+        return cost if cost > 0 else Decimal('1')
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal('1')
+
+
+def _deduct_sms_credits(user, message_count):
+    message_count = max(1, int(message_count or 1))
+    cost_per_request = _get_sms_cost_per_request()
+    total_cost = (cost_per_request * Decimal(message_count)).quantize(Decimal('0.0001'))
+
+    wallet = _get_or_create_wallet(user)
+    current_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
+    if current_balance < total_cost:
+        raise ValueError('Insufficient messaging credits.')
+
+    wallet.balance = (current_balance - total_cost).quantize(Decimal('0.0001'))
+    wallet.save(update_fields=['balance', 'updated_at'])
+    return total_cost, wallet.balance
+
+
+def _build_simple_validation_result(item):
+    syntax_ok = bool(item.get('validSyntax'))
+    valid_mailbox = bool(item.get('validMailbox'))
+    disposable = bool(item.get('disposable'))
+    role_based = bool(item.get('roleBased'))
+    catch_all = bool(item.get('catchAll'))
+    domain_valid = bool(str(item.get('domain') or '').strip())
+    risk_value = str(item.get('risk') or '').strip().lower()
+    risk_high = bool(item.get('risky')) or risk_value in {'high', 'very_high', 'unknown'}
+    safe_to_send = syntax_ok and valid_mailbox and (not disposable) and (not role_based) and (not risk_high)
+
+    return {
+        'email': str(item.get('email') or '').strip().lower(),
+        'valid': _yes_no(syntax_ok and valid_mailbox),
+        'syntax_error': _yes_no(not syntax_ok),
+        'safe_to_send': _yes_no(safe_to_send),
+        'valid_mailbox': _yes_no(valid_mailbox),
+        'catch_all': _yes_no(catch_all),
+        'disposable': _yes_no(disposable),
+        'role_based': _yes_no(role_based),
+        'domain_valid': _yes_no(domain_valid),
+        'risk_high': _yes_no(risk_high),
+    }
+
+
+def _deduct_email_validation_credits(user, email_count):
+    email_count = max(0, int(email_count or 0))
+    cost_per_request = _get_email_validation_cost_per_request()
+    total_cost = (cost_per_request * Decimal(email_count)).quantize(Decimal('0.0001'))
+
+    if total_cost <= 0:
+        available_balance = _get_email_validation_wallet_balance(user)
+        if available_balance is None:
+            return Decimal('0.0000'), Decimal('0.0000')
+        return Decimal('0.0000'), Decimal(str(available_balance)).quantize(Decimal('0.0001'))
+
+    if _has_admin_access(user):
+        available_admin_credits = _get_email_validation_wallet_balance(user)
+        if available_admin_credits is None:
+            raise ValueError('Admin Verifalia credits are unavailable for email validation.')
+
+        available_admin_credits = Decimal(str(available_admin_credits)).quantize(Decimal('0.0001'))
+        if available_admin_credits < total_cost:
+            raise ValueError('Insufficient email validation credits.')
+
+        # Verifalia credits are consumed by Verifalia itself; we only enforce quota locally.
+        return total_cost, (available_admin_credits - total_cost).quantize(Decimal('0.0001'))
+
+    wallet = _get_or_create_wallet(user)
+    validation_balance = Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
+
+    if validation_balance < total_cost:
+        raise ValueError('Insufficient email validation credits.')
+
+    wallet.email_validation_balance = (validation_balance - total_cost).quantize(Decimal('0.0001'))
+    wallet.save(update_fields=['email_validation_balance', 'updated_at'])
+    return total_cost, wallet.email_validation_balance
+
+
+def _validate_email_list_with_verifalia(unique_emails):
+    results = []
+    for candidate in unique_emails:
+        if '@' not in candidate:
+            normalized_flags = {
+                'email': candidate,
+                'domain': candidate.split('@', 1)[1].lower() if '@' in candidate else '',
+                'validSyntax': False,
+                'validMailbox': False,
+                'catchAll': False,
+                'didYouMean': '',
+                'disposable': False,
+                'roleBased': False,
+                'risky': False,
+                'risk': 'none',
+            }
+            report = _build_verifalia_style_report(normalized_flags, {
+                'classification': 'Invalid',
+                'quality': 'invalid',
+                'status_text': 'Invalid email address.',
+                'status_code': 'Success',
+            })
+            results.append({
+                **normalized_flags,
+                'summary': report['summary'],
+                'report': report['report'],
+                'status': report['status'],
+                'statusCode': report['statusCode'],
+                'classification': report['classification'],
+            })
+            continue
+
+        try:
+            results.append(_validate_email_with_verifalia(candidate))
+        except ValueError as exc:
+            normalized_flags = {
+                'email': candidate,
+                'domain': candidate.split('@', 1)[1].lower() if '@' in candidate else '',
+                'validSyntax': bool('@' in str(candidate or '')),
+                'validMailbox': False,
+                'catchAll': False,
+                'didYouMean': '',
+                'disposable': False,
+                'roleBased': False,
+                'risky': True,
+                'risk': 'unknown',
+            }
+            report = _build_verifalia_style_report(normalized_flags, {
+                'classification': 'Unknown',
+                'quality': 'unknown',
+                'status_text': str(exc),
+                'status_code': 'Error',
+            })
+            results.append({
+                **normalized_flags,
+                'summary': report['summary'],
+                'report': report['report'],
+                'status': report['status'],
+                'statusCode': report['statusCode'],
+                'classification': report['classification'],
+            })
+    return results
+
+
+def _authenticate_api_key_request(request):
+    api_key_value = str(request.headers.get('X-API-Key') or request.data.get('api_key') or '').strip()
+    user_id = request.data.get('user_id')
+    password = str(request.data.get('password') or '').strip()
+
+    if not api_key_value or not user_id or not password:
+        raise ValueError('api_key, user_id and password are required')
+
+    try:
+        user = User.objects.get(id=int(user_id))
+    except (User.DoesNotExist, ValueError, TypeError):
+        raise ValueError('Invalid user_id')
+
+    if not user.check_password(password):
+        raise ValueError('Invalid user_id or password')
+
+    api_key = UserAPIKey.objects.filter(user=user, key=api_key_value, is_active=True).first()
+    if not api_key:
+        raise ValueError('Invalid or inactive API key')
+
+    api_key.last_used_at = timezone.now()
+    api_key.save(update_fields=['last_used_at'])
+    return user, api_key
+
+
+def _collect_validation_emails(request):
+    raw_email = str(request.data.get('email') or '').strip().lower()
+    raw_emails = request.data.get('emails')
+    source_file = request.FILES.get('source_file') if hasattr(request, 'FILES') else None
+
+    collected_emails = []
+    if raw_email:
+        collected_emails.append(raw_email)
+
+    if isinstance(raw_emails, list):
+        collected_emails.extend([str(item).strip().lower() for item in raw_emails if str(item).strip()])
+    elif isinstance(raw_emails, str):
+        pieces = re.split(r'[\n,;\s]+', raw_emails)
+        collected_emails.extend([str(item).strip().lower() for item in pieces if str(item).strip()])
+
+    file_name = ''
+    if source_file:
+        file_name = str(getattr(source_file, 'name', '') or '')
+        if int(getattr(source_file, 'size', 0) or 0) > 10 * 1024 * 1024:
+            raise ValueError('Uploaded file is too large. Max 10MB allowed.')
+
+        try:
+            file_emails = _extract_emails_from_uploaded_file(source_file)
+            collected_emails.extend(file_emails)
+        except ValueError as exc:
+            raise ValueError(str(exc))
+
+    unique_emails = []
+    seen = set()
+    for item in collected_emails:
+        if item and item not in seen:
+            seen.add(item)
+            unique_emails.append(item)
+
+    if not unique_emails:
+        raise ValueError('Provide at least one email to validate')
+
+    if len(unique_emails) > 50:
+        raise ValueError('Maximum 50 emails are allowed per request')
+
+    return unique_emails, file_name
+
+
+def _employee_admin_otp_is_valid(employee, otp):
+    candidate = str(otp or '').strip()
+    if not candidate:
+        return False
+    if str(employee.admin_otp or '').strip() != candidate:
+        return False
+    created_at = getattr(employee, 'admin_otp_created', None)
+    if not created_at:
+        return False
+    expiry_minutes = int(getattr(settings, 'OTP_EXPIRY_MINUTES', 10))
+    return timezone.now() - created_at <= timedelta(minutes=expiry_minutes)
 
 class SignupView(generics.CreateAPIView):
     serializer_class = SignupSerializer
@@ -1275,6 +1820,10 @@ class UserProfileView(generics.GenericAPIView):
             'free_trial_limit': FREE_TRIAL_MESSAGE_LIMIT,
             'free_trial_verified_numbers_count': verified_numbers_count,
             'free_trial_service_sender_id': resolved_free_trial_sender_id,
+            'role': 'primary_admin' if _has_primary_admin_access(user) else ('admin' if _has_admin_access(user) else ('employee' if _is_active_employee(user) else 'user')),
+            'is_employee': _is_active_employee(user),
+            'can_view_support_data': _has_support_read_access(user),
+            'can_manage_support_data': _has_admin_access(user),
         }
         return Response(data)
 
@@ -1345,23 +1894,46 @@ class AdminUsersListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def list(self, request, *args, **kwargs):
-        guard = _primary_admin_guard(request)
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
         if guard:
             return guard
         
-        users = User.objects.all().values(
-            'id', 'first_name', 'last_name', 'username', 'email', 'phone_number',
-            'is_active', 'is_staff', 'is_superuser', 'is_sms_enabled',
-            'sender_id_type', 'sender_id', 'free_trial_sender_id', 'date_joined', 'last_login'
-        )
-        return Response(list(users))
+        users = User.objects.all().order_by('-date_joined')
+        payload = []
+        for user in users:
+            wallet = UserWallet.objects.filter(user=user).first()
+            payload.append(
+                {
+                    'id': user.id,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'username': user.username,
+                    'email': user.email,
+                    'phone_number': user.phone_number,
+                    'is_active': user.is_active,
+                    'is_staff': user.is_staff,
+                    'is_superuser': user.is_superuser,
+                    'is_sms_enabled': user.is_sms_enabled,
+                    'sender_id_type': user.sender_id_type,
+                    'sender_id': user.sender_id,
+                    'free_trial_sender_id': user.free_trial_sender_id,
+                    'date_joined': user.date_joined,
+                    'last_login': user.last_login,
+                    'wallet_balance': str(getattr(wallet, 'balance', Decimal('0'))),
+                    'email_validation_balance': str(getattr(wallet, 'email_validation_balance', Decimal('0'))),
+                    'api_key_count': UserAPIKey.objects.filter(user=user).count(),
+                    'sms_message_count': SMSMessage.objects.filter(Q(sender=user) | Q(recipient_user=user)).count(),
+                    'email_validation_count': EmailValidationHistory.objects.filter(user=user).count(),
+                }
+            )
+        return Response(payload)
 
 
 class AdminUserPermissionView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, user_id):
-        guard = _primary_admin_guard(request)
+        guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
         if guard:
             return guard
 
@@ -1529,6 +2101,8 @@ class SMSSendView(generics.CreateAPIView):
             except (TypeError, ValueError):
                 pass
 
+        remaining_sms_balance = None
+
         schedule_at = None
         timezone_name = ''
         if delivery_mode == 'scheduled':
@@ -1563,6 +2137,11 @@ class SMSSendView(generics.CreateAPIView):
             if destination_country == 'IN' and not _is_indian_number(recipient_number):
                 return Response({'detail': 'Selected destination country is India, but recipient number is not a valid Indian number'}, status=status.HTTP_400_BAD_REQUEST)
 
+            try:
+                _, remaining_sms_balance = _deduct_sms_credits(request.user, 1)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
             recipient_user = None
             try:
                 if recipient_user_id:
@@ -1593,6 +2172,7 @@ class SMSSendView(generics.CreateAPIView):
             response_payload = SMSMessageSerializer(sms_msg).data
             response_payload['delivery_action'] = send_result
             response_payload['transport'] = transport
+            response_payload['remaining_sms_credits'] = str(remaining_sms_balance) if remaining_sms_balance is not None else None
             response_payload['dlt'] = {
                 'template_id': dlt_template_id,
                 'entity_id': dlt_entity_id,
@@ -1659,6 +2239,20 @@ class SMSSendView(generics.CreateAPIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             return Response({'detail': 'No valid recipients found for selected mode'}, status=status.HTTP_400_BAD_REQUEST)
+
+        payable_target_count = 0
+        for target in targets:
+            if destination_country == 'IN' and not _is_indian_number(target['recipient_number']):
+                continue
+            payable_target_count += 1
+
+        if payable_target_count <= 0:
+            return Response({'detail': 'No valid recipients found for selected mode'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            _, remaining_sms_balance = _deduct_sms_credits(request.user, payable_target_count)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
         sent_count = 0
         failed_count = 0
@@ -1731,6 +2325,7 @@ class SMSSendView(generics.CreateAPIView):
                 'scheduled_count': scheduled_count,
                 'failed_count': failed_count,
                 'skipped_rows': skipped_rows,
+                'remaining_sms_credits': str(remaining_sms_balance) if remaining_sms_balance is not None else None,
                 'message_ids': message_ids[:50],
                 'failure_summary': [
                     {'reason': reason, 'count': count}
@@ -1775,7 +2370,7 @@ class SMSSendView(generics.CreateAPIView):
         batch_reference,
         source_file_name,
     ):
-        return SMSMessage.objects.create(
+        sms_record = SMSMessage.objects.create(
             sender=request.user,
             recipient_number=recipient_number,
             recipient_user=recipient_user,
@@ -1790,6 +2385,8 @@ class SMSSendView(generics.CreateAPIView):
             source_file_name=source_file_name,
             status='pending',
         )
+        _assign_sms_request_id(sms_record, request.user)
+        return sms_record
 
     def _dispatch_or_schedule_message(self, sms_msg, provider_config):
         if sms_msg.scheduled_at and sms_msg.scheduled_at > timezone.now():
@@ -1815,11 +2412,11 @@ class SMSSendView(generics.CreateAPIView):
                     dlt_entity_id=provider_config.get('dlt_entity_id') or '',
                     dlt_telemarketer_id=provider_config.get('dlt_telemarketer_id') or '',
                 )
-            sms_msg.message_id = api_result.get('message_id')
+            sms_msg.provider_message_id = str(api_result.get('message_id') or '')
             sms_msg.status = api_result.get('status', 'sent')
             sms_msg.delivery_time = timezone.now() if sms_msg.status in ['sent', 'delivered'] else None
             sms_msg.failure_reason = ''
-            sms_msg.save(update_fields=['message_id', 'status', 'delivery_time', 'failure_reason', 'updated_at'])
+            sms_msg.save(update_fields=['provider_message_id', 'status', 'delivery_time', 'failure_reason', 'updated_at'])
             return 'sent'
         except Exception as exc:
             sms_msg.status = 'failed'
@@ -2414,6 +3011,7 @@ class FreeTrialSendSMSView(generics.GenericAPIView):
             batch_reference=f'free-trial-{request.user.id}',
             source_file_name='',
         )
+        _assign_sms_request_id(sms_msg, request.user)
 
         try:
             api_result = SMSSendView()._send_sms_via_api(
@@ -2423,11 +3021,11 @@ class FreeTrialSendSMSView(generics.GenericAPIView):
                 recipient_number,
                 message_content,
             )
-            sms_msg.message_id = api_result.get('message_id')
+            sms_msg.provider_message_id = str(api_result.get('message_id') or '')
             sms_msg.status = api_result.get('status', 'sent')
             sms_msg.delivery_time = timezone.now() if sms_msg.status in ['sent', 'delivered'] else None
             sms_msg.failure_reason = ''
-            sms_msg.save(update_fields=['message_id', 'status', 'delivery_time', 'failure_reason', 'updated_at'])
+            sms_msg.save(update_fields=['provider_message_id', 'status', 'delivery_time', 'failure_reason', 'updated_at'])
         except Exception as exc:
             sms_msg.status = 'failed'
             sms_msg.failure_reason = str(exc)
@@ -2461,9 +3059,24 @@ class SMSMessageListView(generics.ListAPIView):
             pass
 
         user = self.request.user
-        if _has_primary_admin_access(user):
-            return SMSMessage.objects.all()
-        return SMSMessage.objects.filter(Q(sender=user) | Q(recipient_user=user))
+        if _has_support_read_access(user):
+            queryset = SMSMessage.objects.all()
+        else:
+            queryset = SMSMessage.objects.filter(Q(sender=user) | Q(recipient_user=user))
+
+        query = str(self.request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(message_id__icontains=query)
+                | Q(provider_message_id__icontains=query)
+                | Q(batch_reference__icontains=query)
+                | Q(recipient_number__icontains=query)
+                | Q(display_sender_id__icontains=query)
+                | Q(message_content__icontains=query)
+                | Q(status__icontains=query)
+            )
+
+        return queryset
 
 
 class SMSMessageStatusView(generics.RetrieveAPIView):
@@ -2477,7 +3090,7 @@ class SMSCredentialView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        guard = _primary_admin_guard(request)
+        guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
         if guard:
             return guard
         cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
@@ -2498,7 +3111,7 @@ class SMSCredentialView(generics.GenericAPIView):
         return Response(self.get_serializer(cred).data)
 
     def patch(self, request):
-        guard = _primary_admin_guard(request)
+        guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
         if guard:
             return guard
         cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
@@ -2666,7 +3279,7 @@ class AdminUsersSMSListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        if not _has_primary_admin_access(self.request.user):
+        if not _has_support_read_access(self.request.user):
             return User.objects.none()
         return User.objects.all().order_by('-date_joined')
 
@@ -2676,7 +3289,7 @@ class AdminUsersExportView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def get(self, request):
-        guard = _primary_admin_guard(request)
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
         if guard:
             return guard
         
@@ -2818,7 +3431,7 @@ class AdminNotificationHistoryView(generics.ListAPIView):
     serializer_class = AdminNotificationHistorySerializer
 
     def get_queryset(self):
-        if not _has_primary_admin_access(self.request.user):
+        if not _has_support_read_access(self.request.user):
             return InternalNotification.objects.none()
         return InternalNotification.objects.select_related('created_by').all()
 
@@ -2933,122 +3546,603 @@ class EmailValidationView(generics.GenericAPIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
-        mediator = _get_primary_admin_mediator()
-        if not mediator:
-            return Response(
-                {'detail': 'Primary admin mediator account is not configured'},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
+        available_validation_balance = _get_email_validation_wallet_balance(request.user)
+        if available_validation_balance is None:
+            return Response({'detail': 'Provider credits are unavailable for email validation.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        if available_validation_balance <= 0:
+            return Response({'detail': 'No email validation credits available.'}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
-        raw_email = str(request.data.get('email') or '').strip().lower()
-        raw_emails = request.data.get('emails')
-        source_file = request.FILES.get('source_file') if hasattr(request, 'FILES') else None
+        try:
+            unique_emails, file_name = _collect_validation_emails(request)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        collected_emails = []
-        if raw_email:
-            collected_emails.append(raw_email)
+        try:
+            cost_deducted, remaining_balance = _deduct_email_validation_credits(request.user, len(unique_emails))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
-        if isinstance(raw_emails, list):
-            collected_emails.extend([str(item).strip().lower() for item in raw_emails if str(item).strip()])
-        elif isinstance(raw_emails, str):
-            pieces = re.split(r'[\n,;\s]+', raw_emails)
-            collected_emails.extend([str(item).strip().lower() for item in pieces if str(item).strip()])
+        if _has_admin_access(request.user):
+            remaining_balance = (available_validation_balance - cost_deducted).quantize(Decimal('0.0001'))
 
-        file_name = ''
-        if source_file:
-            file_name = str(getattr(source_file, 'name', '') or '')
-            if int(getattr(source_file, 'size', 0) or 0) > 10 * 1024 * 1024:
-                return Response({'detail': 'Uploaded file is too large. Max 10MB allowed.'}, status=status.HTTP_400_BAD_REQUEST)
+        results = _validate_email_list_with_verifalia(unique_emails)
+        client_results = [_to_client_validation_result(item) for item in results]
+        safe_count = sum(1 for item in client_results if _is_safe_client_validation_result(item))
+        unsafe_count = len(client_results) - safe_count
+        provider_request_ids = [
+            str(item.get('providerMessageId') or '').strip()
+            for item in client_results
+            if str(item.get('providerMessageId') or '').strip()
+        ]
 
-            try:
-                file_emails = _extract_emails_from_uploaded_file(source_file)
-                collected_emails.extend(file_emails)
-            except ValueError as exc:
-                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        history = EmailValidationHistory.objects.create(
+            user=request.user,
+            source='dashboard',
+            status=EmailValidationHistory.STATUS_COMPLETED,
+            email_count=len(unique_emails),
+            emails_requested=unique_emails,
+            results_summary={
+                'safe_count': safe_count,
+                'unsafe_count': unsafe_count,
+                'provider_message_id': provider_request_ids[0] if provider_request_ids else '',
+                'provider_message_ids': provider_request_ids,
+                'results': client_results,
+            },
+            cost_deducted=cost_deducted,
+            file_name=file_name,
+            completed_at=timezone.now(),
+        )
+        _assign_email_validation_request_id(history)
 
-        unique_emails = []
-        seen = set()
-        for item in collected_emails:
-            if item and item not in seen:
-                seen.add(item)
-                unique_emails.append(item)
-
-        if not unique_emails:
-            return Response({'detail': 'Provide at least one email to validate'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if len(unique_emails) > 50:
-            return Response({'detail': 'Maximum 50 emails are allowed per request'}, status=status.HTTP_400_BAD_REQUEST)
-
-        results = []
-        for candidate in unique_emails:
-            if '@' not in candidate:
-                normalized_flags = {
-                    'email': candidate,
-                    'domain': candidate.split('@', 1)[1].lower() if '@' in candidate else '',
-                    'validSyntax': False,
-                    'validMailbox': False,
-                    'catchAll': False,
-                    'didYouMean': '',
-                    'disposable': False,
-                    'roleBased': False,
-                    'risky': False,
-                    'risk': 'none',
-                }
-                report = _build_verifalia_style_report(normalized_flags, {
-                    'classification': 'Invalid',
-                    'quality': 'invalid',
-                    'status_text': 'Invalid email address.',
-                    'status_code': 'Success',
-                })
-                results.append({
-                    **normalized_flags,
-                    'summary': report['summary'],
-                    'report': report['report'],
-                    'status': report['status'],
-                    'statusCode': report['statusCode'],
-                    'classification': report['classification'],
-                })
-                continue
-
-            try:
-                results.append(_validate_email_with_verifalia(candidate))
-            except ValueError as exc:
-                normalized_flags = {
-                    'email': candidate,
-                    'domain': candidate.split('@', 1)[1].lower() if '@' in candidate else '',
-                    'validSyntax': bool('@' in str(candidate or '')),
-                    'validMailbox': False,
-                    'catchAll': False,
-                    'didYouMean': '',
-                    'disposable': False,
-                    'roleBased': False,
-                    'risky': True,
-                    'risk': 'unknown',
-                }
-                report = _build_verifalia_style_report(normalized_flags, {
-                    'classification': 'Unknown',
-                    'quality': 'unknown',
-                    'status_text': str(exc),
-                    'status_code': 'Error',
-                })
-                results.append({
-                    **normalized_flags,
-                    'summary': report['summary'],
-                    'report': report['report'],
-                    'status': report['status'],
-                    'statusCode': report['statusCode'],
-                    'classification': report['classification'],
-                })
+        simple_results = [_build_simple_validation_result(item) for item in client_results]
 
         return Response(
             {
-                'count': len(results),
+                'request_id': history.request_id,
+                'count': len(client_results),
+                'wallet_balance': str(remaining_balance),
                 'source_file_name': file_name,
-                'mediated_by_admin': True,
-                'mediator_admin_email': mediator.email,
-                'requested_by_email': request.user.email,
-                'results': results,
+                'summary': {
+                    'safe_to_send_yes': safe_count,
+                    'safe_to_send_no': unsafe_count,
+                },
+                'simple_results': simple_results,
+                'results': client_results,
+                'dlr_report': {
+                    'request_id': history.request_id,
+                    'status': history.status,
+                    'completed': history.status == EmailValidationHistory.STATUS_COMPLETED,
+                    'delivery_time': history.completed_at,
+                },
             },
             status=status.HTTP_200_OK,
         )
+
+
+class UserWalletView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        wallet = _get_or_create_wallet(request.user)
+        payload = UserWalletSerializer(wallet).data
+        if _has_admin_access(request.user):
+            verifalia_credits = _get_verifalia_admin_credits()
+            if verifalia_credits is not None:
+                payload['verifalia_credits'] = str(verifalia_credits)
+        return Response(payload)
+
+
+class UserAPIKeyListCreateView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if _has_support_read_access(request.user):
+            keys = UserAPIKey.objects.select_related('user').order_by('-created_at')
+            return Response(AdminUserAPIKeySerializer(keys, many=True).data)
+
+        keys = UserAPIKey.objects.filter(user=request.user).order_by('-created_at')
+        return Response(UserAPIKeySerializer(keys, many=True).data)
+
+    def post(self, request):
+        if _is_active_employee(request.user) and not _has_admin_access(request.user):
+            return Response({'detail': 'Employee accounts are read-only for API keys'}, status=status.HTTP_403_FORBIDDEN)
+
+        name = str(request.data.get('name') or '').strip()
+        if not name:
+            return Response({'detail': 'name is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        api_key = UserAPIKey.objects.create(user=request.user, name=name, key=UserAPIKey.generate_key(), is_active=True)
+        return Response(UserAPIKeySerializer(api_key).data, status=status.HTTP_201_CREATED)
+
+
+class UserAPIKeyDetailView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, key_id):
+        if _is_active_employee(request.user) and not _has_admin_access(request.user):
+            return Response({'detail': 'Employee accounts are read-only for API keys'}, status=status.HTTP_403_FORBIDDEN)
+
+        api_key = UserAPIKey.objects.filter(id=key_id, user=request.user).first()
+        if not api_key:
+            return Response({'detail': 'API key not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if 'name' in request.data:
+            api_key.name = str(request.data.get('name') or '').strip() or api_key.name
+        if 'is_active' in request.data:
+            api_key.is_active = bool(request.data.get('is_active'))
+        api_key.save(update_fields=['name', 'is_active'])
+        return Response(UserAPIKeySerializer(api_key).data)
+
+    def delete(self, request, key_id):
+        if _is_active_employee(request.user) and not _has_admin_access(request.user):
+            return Response({'detail': 'Employee accounts are read-only for API keys'}, status=status.HTTP_403_FORBIDDEN)
+
+        api_key = UserAPIKey.objects.filter(id=key_id, user=request.user).first()
+        if not api_key:
+            return Response({'detail': 'API key not found'}, status=status.HTTP_404_NOT_FOUND)
+        api_key.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class APIEmailValidationView(generics.GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request):
+        try:
+            user, api_key = _authenticate_api_key_request(request)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_401_UNAUTHORIZED)
+
+        available_validation_balance = _get_email_validation_wallet_balance(user)
+        if available_validation_balance is None:
+            return Response({'detail': 'Provider credits are unavailable for email validation.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        if available_validation_balance <= 0:
+            return Response({'detail': 'No email validation credits available.'}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        try:
+            unique_emails, file_name = _collect_validation_emails(request)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            cost_deducted, remaining_balance = _deduct_email_validation_credits(user, len(unique_emails))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        if _has_admin_access(user):
+            remaining_balance = (available_validation_balance - cost_deducted).quantize(Decimal('0.0001'))
+
+        results = _validate_email_list_with_verifalia(unique_emails)
+        client_results = [_to_client_validation_result(item) for item in results]
+        safe_count = sum(1 for item in client_results if _is_safe_client_validation_result(item))
+        unsafe_count = len(client_results) - safe_count
+        provider_request_ids = [
+            str(item.get('providerMessageId') or '').strip()
+            for item in client_results
+            if str(item.get('providerMessageId') or '').strip()
+        ]
+
+        history = EmailValidationHistory.objects.create(
+            user=user,
+            api_key=api_key,
+            source='api',
+            status=EmailValidationHistory.STATUS_COMPLETED,
+            email_count=len(unique_emails),
+            emails_requested=unique_emails,
+            results_summary={
+                'safe_count': safe_count,
+                'unsafe_count': unsafe_count,
+                'provider_message_id': provider_request_ids[0] if provider_request_ids else '',
+                'provider_message_ids': provider_request_ids,
+                'results': client_results,
+            },
+            cost_deducted=cost_deducted,
+            file_name=file_name,
+            completed_at=timezone.now(),
+        )
+        _assign_email_validation_request_id(history)
+
+        simple_results = [_build_simple_validation_result(item) for item in client_results]
+
+        return Response(
+            {
+                'request_id': history.request_id,
+                'count': len(client_results),
+                'wallet_balance': str(remaining_balance),
+                'source_file_name': file_name,
+                'summary': {
+                    'safe_to_send_yes': safe_count,
+                    'safe_to_send_no': unsafe_count,
+                },
+                'simple_results': simple_results,
+                'results': client_results,
+                'dlr_report': {
+                    'request_id': history.request_id,
+                    'status': history.status,
+                    'completed': history.status == EmailValidationHistory.STATUS_COMPLETED,
+                    'delivery_time': history.completed_at,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ValidationHistoryListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmailValidationHistorySerializer
+
+    def get_queryset(self):
+        source = str(self.request.query_params.get('source') or '').strip().lower()
+        query = str(self.request.query_params.get('q') or '').strip()
+        if _has_support_read_access(self.request.user):
+            queryset = EmailValidationHistory.objects.all().select_related('api_key').order_by('-created_at')
+        else:
+            queryset = EmailValidationHistory.objects.filter(user=self.request.user).select_related('api_key').order_by('-created_at')
+        if source in {'dashboard', 'api'}:
+            queryset = queryset.filter(source=source)
+        if query:
+            filters = Q(request_id__icontains=query) | Q(status__icontains=query) | Q(file_name__icontains=query) | Q(user__email__icontains=query)
+            if query.isdigit():
+                filters |= Q(user__id=int(query))
+            queryset = queryset.filter(filters)
+        return queryset
+
+
+class AdminLatestValidationHistoryView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        latest_entries = []
+        users = User.objects.all().only('id', 'email').order_by('-date_joined')
+        for user in users:
+            latest = EmailValidationHistory.objects.filter(user=user).order_by('-created_at').first()
+            if latest:
+                latest_entries.append({
+                    'user_id': user.id,
+                    'user_email': user.email,
+                    'latest_history': EmailValidationHistorySerializer(latest).data,
+                })
+        return Response(latest_entries)
+
+
+class AdminUserValidationHistoryView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmailValidationHistorySerializer
+
+    def get_queryset(self):
+        if not _has_support_read_access(self.request.user):
+            return EmailValidationHistory.objects.none()
+
+        user_id = self.kwargs.get('user_id')
+        queryset = EmailValidationHistory.objects.filter(user_id=user_id).select_related('api_key').order_by('-created_at')
+        query = str(self.request.query_params.get('q') or '').strip()
+        if query:
+            filters = Q(request_id__icontains=query) | Q(status__icontains=query) | Q(file_name__icontains=query)
+            if query.isdigit():
+                filters |= Q(user__id=int(query))
+            queryset = queryset.filter(filters)
+        return queryset
+
+
+class AdminCreditSettingsView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+        setting, _ = PlatformSetting.objects.get_or_create(
+            key='email_validation_cost_per_request',
+            defaults={'value': '1', 'description': 'Wallet credits charged for each validated email'},
+        )
+        return Response(PlatformSettingSerializer(setting).data)
+
+    def patch(self, request):
+        guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+        value = request.data.get('value')
+        if value is None:
+            return Response({'detail': 'value is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            numeric = Decimal(str(value))
+            if numeric <= 0:
+                raise ValueError
+        except (InvalidOperation, ValueError, TypeError):
+            return Response({'detail': 'value must be a positive number'}, status=status.HTTP_400_BAD_REQUEST)
+
+        setting, _ = PlatformSetting.objects.get_or_create(
+            key='email_validation_cost_per_request',
+            defaults={'value': str(numeric), 'description': 'Wallet credits charged for each validated email'},
+        )
+        setting.value = str(numeric)
+        if 'description' in request.data:
+            setting.description = str(request.data.get('description') or '').strip()
+        setting.save(update_fields=['value', 'description', 'updated_at'])
+        return Response(PlatformSettingSerializer(setting).data)
+
+
+class AdminUserWalletCreditsView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, user_id):
+        guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        try:
+            target_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        wallet = _get_or_create_wallet(target_user)
+        current_sms = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
+        current_email = Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
+
+        add_sms_raw = request.data.get('add_message_credits', request.data.get('message_credits_delta', '0'))
+        add_email_raw = request.data.get('add_email_validation_credits', request.data.get('email_validation_credits_delta', '0'))
+
+        try:
+            add_sms = Decimal(str(add_sms_raw or '0')).quantize(Decimal('0.0001'))
+            add_email = Decimal(str(add_email_raw or '0')).quantize(Decimal('0.0001'))
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({'detail': 'Credit values must be valid numbers'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if add_sms < 0 or add_email < 0:
+            return Response({'detail': 'Credit values must be zero or positive numbers'}, status=status.HTTP_400_BAD_REQUEST)
+
+        wallet.balance = max(Decimal('0.0000'), (current_sms + add_sms).quantize(Decimal('0.0001')))
+        wallet.email_validation_balance = max(Decimal('0.0000'), (current_email + add_email).quantize(Decimal('0.0001')))
+        wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
+
+        return Response(
+            {
+                'user_id': target_user.id,
+                'user_email': target_user.email,
+                'message_credits': str(wallet.balance),
+                'email_validation_credits': str(wallet.email_validation_balance),
+                'added_message_credits': str(add_sms),
+                'added_email_validation_credits': str(add_email),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class RequestStatusSearchView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin or employee access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        query = str(request.query_params.get('q') or '').strip()
+        if not query:
+            return Response({'detail': 'q is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        sms_queryset = SMSMessage.objects.filter(
+            Q(message_id__icontains=query)
+            | Q(provider_message_id__icontains=query)
+            | Q(batch_reference__icontains=query)
+        )
+        if query.isdigit():
+            sms_queryset = sms_queryset.filter(Q(sender__id=int(query)) | Q(recipient_user__id=int(query)))
+        sms_queryset = sms_queryset.order_by('-created_at')[:100]
+
+        validation_queryset = EmailValidationHistory.objects.filter(
+            Q(request_id__icontains=query)
+            | Q(file_name__icontains=query)
+            | Q(user__email__icontains=query)
+        )
+        if query.isdigit():
+            validation_queryset = validation_queryset.filter(Q(user__id=int(query)))
+        validation_queryset = validation_queryset.select_related('api_key', 'user').order_by('-created_at')[:100]
+
+        return Response(
+            {
+                'query': query,
+                'sms': SMSMessageSerializer(sms_queryset, many=True).data,
+                'email_validations': EmailValidationHistorySerializer(validation_queryset, many=True).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminAllAPIKeysView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        keys = UserAPIKey.objects.select_related('user').order_by('-created_at')
+        return Response(AdminUserAPIKeySerializer(keys, many=True).data)
+
+
+class EmployeeSignupView(generics.GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+    serializer_class = EmployeeSignupSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data['email'].strip().lower()
+        existing_user = _find_user_by_email(email)
+        if existing_user and existing_user.is_active:
+            return Response({'detail': 'Employee account already exists'}, status=status.HTTP_400_BAD_REQUEST)
+
+        first_name = serializer.validated_data['first_name'].strip()
+        phone_number = serializer.validated_data['phone_number'].strip()
+        password = serializer.validated_data['password']
+        department = serializer.validated_data.get('department', '').strip()
+
+        with transaction.atomic():
+            user = existing_user
+            if not user:
+                user = User.objects.create(
+                    username=email,
+                    email=email,
+                    first_name=first_name,
+                    phone_number=phone_number,
+                    is_active=False,
+                )
+            user.first_name = first_name
+            user.phone_number = phone_number
+            user.is_active = False
+            user.set_password(password)
+            user.otp_code = generate_otp()
+            user.otp_created = timezone.now()
+            user.save()
+
+            employee, _ = Employee.objects.get_or_create(user=user)
+            employee.department = department
+            employee.status = Employee.STATUS_PENDING
+            employee.employee_otp_verified = False
+            employee.admin_otp_verified = False
+            employee.admin_otp = generate_otp()
+            employee.admin_otp_created = timezone.now()
+            employee.save()
+
+        employee_sent = send_otp_via_email(user, user.otp_code)
+
+        primary_admin_email = str(getattr(settings, 'PRIMARY_ADMIN_EMAIL', '') or '').strip()
+        admin_sent = False
+        if primary_admin_email:
+            admin_sent = send_otp_via_email(primary_admin_email, employee.admin_otp)
+
+        if not employee_sent:
+            return Response({'detail': 'Could not send employee OTP. Please try again.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if not admin_sent:
+            return Response({'detail': 'Employee OTP sent, but admin OTP delivery failed. Please retry later.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        return Response(
+            {
+                'detail': 'Employee signup initiated. Verify both employee OTP and admin OTP.',
+                'requires_employee_otp': True,
+                'requires_admin_otp': True,
+                'email': email,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class EmployeeVerifyDualOTPView(generics.GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+    serializer_class = EmployeeDualOTPVerifySerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data['email'].strip().lower()
+        employee_otp = serializer.validated_data['employee_otp'].strip()
+        admin_otp = serializer.validated_data['admin_otp'].strip()
+
+        user = _find_user_by_email(email)
+        if not user:
+            return Response({'detail': 'Employee account not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        employee = Employee.objects.filter(user=user).first()
+        if not employee:
+            return Response({'detail': 'Employee profile not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not otp_is_valid(user, employee_otp):
+            return Response({'detail': 'Invalid or expired employee OTP'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not employee.admin_otp or not employee.admin_otp_created:
+            return Response({'detail': 'Admin OTP is not available. Please restart employee signup.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if str(employee.admin_otp).strip() != str(admin_otp).strip():
+            return Response({'detail': 'Invalid or expired admin OTP'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if timezone.now() > employee.admin_otp_created + timedelta(minutes=10):
+            return Response({'detail': 'Invalid or expired admin OTP'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.is_active = True
+        user.otp_code = None
+        user.otp_created = None
+        user.save(update_fields=['is_active', 'otp_code', 'otp_created'])
+
+        employee.employee_otp_verified = True
+        employee.admin_otp_verified = True
+        employee.status = Employee.STATUS_ACTIVE
+        employee.admin_otp = ''
+        employee.admin_otp_created = None
+        employee.save(update_fields=['employee_otp_verified', 'admin_otp_verified', 'status', 'admin_otp', 'admin_otp_created', 'updated_at'])
+
+        return Response({'detail': 'Employee verification completed successfully'}, status=status.HTTP_200_OK)
+
+
+class EmployeeLoginView(generics.GenericAPIView):
+    permission_classes = [permissions.AllowAny]
+    serializer_class = EmployeeLoginSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data['email'].strip().lower()
+        password = serializer.validated_data['password']
+
+        user = _find_user_by_email(email)
+        if not user or not user.check_password(password):
+            return Response({'detail': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        employee = Employee.objects.filter(user=user, status=Employee.STATUS_ACTIVE).first()
+        if not employee:
+            return Response({'detail': 'Employee account is not active'}, status=status.HTTP_403_FORBIDDEN)
+
+        refresh = RefreshToken.for_user(user)
+        return Response(
+            {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+                'role': 'employee',
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'department': employee.department,
+                    'is_employee': True,
+                    'status': employee.status,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminEmployeeListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
+
+        employees = Employee.objects.select_related('user').order_by('-created_at')
+        payload = []
+        for item in employees:
+            payload.append(
+                {
+                    'employee_id': item.id,
+                    'user_id': item.user.id,
+                    'email': item.user.email,
+                    'name': item.user.first_name,
+                    'department': item.department,
+                    'status': item.status,
+                    'admin_otp_verified': item.admin_otp_verified,
+                    'employee_otp_verified': item.employee_otp_verified,
+                    'created_at': item.created_at,
+                }
+            )
+        return Response(payload, status=status.HTTP_200_OK)
 

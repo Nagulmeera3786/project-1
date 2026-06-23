@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import User, SMSMessage, SMSCredential, SMSContactGroup
+from .models import User, SMSMessage, SMSCredential, SMSContactGroup, UserWallet, EmailValidationHistory
 from .utils import send_admin_promotion_confirmation_email
 import secrets
 from django.utils import timezone
@@ -339,3 +339,19 @@ class SMSContactGroupAdmin(admin.ModelAdmin):
             'classes': ('collapse',),
         }),
     )
+
+
+@admin.register(UserWallet)
+class UserWalletAdmin(admin.ModelAdmin):
+    list_display = ('user', 'balance', 'email_validation_balance', 'updated_at')
+    search_fields = ('user__email', 'user__username')
+    list_filter = ('updated_at',)
+    readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(EmailValidationHistory)
+class EmailValidationHistoryAdmin(admin.ModelAdmin):
+    list_display = ('request_id', 'user', 'source', 'status', 'email_count', 'cost_deducted', 'completed_at', 'created_at')
+    search_fields = ('request_id', 'user__email', 'file_name')
+    list_filter = ('source', 'status', 'created_at')
+    readonly_fields = ('created_at',)

@@ -10,6 +10,11 @@ from .models import (
     SMSShortURL,
     InternalNotification,
     InternalNotificationRecipient,
+    UserWallet,
+    PlatformSetting,
+    UserAPIKey,
+    EmailValidationHistory,
+    Employee,
 )
 
 User = get_user_model()
@@ -57,6 +62,7 @@ class SMSMessageSerializer(serializers.ModelSerializer):
     sender_username = serializers.CharField(source='sender.username', read_only=True)
     recipient_username = serializers.CharField(source='recipient_user.username', read_only=True)
     transport = serializers.SerializerMethodField()
+    dlr_report = serializers.SerializerMethodField()
 
     def get_transport(self, obj):
         message_id = str(getattr(obj, 'message_id', '') or '').lower()
@@ -72,6 +78,17 @@ class SMSMessageSerializer(serializers.ModelSerializer):
 
         return 'api'
 
+    def get_dlr_report(self, obj):
+        status_value = str(getattr(obj, 'status', '') or '').lower()
+        completed = status_value in ['delivered', 'failed']
+        return {
+            'request_id': getattr(obj, 'message_id', ''),
+            'provider_message_id': getattr(obj, 'provider_message_id', ''),
+            'status': status_value,
+            'completed': completed,
+            'delivery_time': getattr(obj, 'delivery_time', None),
+        }
+
     class Meta:
         model = SMSMessage
         fields = [
@@ -80,11 +97,11 @@ class SMSMessageSerializer(serializers.ModelSerializer):
             'transport',
             'send_mode', 'schedule_type', 'scheduled_at', 'timezone_name',
             'batch_reference', 'source_file_name', 'status', 'message_id',
-            'failure_reason', 'delivery_time', 'created_at', 'updated_at'
+            'provider_message_id', 'failure_reason', 'delivery_time', 'dlr_report', 'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'message_id', 'delivery_time', 'created_at', 'updated_at',
-            'status', 'failure_reason'
+            'status', 'provider_message_id', 'failure_reason'
         ]
 
 
@@ -306,7 +323,7 @@ class UserSMSEligibilitySerializer(serializers.ModelSerializer):
 class SMSMessageStatusSerializer(serializers.ModelSerializer):
     class Meta:
         model = SMSMessage
-        fields = ['id', 'status', 'message_id', 'delivery_time', 'scheduled_at', 'created_at']
+        fields = ['id', 'status', 'message_id', 'provider_message_id', 'delivery_time', 'scheduled_at', 'created_at']
 
 
 class SMSContactSerializer(serializers.ModelSerializer):
@@ -376,4 +393,148 @@ class UserNotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = InternalNotificationRecipient
         fields = ['id', 'notification', 'content', 'audience_filter', 'is_read', 'read_at', 'notification_created_at']
+
+
+class UserWalletSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserWallet
+        fields = ['balance', 'email_validation_balance', 'created_at', 'updated_at']
+
+
+class PlatformSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlatformSetting
+        fields = ['key', 'value', 'description', 'updated_at']
+
+
+class UserAPIKeySerializer(serializers.ModelSerializer):
+    masked_key = serializers.SerializerMethodField()
+
+    def get_masked_key(self, obj):
+        key = str(getattr(obj, 'key', '') or '')
+        if len(key) <= 12:
+            return key
+        return f"{key[:6]}...{key[-6:]}"
+
+    class Meta:
+        model = UserAPIKey
+        fields = ['id', 'name', 'key', 'masked_key', 'is_active', 'created_at', 'last_used_at']
+        read_only_fields = ['id', 'key', 'created_at', 'last_used_at', 'masked_key']
+
+
+class AdminUserAPIKeySerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source='user.id', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    masked_key = serializers.SerializerMethodField()
+
+    def get_masked_key(self, obj):
+        key = str(getattr(obj, 'key', '') or '')
+        if len(key) <= 12:
+            return key
+        return f"{key[:6]}...{key[-6:]}"
+
+    class Meta:
+        model = UserAPIKey
+        fields = [
+            'id', 'user_id', 'user_email', 'name', 'masked_key',
+            'is_active', 'created_at', 'last_used_at'
+        ]
+        read_only_fields = fields
+
+
+class EmailValidationHistorySerializer(serializers.ModelSerializer):
+    api_key_name = serializers.CharField(source='api_key.name', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    dlr_report = serializers.SerializerMethodField()
+    provider_message_id = serializers.SerializerMethodField()
+    provider_message_ids = serializers.SerializerMethodField()
+
+    def get_provider_message_id(self, obj):
+        summary = getattr(obj, 'results_summary', {}) or {}
+        value = summary.get('provider_message_id')
+        if value:
+            return str(value)
+
+        values = summary.get('provider_message_ids') or []
+        if isinstance(values, list) and values:
+            return str(values[0])
+        return ''
+
+    def get_provider_message_ids(self, obj):
+        summary = getattr(obj, 'results_summary', {}) or {}
+        values = summary.get('provider_message_ids') or []
+        if isinstance(values, list):
+            return [str(item) for item in values if str(item or '').strip()]
+        return []
+
+    def get_dlr_report(self, obj):
+        status_value = str(getattr(obj, 'status', '') or '').lower()
+        return {
+            'request_id': getattr(obj, 'request_id', ''),
+            'provider_message_id': self.get_provider_message_id(obj),
+            'status': status_value,
+            'completed': status_value == 'completed',
+            'delivery_time': getattr(obj, 'completed_at', None),
+        }
+
+    class Meta:
+        model = EmailValidationHistory
+        fields = [
+            'id', 'request_id', 'user', 'user_email', 'api_key', 'api_key_name', 'source', 'status',
+            'email_count', 'emails_requested', 'results_summary', 'cost_deducted',
+            'file_name', 'provider_message_id', 'provider_message_ids', 'completed_at', 'dlr_report', 'created_at'
+        ]
+        read_only_fields = fields
+
+
+class EmployeeSignupSerializer(serializers.Serializer):
+    first_name = serializers.CharField(required=True, allow_blank=False)
+    email = serializers.EmailField(required=True)
+    phone_number = serializers.CharField(required=True, allow_blank=False)
+    password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
+    department = serializers.CharField(required=False, allow_blank=True, max_length=100)
+
+
+class EmployeeDualOTPVerifySerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+    employee_otp = serializers.CharField(max_length=6, required=True)
+    admin_otp = serializers.CharField(max_length=6, required=True)
+
+
+class EmployeeLoginSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=True)
+    password = serializers.CharField(required=True)
+
+
+class EmployeeSignupSerializer(serializers.Serializer):
+    first_name = serializers.CharField(required=True, allow_blank=False)
+    email = serializers.EmailField(required=True)
+    phone_number = serializers.CharField(required=True, allow_blank=False)
+    password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
+    department = serializers.CharField(required=False, allow_blank=True, max_length=100)
+
+
+class EmployeeVerifySerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    employee_otp = serializers.CharField(max_length=6)
+    admin_otp = serializers.CharField(max_length=6)
+
+
+class EmployeeLoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField()
+
+
+class EmployeeSerializer(serializers.ModelSerializer):
+    email = serializers.CharField(source='user.email', read_only=True)
+    first_name = serializers.CharField(source='user.first_name', read_only=True)
+    phone_number = serializers.CharField(source='user.phone_number', read_only=True)
+
+    class Meta:
+        model = Employee
+        fields = [
+            'id', 'email', 'first_name', 'phone_number', 'status',
+            'admin_otp_verified', 'employee_otp_verified', 'department',
+            'created_at', 'updated_at'
+        ]
 

@@ -290,6 +290,9 @@ export default function SMSHistory() {
                   Message ID
                 </th>
                 <th style={{ padding: '15px', textAlign: 'left', fontWeight: 'bold' }}>
+                  DLR Completed
+                </th>
+                <th style={{ padding: '15px', textAlign: 'left', fontWeight: 'bold' }}>
                   Sent Date
                 </th>
                 <th style={{ padding: '15px', textAlign: 'left', fontWeight: 'bold' }}>
@@ -364,6 +367,9 @@ export default function SMSHistory() {
                   </td>
                   <td style={{ padding: '15px', fontSize: '12px', color: '#666' }}>
                     {msg.message_id || '-'}
+                  </td>
+                  <td style={{ padding: '15px', fontSize: '12px', color: '#666' }}>
+                    {msg.dlr_report?.completed ? 'Yes' : 'No'}
                   </td>
                   <td style={{ padding: '15px', fontSize: '12px', color: '#666' }}>
                     {new Date(msg.created_at).toLocaleString()}

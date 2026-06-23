@@ -14,10 +14,14 @@ def generate_otp():
     return f'{random.randint(100000, 999999)}'
 
 def send_otp_via_email(user, otp):
-    """Send OTP to user email with production-friendly fail-fast defaults."""
+    """Send OTP to either a user object or a raw email string."""
     max_attempts = max(1, int(getattr(settings, 'OTP_EMAIL_MAX_ATTEMPTS', 1) or 1))
     retry_delay_ms = max(0, int(getattr(settings, 'OTP_EMAIL_RETRY_DELAY_MS', 0) or 0))
     subject = getattr(settings, 'OTP_EMAIL_SUBJECT', 'Your verification code')
+    recipient_email = getattr(user, 'email', None) or str(user).strip()
+    if not recipient_email:
+        logger.error("OTP email skipped because recipient email is missing")
+        return False
     message = (
         f'Your OTP is {otp}\n\n'
         'This code will expire in 10 minutes.\n\n'
@@ -30,15 +34,15 @@ def send_otp_via_email(user, otp):
                 subject=subject,
                 message=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
+                recipient_list=[recipient_email],
                 fail_silently=False,
             )
             if int(sent_count or 0) <= 0:
                 raise Exception('SMTP backend did not accept OTP email')
-            logger.info("OTP email sent to %s on attempt %s", user.email, attempt)
+            logger.info("OTP email sent to %s on attempt %s", recipient_email, attempt)
             return True
         except Exception as exc:
-            logger.exception("Email sending error for user %s on attempt %s: %s", user.email, attempt, exc)
+            logger.exception("Email sending error for user %s on attempt %s: %s", recipient_email, attempt, exc)
             if attempt < max_attempts and retry_delay_ms > 0:
                 time.sleep(retry_delay_ms / 1000)
     return False

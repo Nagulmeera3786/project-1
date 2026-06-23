@@ -8,6 +8,7 @@ export default function AdminSMSDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [hasAdminAccess, setHasAdminAccess] = useState(true);
+  const [canManageUsers, setCanManageUsers] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
   const [messages, setMessages] = useState([]);
   const [messageSearch, setMessageSearch] = useState('');
@@ -24,12 +25,20 @@ export default function AdminSMSDashboard() {
   useEffect(() => {
     fetchUsers();
     fetchMessages();
-    fetchCredentials();
   }, []);
 
   const fetchUsers = async () => {
     try {
+      const profileResponse = await API.get('profile/');
+      const manageUsers = Boolean(
+        profileResponse.data?.can_manage_support_data ||
+        profileResponse.data?.is_primary_admin ||
+        profileResponse.data?.is_staff ||
+        profileResponse.data?.is_superuser
+      );
+
       const response = await API.get('sms/admin/users/');
+      setCanManageUsers(manageUsers);
       setUsers(response.data);
       setHasAdminAccess(true);
       const draftMap = {};
@@ -50,6 +59,11 @@ export default function AdminSMSDashboard() {
       });
       setSenderDrafts(draftMap);
       setUserDrafts(profileDraftMap);
+      if (manageUsers) {
+        fetchCredentials();
+      } else {
+        setCredentialLoading(false);
+      }
     } catch (err) {
       if (err.response?.status === 403) {
         setHasAdminAccess(false);
@@ -73,6 +87,11 @@ export default function AdminSMSDashboard() {
   };
 
   const fetchCredentials = async () => {
+    if (!canManageUsers) {
+      setCredentialLoading(false);
+      return;
+    }
+
     try {
       const response = await API.get('sms/credentials/');
       setSmsCredential(response.data);
@@ -143,6 +162,10 @@ export default function AdminSMSDashboard() {
   };
 
   const saveSenderId = async (userId) => {
+    if (!canManageUsers) {
+      return;
+    }
+
     const draft = senderDrafts[userId] || { sender_id_type: 'alphanumeric', sender_id: '' };
     try {
       const response = await API.patch(`admin/users/${userId}/permissions/`, {
@@ -189,6 +212,10 @@ export default function AdminSMSDashboard() {
   };
 
   const saveUserDetails = async (user) => {
+    if (!canManageUsers) {
+      return;
+    }
+
     const draft = userDrafts[user.id] || {};
     setSavingUserId(user.id);
     try {
@@ -234,6 +261,10 @@ export default function AdminSMSDashboard() {
   };
 
   const deleteUser = async (user) => {
+    if (!canManageUsers) {
+      return;
+    }
+
     if (!window.confirm(`Delete user ${user.username}? This action cannot be undone.`)) {
       return;
     }
@@ -265,6 +296,10 @@ export default function AdminSMSDashboard() {
   };
 
   const grantAdminAccess = async (user) => {
+    if (!canManageUsers) {
+      return;
+    }
+
     if (!window.confirm(`Grant full admin access to ${user.username}? This enables all admin functionalities.`)) {
       return;
     }
@@ -310,6 +345,10 @@ export default function AdminSMSDashboard() {
   };
 
   const revokeAdminAccess = async (user) => {
+    if (!canManageUsers) {
+      return;
+    }
+
     if (!window.confirm(`Revoke admin access for ${user.username}? User will become a normal user.`)) {
       return;
     }
@@ -541,18 +580,22 @@ export default function AdminSMSDashboard() {
             }}
           >
             <h4 style={{ margin: '0 0 10px 0' }}>SMS Credentials Details</h4>
-            {credentialLoading ? (
-              <p style={{ margin: 0, color: '#666' }}>Loading credentials...</p>
-            ) : !smsCredential ? (
-              <p style={{ margin: 0, color: '#b71c1c' }}>Credential data unavailable.</p>
+            {canManageUsers ? (
+              credentialLoading ? (
+                <p style={{ margin: 0, color: '#666' }}>Loading credentials...</p>
+              ) : !smsCredential ? (
+                <p style={{ margin: 0, color: '#b71c1c' }}>Credential data unavailable.</p>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+                  <div><strong>Provider User:</strong> {smsCredential.user || '-'}</div>
+                  <div><strong>Credential Active:</strong> {smsCredential.is_active ? 'Yes' : 'No'}</div>
+                  <div><strong>Sender IDs:</strong> {(smsCredential.sender_ids || []).length}</div>
+                  <div><strong>Default Trial Sender:</strong> {smsCredential.free_trial_default_sender_id || '-'}</div>
+                  <div><strong>Last Updated:</strong> {smsCredential.updated_at ? new Date(smsCredential.updated_at).toLocaleString() : '-'}</div>
+                </div>
+              )
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
-                <div><strong>Provider User:</strong> {smsCredential.user || '-'}</div>
-                <div><strong>Credential Active:</strong> {smsCredential.is_active ? 'Yes' : 'No'}</div>
-                <div><strong>Sender IDs:</strong> {(smsCredential.sender_ids || []).length}</div>
-                <div><strong>Default Trial Sender:</strong> {smsCredential.free_trial_default_sender_id || '-'}</div>
-                <div><strong>Last Updated:</strong> {smsCredential.updated_at ? new Date(smsCredential.updated_at).toLocaleString() : '-'}</div>
-              </div>
+              <p style={{ margin: 0, color: '#666' }}>Read-only support mode. SMS credentials are hidden.</p>
             )}
           </div>
 
@@ -753,168 +796,172 @@ export default function AdminSMSDashboard() {
                       {user.sender_id || '-'}
                     </td>
                     <td style={{ padding: '15px', textAlign: 'center' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
-                        <button
-                          onClick={() =>
-                            updateUserDraft(user.id, 'is_sms_enabled', !Boolean(userDrafts[user.id]?.is_sms_enabled))
-                          }
-                          style={{
-                            padding: '8px 12px',
-                            backgroundColor: userDrafts[user.id]?.is_sms_enabled ? '#f44336' : '#4CAF50',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                            fontSize: '12px',
-                            fontWeight: 'bold',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                          }}
-                        >
-                          {userDrafts[user.id]?.is_sms_enabled ? (
-                            <>
-                              <FaToggleOff /> Mark Disabled
-                            </>
-                          ) : (
-                            <>
-                              <FaToggleOn /> Mark Enabled
-                            </>
-                          )}
-                        </button>
-
-                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                          <select
-                            value={senderDrafts[user.id]?.sender_id_type || 'alphanumeric'}
-                            onChange={(e) => updateSenderDraft(user.id, 'sender_id_type', e.target.value)}
-                            style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '12px' }}
-                          >
-                            <option value="numeric">Numeric</option>
-                            <option value="alphanumeric">Alphanumeric</option>
-                          </select>
-                          <input
-                            type="text"
-                            value={senderDrafts[user.id]?.sender_id || ''}
-                            onChange={(e) => updateSenderDraft(user.id, 'sender_id', e.target.value)}
-                            placeholder="Sender ID"
-                            style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', width: '110px', fontSize: '12px' }}
-                          />
+                      {canManageUsers ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
                           <button
-                            onClick={() => saveSenderId(user.id)}
+                            onClick={() =>
+                              updateUserDraft(user.id, 'is_sms_enabled', !Boolean(userDrafts[user.id]?.is_sms_enabled))
+                            }
                             style={{
-                              padding: '6px 10px',
-                              backgroundColor: '#5e35b1',
+                              padding: '8px 12px',
+                              backgroundColor: userDrafts[user.id]?.is_sms_enabled ? '#f44336' : '#4CAF50',
                               color: 'white',
                               border: 'none',
                               borderRadius: '6px',
                               cursor: 'pointer',
                               fontSize: '12px',
-                            }}
-                          >
-                            Save Sender
-                          </button>
-                          <button
-                            onClick={() => saveUserDetails(user)}
-                            disabled={savingUserId === user.id}
-                            style={{
-                              padding: '6px 10px',
-                              backgroundColor: '#1f7a4c',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: savingUserId === user.id ? 'not-allowed' : 'pointer',
-                              fontSize: '12px',
+                              fontWeight: 'bold',
                               display: 'flex',
                               alignItems: 'center',
-                              gap: '5px',
+                              gap: '6px',
                             }}
                           >
-                            <FaSave /> {savingUserId === user.id ? 'Saving...' : 'Save User'}
+                            {userDrafts[user.id]?.is_sms_enabled ? (
+                              <>
+                                <FaToggleOff /> Mark Disabled
+                              </>
+                            ) : (
+                              <>
+                                <FaToggleOn /> Mark Enabled
+                              </>
+                            )}
                           </button>
-                          <button
-                            onClick={() => grantAdminAccess(user)}
-                            disabled={grantingAdminUserId === user.id || user.is_superuser}
-                            style={{
-                              padding: '6px 10px',
-                              backgroundColor: user.is_superuser ? '#607d8b' : '#6a1b9a',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: grantingAdminUserId === user.id || user.is_superuser ? 'not-allowed' : 'pointer',
-                              fontSize: '12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '5px',
-                            }}
-                            title={user.is_superuser ? 'Already full admin' : 'Grant full admin access'}
-                          >
-                            {grantingAdminUserId === user.id
-                              ? 'Granting...'
-                              : user.is_superuser
-                              ? 'Full Admin'
-                              : 'Grant Admin Access'}
-                          </button>
-                          <button
-                            onClick={() => revokeAdminAccess(user)}
-                            disabled={grantingAdminUserId === user.id || !user.is_staff}
-                            style={{
-                              padding: '6px 10px',
-                              backgroundColor: !user.is_staff ? '#9e9e9e' : '#455a64',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: grantingAdminUserId === user.id || !user.is_staff ? 'not-allowed' : 'pointer',
-                              fontSize: '12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '5px',
-                            }}
-                            title={!user.is_staff ? 'User is not admin/staff' : 'Revoke admin/staff access'}
-                          >
-                            Revoke Admin Access
-                          </button>
-                          <button
-                            onClick={() => deleteUser(user)}
-                            disabled={deletingUserId === user.id}
-                            style={{
-                              padding: '6px 10px',
-                              backgroundColor: '#b71c1c',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: deletingUserId === user.id ? 'not-allowed' : 'pointer',
-                              fontSize: '12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '5px',
-                            }}
-                          >
-                            <FaTrash /> {deletingUserId === user.id ? 'Deleting...' : 'Delete User'}
-                          </button>
-                        </div>
 
-                        {(senderSuggestions[user.id] || []).length > 0 && (
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                            {senderSuggestions[user.id].map((suggestedId) => (
-                              <button
-                                key={`${user.id}-${suggestedId}`}
-                                onClick={() => updateSenderDraft(user.id, 'sender_id', suggestedId)}
-                                style={{
-                                  padding: '4px 8px',
-                                  border: '1px solid #5e35b1',
-                                  borderRadius: '14px',
-                                  backgroundColor: '#ede7f6',
-                                  color: '#5e35b1',
-                                  cursor: 'pointer',
-                                  fontSize: '11px',
-                                }}
-                              >
-                                {suggestedId}
-                              </button>
-                            ))}
+                            <select
+                              value={senderDrafts[user.id]?.sender_id_type || 'alphanumeric'}
+                              onChange={(e) => updateSenderDraft(user.id, 'sender_id_type', e.target.value)}
+                              style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '12px' }}
+                            >
+                              <option value="numeric">Numeric</option>
+                              <option value="alphanumeric">Alphanumeric</option>
+                            </select>
+                            <input
+                              type="text"
+                              value={senderDrafts[user.id]?.sender_id || ''}
+                              onChange={(e) => updateSenderDraft(user.id, 'sender_id', e.target.value)}
+                              placeholder="Sender ID"
+                              style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #ddd', width: '110px', fontSize: '12px' }}
+                            />
+                            <button
+                              onClick={() => saveSenderId(user.id)}
+                              style={{
+                                padding: '6px 10px',
+                                backgroundColor: '#5e35b1',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '12px',
+                              }}
+                            >
+                              Save Sender
+                            </button>
+                            <button
+                              onClick={() => saveUserDetails(user)}
+                              disabled={savingUserId === user.id}
+                              style={{
+                                padding: '6px 10px',
+                                backgroundColor: '#1f7a4c',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: savingUserId === user.id ? 'not-allowed' : 'pointer',
+                                fontSize: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                              }}
+                            >
+                              <FaSave /> {savingUserId === user.id ? 'Saving...' : 'Save User'}
+                            </button>
+                            <button
+                              onClick={() => grantAdminAccess(user)}
+                              disabled={grantingAdminUserId === user.id || user.is_superuser}
+                              style={{
+                                padding: '6px 10px',
+                                backgroundColor: user.is_superuser ? '#607d8b' : '#6a1b9a',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: grantingAdminUserId === user.id || user.is_superuser ? 'not-allowed' : 'pointer',
+                                fontSize: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                              }}
+                              title={user.is_superuser ? 'Already full admin' : 'Grant full admin access'}
+                            >
+                              {grantingAdminUserId === user.id
+                                ? 'Granting...'
+                                : user.is_superuser
+                                ? 'Full Admin'
+                                : 'Grant Admin Access'}
+                            </button>
+                            <button
+                              onClick={() => revokeAdminAccess(user)}
+                              disabled={grantingAdminUserId === user.id || !user.is_staff}
+                              style={{
+                                padding: '6px 10px',
+                                backgroundColor: !user.is_staff ? '#9e9e9e' : '#455a64',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: grantingAdminUserId === user.id || !user.is_staff ? 'not-allowed' : 'pointer',
+                                fontSize: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                              }}
+                              title={!user.is_staff ? 'User is not admin/staff' : 'Revoke admin/staff access'}
+                            >
+                              Revoke Admin Access
+                            </button>
+                            <button
+                              onClick={() => deleteUser(user)}
+                              disabled={deletingUserId === user.id}
+                              style={{
+                                padding: '6px 10px',
+                                backgroundColor: '#b71c1c',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: deletingUserId === user.id ? 'not-allowed' : 'pointer',
+                                fontSize: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                              }}
+                            >
+                              <FaTrash /> {deletingUserId === user.id ? 'Deleting...' : 'Delete User'}
+                            </button>
                           </div>
-                        )}
-                      </div>
+
+                          {(senderSuggestions[user.id] || []).length > 0 && (
+                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                              {senderSuggestions[user.id].map((suggestedId) => (
+                                <button
+                                  key={`${user.id}-${suggestedId}`}
+                                  onClick={() => updateSenderDraft(user.id, 'sender_id', suggestedId)}
+                                  style={{
+                                    padding: '4px 8px',
+                                    border: '1px solid #5e35b1',
+                                    borderRadius: '14px',
+                                    backgroundColor: '#ede7f6',
+                                    color: '#5e35b1',
+                                    cursor: 'pointer',
+                                    fontSize: '11px',
+                                  }}
+                                >
+                                  {suggestedId}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ color: '#6B7280', fontWeight: 600 }}>Read only</div>
+                      )}
                     </td>
                   </tr>
                 ))}
