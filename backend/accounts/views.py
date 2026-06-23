@@ -499,6 +499,11 @@ def _extract_verifalia_entry(result_payload):
             entries = node.get('entries')
             if isinstance(entries, list) and entries:
                 bucket.extend([entry for entry in entries if isinstance(entry, dict)])
+            elif isinstance(entries, dict):
+                # Verifalia responses may expose entries as { data: [...], ... }.
+                entries_data = entries.get('data')
+                if isinstance(entries_data, list) and entries_data:
+                    bucket.extend([entry for entry in entries_data if isinstance(entry, dict)])
             for value in node.values():
                 _collect_entries(value, bucket)
         elif isinstance(node, list):
@@ -620,9 +625,99 @@ def _to_bool_or_none(value):
     return None
 
 
+def _extract_text_from_provider_field(value):
+    if value in [None, '']:
+        return ''
+
+    if isinstance(value, str):
+        return value.strip()
+
+    if isinstance(value, (int, float, bool)):
+        return str(value).strip()
+
+    if isinstance(value, dict):
+        for candidate in ['summary', 'report', 'description', 'message', 'text', 'value', 'content']:
+            if candidate in value and value[candidate] not in [None, '']:
+                extracted = _extract_text_from_provider_field(value[candidate])
+                if extracted:
+                    return extracted
+
+        for nested in value.values():
+            extracted = _extract_text_from_provider_field(nested)
+            if extracted:
+                return extracted
+        return ''
+
+    if isinstance(value, list):
+        for nested in value:
+            extracted = _extract_text_from_provider_field(nested)
+            if extracted:
+                return extracted
+        return ''
+
+    return ''
+
+
+def _infer_verifalia_classification(current_value, status_text='', summary_text='', report_text=''):
+    normalized_current = str(current_value or '').strip()
+    if normalized_current and normalized_current.lower() not in {'standard', 'unknown'}:
+        return normalized_current
+
+    combined_text = ' '.join(
+        str(value or '').lower()
+        for value in [status_text, summary_text, report_text, normalized_current]
+        if str(value or '').strip()
+    )
+
+    if any(phrase in combined_text for phrase in [
+        'high-risk email type',
+        'well-known disposable email address provider',
+        'disposable e-mail address provider',
+        'domainiswellknowndea',
+    ]):
+        return 'Risky'
+
+    if any(phrase in combined_text for phrase in [
+        'invalid email address',
+        'syntax error',
+        'mailbox validation failed',
+    ]):
+        return 'Invalid'
+
+    if any(phrase in combined_text for phrase in [
+        'safe to send mail',
+        'valid according to syntax rules',
+        'can correctly receive messages sent to the email address being tested',
+        'can correctly receive messages sent to the email address domain',
+        'deliverable',
+    ]):
+        return 'Deliverable'
+
+    return normalized_current or 'Unknown'
+
+
+def _infer_verifalia_bool_from_text(text_blob, positive_phrases, negative_phrases):
+    normalized_text = str(text_blob or '').lower()
+    if any(phrase in normalized_text for phrase in positive_phrases):
+        return True
+    if any(phrase in normalized_text for phrase in negative_phrases):
+        return False
+    return None
+
+
 def _normalize_email_validation_flags(email, entry, quality_info):
     normalized_email = str(email or '').strip().lower()
     domain = normalized_email.split('@', 1)[1] if '@' in normalized_email else ''
+    provider_text = ' '.join(
+        str(value or '').strip()
+        for value in [
+            quality_info.get('raw_summary'),
+            quality_info.get('raw_report'),
+            quality_info.get('status_text'),
+            quality_info.get('classification'),
+        ]
+        if str(value or '').strip()
+    )
     suggested_email = str(
         _lookup_value_from_nested_dict(entry, ['suggestedemailaddress', 'suggestion', 'didyoumean']) or ''
     ).strip()
@@ -641,7 +736,11 @@ def _normalize_email_validation_flags(email, entry, quality_info):
             valid_syntax = not syntax_failure
 
     if valid_syntax is None:
-        valid_syntax = bool('@' in str(email or ''))
+        valid_syntax = _infer_verifalia_bool_from_text(
+            provider_text,
+            ['valid according to syntax rules', 'syntactically valid', 'syntax validation'],
+            ['invalid email address', 'syntax error', 'syntax validation failed'],
+        )
 
     valid_mailbox = _to_bool_or_none(
         _lookup_value_from_nested_dict(
@@ -657,13 +756,21 @@ def _normalize_email_validation_flags(email, entry, quality_info):
         )
     )
     if valid_mailbox is None:
-        valid_mailbox = bool(quality_info.get('is_deliverable'))
+        valid_mailbox = _infer_verifalia_bool_from_text(
+            provider_text,
+            ['can correctly receive messages sent to the email address being tested', 'mailbox validation'],
+            ['mailbox validation failed', 'cannot correctly receive messages', 'does not accept messages'],
+        )
 
     catch_all = _to_bool_or_none(
         _lookup_value_from_nested_dict(entry, ['iscatchall', 'catchall', 'iscatchallmailbox', 'iscatchalladdress'])
     )
     if catch_all is None:
-        catch_all = False
+        catch_all = _infer_verifalia_bool_from_text(
+            provider_text,
+            ['catch-all mail exchanger validation', 'accept messages sent to nonexistent email addresses'],
+            ['does not accept messages sent to nonexistent email addresses'],
+        )
 
     disposable = _to_bool_or_none(
         _lookup_value_from_nested_dict(
@@ -678,49 +785,54 @@ def _normalize_email_validation_flags(email, entry, quality_info):
             ],
         )
     )
-    status_code_hint = str(quality_info.get('status_code') or '').strip().lower()
-    status_text_hint = str(quality_info.get('status_text') or '').strip().lower()
     if disposable is None:
-        disposable = bool(
-            'dea' in status_code_hint
-            or 'disposable' in status_text_hint
-            or 'wellknowndea' in status_code_hint
-            or 'domainiswellknowndea' in status_code_hint
+        disposable = _infer_verifalia_bool_from_text(
+            provider_text,
+            ['disposable email address', 'well-known disposable email address provider', 'dea provider'],
+            ['not associated with a well-known disposable email provider', 'not a known disposable e-mail address provider'],
         )
 
     role_based = _to_bool_or_none(
         _lookup_value_from_nested_dict(entry, ['isrolebased', 'rolebased', 'isroleaccount', 'isrolerelated'])
     )
     if role_based is None:
-        role_based = False
+        role_based = _infer_verifalia_bool_from_text(
+            provider_text,
+            ['recognized role account', 'role account validation'],
+            ['not a recognized role account'],
+        )
 
     risk_value = _lookup_value_from_nested_dict(entry, ['risk', 'risklevel', 'risklabel'])
     risk_score = _lookup_value_from_nested_dict(entry, ['riskscore', 'risk_score', 'score'])
 
-    risk = str(risk_value or '').strip().lower()
-    if not risk:
-        if quality_info.get('quality') == 'deliverable':
-            risk = 'low'
-        elif quality_info.get('quality') == 'invalid':
-            risk = 'none'
-        elif quality_info.get('quality') == 'risky':
-            risk = 'high'
-        else:
-            risk = 'unknown'
+    risk = str(risk_value or '').strip().lower() or 'unknown'
+
+    classification_hint = str(quality_info.get('classification') or '').strip().lower()
+    derived_risky = risk in ['high', 'medium', 'risky']
+    if classification_hint == 'risky' or 'high-risk email type' in provider_text.lower() or 'well-known disposable email address provider' in provider_text.lower():
+        derived_risky = True
+    elif classification_hint in ['deliverable', 'invalid'] or 'safe to send mail' in provider_text.lower() or 'valid according to syntax rules' in provider_text.lower():
+        derived_risky = False
 
     return {
         'email': normalized_email,
         'domain': domain,
-        'validSyntax': bool(valid_syntax),
-        'validMailbox': bool(valid_mailbox),
-        'catchAll': bool(catch_all),
+        'validSyntax': valid_syntax,
+        'validMailbox': valid_mailbox,
+        'catchAll': catch_all,
         'didYouMean': suggested_email,
-        'disposable': bool(disposable),
-        'roleBased': bool(role_based),
-        'risky': bool(quality_info.get('is_risky') or risk in ['high', 'medium', 'risky', 'unknown']),
+        'disposable': disposable,
+        'roleBased': role_based,
+        'risky': derived_risky,
         'risk': risk,
         'riskScore': risk_score,
     }
+
+
+def _normalize_optional_bool(value):
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 def _to_client_validation_result(item):
@@ -733,12 +845,12 @@ def _to_client_validation_result(item):
 
     return {
         'email': entered_email,
-        'validMailbox': bool(item.get('validMailbox')),
-        'validSyntax': bool(item.get('validSyntax')),
-        'catchAll': bool(item.get('catchAll')),
+        'validMailbox': _normalize_optional_bool(item.get('validMailbox')),
+        'validSyntax': _normalize_optional_bool(item.get('validSyntax')),
+        'catchAll': _normalize_optional_bool(item.get('catchAll')),
         'didYouMean': did_you_mean or entered_email,
-        'disposable': bool(item.get('disposable')),
-        'roleBased': bool(item.get('roleBased')),
+        'disposable': _normalize_optional_bool(item.get('disposable')),
+        'roleBased': _normalize_optional_bool(item.get('roleBased')),
         'risk': risk,
         'providerMessageId': str(item.get('providerMessageId') or '').strip(),
         'classification': classification,
@@ -769,19 +881,8 @@ def _build_verifalia_style_report(normalized_flags, quality_info):
     domain = normalized_flags['domain'] or ''
     local_part = email.split('@', 1)[0] if '@' in email else email
     classification = quality_info.get('classification') or 'Unknown'
-    raw_summary = str(quality_info.get('raw_summary') or '').strip()
-    raw_report = str(quality_info.get('raw_report') or '').strip()
-
-    if raw_summary and raw_report:
-        status_text = str(quality_info.get('status_text') or '').strip() or 'Validation completed.'
-        status_code = str(quality_info.get('status_code') or '').strip() or 'Success'
-        return {
-            'summary': raw_summary,
-            'report': raw_report,
-            'status': status_text,
-            'statusCode': status_code,
-            'classification': classification,
-        }
+    raw_summary = _extract_text_from_provider_field(quality_info.get('raw_summary'))
+    raw_report = _extract_text_from_provider_field(quality_info.get('raw_report'))
 
     summary_lines = [
         '#### Validation summary',
@@ -853,9 +954,12 @@ def _build_verifalia_style_report(normalized_flags, quality_info):
         ' The mail exchanger responsible for the email address domain does not accept messages sent to nonexistent email addresses..',
     ]
 
+    generated_summary = '\n'.join(summary_lines)
+    generated_report = '\n'.join(report_lines)
+
     return {
-        'summary': '\n'.join(summary_lines),
-        'report': '\n'.join(report_lines),
+        'summary': raw_summary or generated_summary,
+        'report': raw_report or generated_report,
         'status': status_text,
         'statusCode': status_code,
         'classification': classification,
@@ -980,14 +1084,24 @@ def _validate_email_with_verifalia(email):
         time.sleep(1)
 
     entry = _extract_verifalia_entry(current_payload)
-    classification = str(
-        _lookup_value_from_nested_dict(entry, ['classification', 'quality', 'verdict'])
-        or _lookup_value_from_nested_dict(current_payload, ['classification', 'quality', 'verdict'])
-        or ''
-    ).strip()
-    resolved_status_text = _normalize_verifalia_status_text(
+    raw_summary = (
+        _lookup_value_from_nested_dict(entry, ['summary', 'validationsummary', 'validation_summary', 'summarytext'])
+        or _lookup_value_from_nested_dict(current_payload, ['summary', 'validationsummary', 'validation_summary', 'summarytext'])
+    )
+    raw_report = (
+        _lookup_value_from_nested_dict(entry, ['report', 'validationreport', 'validation_report', 'reporttext', 'details'])
+        or _lookup_value_from_nested_dict(current_payload, ['report', 'validationreport', 'validation_report', 'reporttext', 'details'])
+    )
+    status_text_for_inference = _normalize_verifalia_status_text(
         _lookup_value_from_nested_dict(entry, ['status', 'statustext', 'status_text'])
     ) or str(status_text or '').strip()
+    classification = str(
+        _lookup_value_from_nested_dict(entry, ['classification', 'verdict'])
+        or _lookup_value_from_nested_dict(current_payload, ['classification', 'verdict'])
+        or ''
+    ).strip()
+    classification = _infer_verifalia_classification(classification, status_text_for_inference, _extract_text_from_provider_field(raw_summary), _extract_text_from_provider_field(raw_report))
+    resolved_status_text = status_text_for_inference
     resolved_status_code = _extract_verifalia_status_code(entry, current_payload)
     quality_info = _map_verifalia_quality(classification, status_text)
     quality_info = {
@@ -995,11 +1109,14 @@ def _validate_email_with_verifalia(email):
         'classification': classification or 'Unknown',
         'status_text': resolved_status_text,
         'status_code': resolved_status_code,
-        'raw_summary': _lookup_value_from_nested_dict(current_payload, ['summary', 'validationsummary', 'validation_summary']),
-        'raw_report': _lookup_value_from_nested_dict(current_payload, ['report', 'validationreport', 'validation_report']),
+        'raw_summary': raw_summary,
+        'raw_report': raw_report,
     }
     normalized_flags = _normalize_email_validation_flags(email, entry, quality_info)
     provider_report = _build_verifalia_style_report(normalized_flags, quality_info)
+    failure_reason = ''
+    if provider_report['statusCode'] not in ['Success', ''] or provider_report['classification'].lower() in ['invalid', 'risky']:
+        failure_reason = provider_report['status'] or provider_report['classification']
 
     return {
         'email': normalized_flags['email'],
@@ -1016,6 +1133,7 @@ def _validate_email_with_verifalia(email):
         'status': provider_report['status'],
         'statusCode': provider_report['statusCode'],
         'classification': provider_report['classification'],
+        'failure_reason': failure_reason,
     }
 
 
@@ -1250,6 +1368,8 @@ def _get_email_validation_cost_per_request():
 
 
 def _yes_no(value):
+    if value is None:
+        return 'unknown'
     return 'yes' if bool(value) else 'no'
 
 
@@ -1339,20 +1459,21 @@ def _deduct_sms_credits(user, message_count):
 
 
 def _build_simple_validation_result(item):
-    syntax_ok = bool(item.get('validSyntax'))
-    valid_mailbox = bool(item.get('validMailbox'))
-    disposable = bool(item.get('disposable'))
-    role_based = bool(item.get('roleBased'))
-    catch_all = bool(item.get('catchAll'))
+    syntax_ok = _normalize_optional_bool(item.get('validSyntax'))
+    valid_mailbox = _normalize_optional_bool(item.get('validMailbox'))
+    disposable = _normalize_optional_bool(item.get('disposable'))
+    role_based = _normalize_optional_bool(item.get('roleBased'))
+    catch_all = _normalize_optional_bool(item.get('catchAll'))
     domain_valid = bool(str(item.get('domain') or '').strip())
     risk_value = str(item.get('risk') or '').strip().lower()
     risk_high = bool(item.get('risky')) or risk_value in {'high', 'very_high', 'unknown'}
-    safe_to_send = syntax_ok and valid_mailbox and (not disposable) and (not role_based) and (not risk_high)
+    has_unknown_flag = any(value is None for value in [syntax_ok, valid_mailbox, disposable, role_based])
+    safe_to_send = None if has_unknown_flag else (syntax_ok and valid_mailbox and (not disposable) and (not role_based) and (not risk_high))
 
     return {
         'email': str(item.get('email') or '').strip().lower(),
-        'valid': _yes_no(syntax_ok and valid_mailbox),
-        'syntax_error': _yes_no(not syntax_ok),
+        'valid': _yes_no(None if (syntax_ok is None or valid_mailbox is None) else (syntax_ok and valid_mailbox)),
+        'syntax_error': _yes_no(None if syntax_ok is None else (not syntax_ok)),
         'safe_to_send': _yes_no(safe_to_send),
         'valid_mailbox': _yes_no(valid_mailbox),
         'catch_all': _yes_no(catch_all),
@@ -1426,6 +1547,7 @@ def _validate_email_list_with_verifalia(unique_emails):
                 'status': report['status'],
                 'statusCode': report['statusCode'],
                 'classification': report['classification'],
+                'failure_reason': report['status'] if report['statusCode'] != 'Success' or report['classification'].lower() in ['invalid', 'risky'] else '',
             })
             continue
 
@@ -1457,6 +1579,7 @@ def _validate_email_list_with_verifalia(unique_emails):
                 'status': report['status'],
                 'statusCode': report['statusCode'],
                 'classification': report['classification'],
+                'failure_reason': report['status'],
             })
     return results
 
@@ -3593,6 +3716,7 @@ class EmailValidationView(generics.GenericAPIView):
             completed_at=timezone.now(),
         )
         _assign_email_validation_request_id(history)
+        history_payload = EmailValidationHistorySerializer(history).data
 
         simple_results = [_build_simple_validation_result(item) for item in client_results]
 
@@ -3608,11 +3732,13 @@ class EmailValidationView(generics.GenericAPIView):
                 },
                 'simple_results': simple_results,
                 'results': client_results,
+                'history': history_payload,
                 'dlr_report': {
                     'request_id': history.request_id,
                     'status': history.status,
                     'completed': history.status == EmailValidationHistory.STATUS_COMPLETED,
                     'delivery_time': history.completed_at,
+                    'failure_reason': '',
                 },
             },
             status=status.HTTP_200_OK,
@@ -3742,6 +3868,7 @@ class APIEmailValidationView(generics.GenericAPIView):
             completed_at=timezone.now(),
         )
         _assign_email_validation_request_id(history)
+        history_payload = EmailValidationHistorySerializer(history).data
 
         simple_results = [_build_simple_validation_result(item) for item in client_results]
 
@@ -3757,11 +3884,13 @@ class APIEmailValidationView(generics.GenericAPIView):
                 },
                 'simple_results': simple_results,
                 'results': client_results,
+                'history': history_payload,
                 'dlr_report': {
                     'request_id': history.request_id,
                     'status': history.status,
                     'completed': history.status == EmailValidationHistory.STATUS_COMPLETED,
                     'delivery_time': history.completed_at,
+                    'failure_reason': '',
                 },
             },
             status=status.HTTP_200_OK,

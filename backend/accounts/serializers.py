@@ -469,12 +469,14 @@ class EmailValidationHistorySerializer(serializers.ModelSerializer):
 
     def get_dlr_report(self, obj):
         status_value = str(getattr(obj, 'status', '') or '').lower()
+        summary = getattr(obj, 'results_summary', {}) or {}
         return {
             'request_id': getattr(obj, 'request_id', ''),
             'provider_message_id': self.get_provider_message_id(obj),
             'status': status_value,
             'completed': status_value == 'completed',
             'delivery_time': getattr(obj, 'completed_at', None),
+            'failure_reason': str(summary.get('failure_reason') or summary.get('error') or '').strip(),
         }
 
     class Meta:

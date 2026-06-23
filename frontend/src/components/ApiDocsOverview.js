@@ -228,24 +228,6 @@ const sections = [
       { method: 'POST', path: '/sms/free-trial/send/', auth: 'JWT', description: 'Send trial SMS under trial policy.' },
     ],
   },
-  {
-    id: 'admin',
-    title: 'Admin Controls',
-    description: 'Primary admin endpoints for user governance and notification operations.',
-    endpoints: [
-      { method: 'GET', path: '/admin/users/', auth: 'JWT + Primary Admin', description: 'List all users with account flags.' },
-      { method: 'PATCH/DELETE', path: '/admin/users/{user_id}/permissions/', auth: 'JWT + Primary Admin', description: 'Manage user permissions and profile controls.' },
-      { method: 'GET', path: '/admin/users/export/', auth: 'JWT + Primary Admin', description: 'Export user data for operations.' },
-      { method: 'POST', path: '/confirm-admin-promotion/', auth: 'JWT', description: 'Confirm admin promotion workflow.' },
-      { method: 'GET', path: '/sms/admin/users/', auth: 'JWT + Admin', description: 'SMS-focused user listing.' },
-      { method: 'PATCH', path: '/sms/users/{user_id}/eligibility/', auth: 'JWT + Admin', description: 'Update per-user SMS eligibility.' },
-      { method: 'POST', path: '/admin/notifications/preview/', auth: 'JWT + Primary Admin', description: 'Preview recipient list by filter.' },
-      { method: 'POST', path: '/admin/notifications/send/', auth: 'JWT + Primary Admin', description: 'Send internal in-app notifications.' },
-      { method: 'GET', path: '/admin/notifications/history/', auth: 'JWT + Primary Admin', description: 'Notification campaign history.' },
-      { method: 'GET', path: '/notifications/my/', auth: 'JWT', description: 'Current user notification feed.' },
-      { method: 'POST', path: '/notifications/my/{recipient_id}/read/', auth: 'JWT', description: 'Mark one notification as read.' },
-    ],
-  },
 ];
 
 const cardStyle = {

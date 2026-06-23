@@ -147,7 +147,7 @@ Request auth fields:
 
 Same payload modes and response contract as dashboard validation.
 
-## 7. Admin Credit Management
+'''## 7. Admin Credit Management
 
 ### 7.1 Add Credits Manually
 - Endpoint: `PATCH /api/auth/admin/users/{user_id}/wallet/credits/`
@@ -172,7 +172,7 @@ Response:
   "added_email_validation_credits": "250.0000"
 }
 ```
-
+'''
 ## 8. Search and Request Tracking
 
 ### 8.1 Request Status Search

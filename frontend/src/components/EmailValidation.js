@@ -257,6 +257,12 @@ export default function EmailValidation() {
         safe_to_send_yes: Number(response.data?.summary?.safe_to_send_yes || 0),
         safe_to_send_no: Number(response.data?.summary?.safe_to_send_no || 0),
       });
+      if (response.data?.history) {
+        setHistoryItems((prev) => {
+          const next = [response.data.history, ...prev.filter((item) => item.id !== response.data.history.id)];
+          return next;
+        });
+      }
       setLastFileName(response.data?.source_file_name || '');
       if (isAdmin) {
         const refreshedWallet = await API.get('wallet/');
@@ -430,6 +436,54 @@ export default function EmailValidation() {
     ].join('\n');
   };
 
+  const formatBoolValue = (value) => {
+    if (value === true) {
+      return 'Yes';
+    }
+    if (value === false) {
+      return 'No';
+    }
+    return 'Unknown';
+  };
+
+  const getBoolStyles = (value) => {
+    if (value === true) {
+      return { color: '#166534', background: '#dcfce7', border: '#86efac' };
+    }
+    if (value === false) {
+      return { color: '#991b1b', background: '#fee2e2', border: '#fca5a5' };
+    }
+    return { color: '#475569', background: '#e2e8f0', border: '#cbd5e1' };
+  };
+
+  const factorCards = (row) => {
+    const factors = [
+      { label: 'ValidMailbox', type: 'bool', value: row?.validMailbox },
+      { label: 'ValidSyntax', type: 'bool', value: row?.validSyntax },
+      { label: 'catchAll', type: 'bool', value: row?.catchAll },
+      { label: 'didYouMean', type: 'text', value: row?.didYouMean || row?.email || '-' },
+      { label: 'disposable', type: 'bool', value: row?.disposable },
+      { label: 'roleBased', type: 'bool', value: row?.roleBased },
+      { label: 'Risk', type: 'bool', value: row?.risky },
+    ];
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px', marginTop: '10px' }}>
+        {factors.map((factor) => {
+          const style = factor.type === 'bool' ? getBoolStyles(factor.value) : { color: '#1f2937', background: '#eef2ff', border: '#c7d2fe' };
+          const displayValue = factor.type === 'bool' ? formatBoolValue(factor.value) : String(factor.value);
+
+          return (
+            <div key={`${row?.email || 'factor'}-${factor.label}`} style={{ border: `1px solid ${style.border}`, borderRadius: '8px', padding: '8px', background: style.background }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', marginBottom: '4px' }}>{factor.label}</div>
+              <div style={{ fontSize: '13px', fontWeight: 800, color: style.color }}>{displayValue}</div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   const toggleHistoryFullResult = (requestKey) => {
     setExpandedHistoryRequestIds((prev) => ({
       ...prev,
@@ -574,6 +628,7 @@ export default function EmailValidation() {
                     <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '12px', color: '#374151', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px' }}>
                       {formatLiveResult(row)}
                     </pre>
+                    {factorCards(row)}
                   </div>
                 ))}
               </div>
@@ -675,6 +730,7 @@ export default function EmailValidation() {
                   || '-';
                 const primaryStatus = firstResult?.status || firstResult?.classification || 'Validation completed';
                 const isExpanded = Boolean(expandedHistoryRequestIds[requestKey]);
+                const failureReason = item.dlr_report?.failure_reason || firstResult?.failure_reason || '';
 
                 return (
                   <div key={item.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px' }}>
@@ -684,6 +740,11 @@ export default function EmailValidation() {
                         <div style={{ fontSize: '12px', color: '#1f2937' }}>Unique ID: {item.id}</div>
                         <div style={{ fontSize: '12px', color: '#1f2937' }}>Mail: {primaryEmail}</div>
                         <div style={{ fontSize: '12px', color: '#1f2937' }}>Status: {primaryStatus}</div>
+                        {failureReason && (
+                          <div style={{ fontSize: '12px', color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', padding: '6px 8px', maxWidth: '760px' }}>
+                            Failure reason: {failureReason}
+                          </div>
+                        )}
                       </div>
                       <button
                         type="button"
@@ -701,6 +762,7 @@ export default function EmailValidation() {
                             <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '11px', color: '#334155', background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px' }}>
                               {formatLiveResult(row)}
                             </pre>
+                            {factorCards(row)}
                           </div>
                         ))}
                       </div>
