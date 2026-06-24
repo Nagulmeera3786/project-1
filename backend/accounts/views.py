@@ -15,6 +15,7 @@ import requests
 import time
 import re
 import random
+import secrets
 import string
 import uuid
 import socket
@@ -1373,18 +1374,19 @@ def _yes_no(value):
     return 'yes' if bool(value) else 'no'
 
 
-def _build_bh_service_prefix(service_code, target_date):
-    date_part = target_date.strftime('%Y%m%d')
-    return f'BH-{service_code}-{date_part}-'
+def _generate_unique_uuid(model_class, field_name, max_attempts=25):
+    """Generate a collision-safe UUID string for unique message/request IDs."""
+    attempts = 0
+    generated_id = str(uuid.uuid4())
 
+    while model_class.objects.filter(**{field_name: generated_id}).exists() and attempts < max_attempts:
+        attempts += 1
+        generated_id = str(uuid.uuid4())
 
-def _build_bh_service_request_id(prefix, serial_number):
-    return f'{prefix}{int(serial_number):012d}'
+    if model_class.objects.filter(**{field_name: generated_id}).exists():
+        raise ValueError(f'Could not generate a unique UUID for {field_name}')
 
-
-def _next_service_serial(model_cls, field_name, prefix):
-    current_count = model_cls.objects.filter(**{f'{field_name}__startswith': prefix}).count()
-    return current_count + 1
+    return generated_id
 
 
 def _resolve_sms_service_code(sms_message):
@@ -1400,14 +1402,7 @@ def _assign_sms_request_id(sms_message, user_for_id=None):
     if not sms_message or sms_message.message_id:
         return sms_message.message_id
 
-    created_at = getattr(sms_message, 'created_at', None) or timezone.now()
-    service_code = _resolve_sms_service_code(sms_message)
-    prefix = _build_bh_service_prefix(service_code, timezone.localtime(created_at).date())
-    serial_number = _next_service_serial(SMSMessage, 'message_id', prefix)
-    generated_id = _build_bh_service_request_id(prefix, serial_number)
-    while SMSMessage.objects.filter(message_id=generated_id).exists():
-        serial_number += 1
-        generated_id = _build_bh_service_request_id(prefix, serial_number)
+    generated_id = _generate_unique_uuid(SMSMessage, 'message_id')
 
     sms_message.message_id = generated_id
     sms_message.save(update_fields=['message_id', 'updated_at'])
@@ -1418,13 +1413,7 @@ def _assign_email_validation_request_id(history):
     if not history or history.request_id:
         return history.request_id
 
-    created_at = getattr(history, 'created_at', None) or timezone.now()
-    prefix = _build_bh_service_prefix('EMAIL', timezone.localtime(created_at).date())
-    serial_number = _next_service_serial(EmailValidationHistory, 'request_id', prefix)
-    generated_id = _build_bh_service_request_id(prefix, serial_number)
-    while EmailValidationHistory.objects.filter(request_id=generated_id).exists():
-        serial_number += 1
-        generated_id = _build_bh_service_request_id(prefix, serial_number)
+    generated_id = _generate_unique_uuid(EmailValidationHistory, 'request_id')
 
     history.request_id = generated_id
     history.save(update_fields=['request_id'])

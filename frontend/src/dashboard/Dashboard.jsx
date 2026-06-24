@@ -91,9 +91,8 @@ const Dashboard = () => {
 
   const supportServiceCards = [
     { label: 'User Directory', desc: 'View user details, wallet balances, and activity counts.', action: () => navigate('/admin/users') },
-    { label: 'Validation History', desc: 'Inspect email validation requests and results.', action: () => navigate('/broadcast/email-validation?tab=history') },
+    { label: 'Reports', desc: 'Inspect SMS and email validation histories with usage charts.', action: () => navigate('/reports') },
     { label: 'API Keys', desc: 'See which keys exist, who created them, and when they were used.', action: () => navigate('/broadcast/email-validation?tab=keys') },
-    { label: 'SMS History', desc: 'Review delivery history and status for sent messages.', action: () => navigate('/sms/history') },
     { label: 'Wallet & Credits', desc: 'Check message balance and provider credits for admin-capable accounts.', action: () => navigate('/broadcast/email-validation') },
     { label: 'Internal Notifications', desc: 'Read internal notices and history.', action: () => navigate('/admin/notifications') },
   ].filter((card) => {

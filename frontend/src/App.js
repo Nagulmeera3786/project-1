@@ -20,6 +20,7 @@ import AdminSMSCredentials from './components/AdminSMSCredentials';
 import AdminNotifications from './components/AdminNotifications';
 import UserNotifications from './components/UserNotifications';
 import EmailValidation from './components/EmailValidation';
+import Reports from './components/Reports';
 
 // dashboard components imported from the integrated Main_Panel
 import DashboardLayout from './dashboard/Layout';
@@ -149,14 +150,7 @@ function App() {
         boxShadow: '0 2px 16px rgba(26,14,78,0.45)',
       }}>
         {/* Brand */}
-        <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none' }}>
-          <div style={{
-            width: '36px', height: '36px',
-            background: 'linear-gradient(135deg, #7C5DC7, #5B3FA8)',
-            borderRadius: '10px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'white', fontWeight: '800', fontSize: '13px',
-          }}>BHI</div>
+        <Link to="/" style={{ display: 'flex', alignItems: 'center', textDecoration: 'none' }}>
           <span style={{ color: 'white', fontWeight: '700', fontSize: '17px', letterSpacing: '0.3px' }}>Bhisha</span>
         </Link>
 
@@ -243,6 +237,7 @@ function App() {
         />
         <Route path="/admin/notifications" element={supportRoute('Support Notifications', <AdminNotifications />)} />
         <Route path="/broadcast/email-validation" element={privateRoute('Email Validation', <EmailValidation />)} />
+        <Route path="/reports" element={privateRoute('Reports', <Reports />)} />
         <Route path="/notifications" element={privateRoute('User Notifications', <UserNotifications />)} />
         
         <Route path="/" element={wrapModule('Home', <MainPage />)} />

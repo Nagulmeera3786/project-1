@@ -39,6 +39,7 @@ const TopRightMenu = () => {
       {/* User Avatar + Dropdown */}
       <div style={{ position: 'relative' }}>
         <div
+          title="Account menu"
           style={{
             display: 'flex', alignItems: 'center', gap: '10px',
             cursor: 'pointer', padding: '6px 12px',

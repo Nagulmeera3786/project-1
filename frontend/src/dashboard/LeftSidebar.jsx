@@ -13,19 +13,19 @@ import {
   FaEnvelope,
   FaCog,
   FaKey,
-  FaHistory,
   FaWhatsapp,
   FaPhoneAlt,
   FaMoneyBillWave,
   FaCreditCard,
   FaWallet,
+  FaChartLine,
 
 } from "react-icons/fa";
 import API from "../api";
 import "../App.css";
 
 const LeftSidebar = () => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isSupportUser, setIsSupportUser] = useState(false);
   const [showBroadcastSubmenu, setShowBroadcastSubmenu] = useState(false);
@@ -67,6 +67,7 @@ const LeftSidebar = () => {
     { icon: <FaFileAlt />, label: "Content", path: null, action: null },
     { icon: <FaExchangeAlt />, label: "Exchange", path: null, action: null },
     { icon: <FaKey />, label: "API Keys", path: null, action: null },
+    { icon: <FaChartLine />, label: "Reports", path: '/reports', action: () => navigate('/reports') },
     { icon: <FaMoneyBillWave />, label: "Utilities", path: null, action: () => setShowUtilitiesSubmenu((prev) => !prev) },
     { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
   ];
@@ -77,6 +78,7 @@ const LeftSidebar = () => {
     { icon: <FaBook />, label: "Guide", path: null, action: null },
     { icon: <FaBroadcastTower />, label: "Broadcast", path: null, action: () => setShowBroadcastSubmenu((prev) => !prev) },
     { icon: <FaUsers />, label: "People", path: null, action: () => setShowPeopleSubmenu((prev) => !prev) },
+    { icon: <FaChartLine />, label: 'Reports', path: '/reports', action: () => navigate('/reports') },
     { icon: <FaMoneyBillWave />, label: "Utilities", path: null, action: () => setShowUtilitiesSubmenu((prev) => !prev) },
     { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
   ];
@@ -84,9 +86,8 @@ const LeftSidebar = () => {
   const supportBaseMenuItems = [
     { icon: <FaHome />, label: "Support Home", path: '/dashboard', action: () => navigate('/dashboard') },
     { icon: <FaUsers />, label: "Users", path: '/admin/users', action: () => navigate('/admin/users') },
-    { icon: <FaHistory />, label: "Validation History", path: '/broadcast/email-validation?tab=history', action: () => navigate('/broadcast/email-validation?tab=history') },
+    { icon: <FaChartLine />, label: "Reports", path: '/reports', action: () => navigate('/reports') },
     { icon: <FaKey />, label: "API Keys", path: '/broadcast/email-validation?tab=keys', action: () => navigate('/broadcast/email-validation?tab=keys') },
-    { icon: <FaHistory />, label: "SMS History", path: '/sms/history', action: () => navigate('/sms/history') },
     { icon: <FaWallet />, label: "Wallet & Credits", path: '/broadcast/email-validation', action: () => navigate('/broadcast/email-validation') },
     { icon: <FaPhoneAlt />, label: "Notifications", path: '/admin/notifications', action: () => navigate('/admin/notifications') },
   ];
@@ -109,12 +110,11 @@ const LeftSidebar = () => {
       path: isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/free-trial'),
       action: () => navigate(isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/free-trial')),
     },
-    { icon: <FaHistory />, label: 'SMS History', path: '/sms/history', action: () => navigate('/sms/history') },
   ];
 
   const utilitiesSubMenuItems = [
+    { icon: <FaChartLine />, label: 'Reports', path: '/reports', action: () => navigate('/reports') },
     { icon: <FaKey />, label: 'API Keys', path: '/broadcast/email-validation?tab=keys', action: () => navigate('/broadcast/email-validation?tab=keys') },
-    { icon: <FaHistory />, label: 'Validation History', path: '/broadcast/email-validation?tab=history', action: () => navigate('/broadcast/email-validation?tab=history') },
     { icon: <FaCreditCard />, label: 'Credit Details', path: '/dashboard/recharge?tab=credit-details', action: () => navigate('/dashboard/recharge?tab=credit-details') },
     { icon: <FaWallet />, label: 'Recharge Account', path: '/dashboard/recharge?tab=recharge', action: () => navigate('/dashboard/recharge?tab=recharge') },
     { icon: <FaMoneyBillWave />, label: 'Payment Details', path: '/dashboard/recharge?tab=payment-details', action: () => navigate('/dashboard/recharge?tab=payment-details') },
@@ -133,6 +133,7 @@ const LeftSidebar = () => {
         key={key}
         className={`menu-item${active ? ' active' : ''}`}
         onClick={item.action}
+        aria-label={item.label}
         title={!isOpen ? item.label : undefined}
         style={{
           cursor: item.action ? 'pointer' : 'default',
@@ -151,18 +152,8 @@ const LeftSidebar = () => {
       {/* Top: Logo + Toggle */}
       <div className="sidebar-top">
         <div style={{
-          display: 'flex', alignItems: 'center', gap: '10px', flex: 1, overflow: 'hidden',
+          display: 'flex', alignItems: 'center', flex: 1, overflow: 'hidden',
         }}>
-          {/* Logo mark */}
-          <div style={{
-            width: '32px', height: '32px', flexShrink: 0,
-            background: 'linear-gradient(135deg, #7C5DC7, #A78BFA)',
-            borderRadius: '8px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'white', fontWeight: '800', fontSize: '11px', letterSpacing: '0.5px',
-          }}>
-            B
-          </div>
           {isOpen && (
             <div className="company-name">Bhisha</div>
           )}

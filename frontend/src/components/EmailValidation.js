@@ -1,7 +1,7 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import API from '../api';
-import { FaArrowLeft, FaUpload, FaEnvelopeOpenText, FaListUl, FaKey, FaHistory, FaServer, FaUserShield } from 'react-icons/fa';
+import { FaArrowLeft, FaUpload, FaEnvelopeOpenText, FaListUl, FaKey, FaServer, FaUserShield } from 'react-icons/fa';
 
 const tabButtonStyle = (active) => ({
   border: active ? '1px solid #7C5DC7' : '1px solid #d1d5db',
@@ -64,20 +64,20 @@ export default function EmailValidation() {
   const [bulkEmails, setBulkEmails] = useState('');
   const [sourceFile, setSourceFile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [progressStage, setProgressStage] = useState('idle');
+  const [progressPercent, setProgressPercent] = useState(0);
+  const [statusMessage, setStatusMessage] = useState('');
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [lastFileName, setLastFileName] = useState('');
+  const [latestRequestId, setLatestRequestId] = useState('');
   const [results, setResults] = useState([]);
   const [summary, setSummary] = useState({ safe_to_send_yes: 0, safe_to_send_no: 0 });
+  const progressIntervalRef = useRef(null);
 
   const [apiKeys, setApiKeys] = useState([]);
   const [newApiKeyName, setNewApiKeyName] = useState('');
   const [apiKeysLoading, setApiKeysLoading] = useState(false);
-
-  const [historyItems, setHistoryItems] = useState([]);
-  const [historySource, setHistorySource] = useState('all');
-  const [historyQuery, setHistoryQuery] = useState('');
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [expandedHistoryRequestIds, setExpandedHistoryRequestIds] = useState({});
 
   const [latestByUser, setLatestByUser] = useState([]);
   const [selectedAdminUser, setSelectedAdminUser] = useState(null);
@@ -118,8 +118,6 @@ export default function EmailValidation() {
     const tab = (params.get('tab') || '').trim().toLowerCase();
     if (tab === 'keys') {
       setActiveTab('api-keys');
-    } else if (tab === 'history') {
-      setActiveTab('history');
     } else if (tab === 'endpoints') {
       setActiveTab('api-docs');
     } else if (tab === 'admin') {
@@ -138,26 +136,6 @@ export default function EmailValidation() {
       setApiKeys([]);
     } finally {
       setApiKeysLoading(false);
-    }
-  };
-
-  const fetchHistory = async () => {
-    setHistoryLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (historySource !== 'all') {
-        params.set('source', historySource);
-      }
-      if (historyQuery.trim()) {
-        params.set('q', historyQuery.trim());
-      }
-      const sourceQuery = params.toString() ? `?${params.toString()}` : '';
-      const res = await API.get(`email-validation/history/${sourceQuery}`);
-      setHistoryItems(Array.isArray(res.data) ? res.data : []);
-    } catch {
-      setHistoryItems([]);
-    } finally {
-      setHistoryLoading(false);
     }
   };
 
@@ -193,26 +171,111 @@ export default function EmailValidation() {
     if (activeTab === 'api-keys') {
       fetchApiKeys();
     }
-    if (activeTab === 'history') {
-      fetchHistory();
-    }
     if (activeTab === 'admin') {
       fetchAdminData();
     }
   }, [activeTab, canViewSupportData]);
 
   useEffect(() => {
-    if (activeTab === 'history') {
-      fetchHistory();
+    if (!loading) {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
+      return;
     }
-  }, [historySource, historyQuery]);
+
+    if (progressStage !== 'validating') {
+      return;
+    }
+
+    progressIntervalRef.current = setInterval(() => {
+      setProgressPercent((prev) => Math.min(prev + 1, 97));
+    }, 1200);
+
+    return () => {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
+    };
+  }, [loading, progressStage]);
+
+  const applyValidationPayload = (data = {}) => {
+    const history = data?.history || {};
+    const historySummary = history?.results_summary || {};
+    const historyResults = Array.isArray(historySummary?.results) ? historySummary.results : [];
+    const responseResults = Array.isArray(data?.results) ? data.results : [];
+    const effectiveResults = responseResults.length > 0 ? responseResults : historyResults;
+
+    const responseSummary = data?.summary || {};
+    const safeCount = Number(
+      responseSummary?.safe_to_send_yes ?? historySummary?.safe_count ?? 0
+    );
+    const unsafeCount = Number(
+      responseSummary?.safe_to_send_no ?? historySummary?.unsafe_count ?? 0
+    );
+
+    setResults(effectiveResults);
+    setSummary({ safe_to_send_yes: safeCount, safe_to_send_no: unsafeCount });
+    setLastFileName(data?.source_file_name || history?.file_name || '');
+    setLatestRequestId(data?.request_id || history?.request_id || '');
+  };
+
+  const recoverValidationFromHistory = async ({ startedAtMs, expectedFileName }) => {
+    const response = await API.get('email-validation/history/', {
+      params: { source: 'dashboard' },
+      timeout: 60000,
+    });
+
+    const rows = Array.isArray(response.data) ? response.data : [];
+    if (rows.length === 0) {
+      return false;
+    }
+
+    const lowerFileName = String(expectedFileName || '').trim().toLowerCase();
+    const graceStart = Number(startedAtMs || Date.now()) - 120000;
+
+    const candidates = rows.filter((item) => {
+      const createdAt = new Date(item?.created_at || 0).getTime();
+      return Number.isFinite(createdAt) && createdAt >= graceStart;
+    });
+
+    const preferredByFile = lowerFileName
+      ? candidates.find((item) => String(item?.file_name || '').trim().toLowerCase() === lowerFileName)
+      : null;
+
+    const chosen = preferredByFile || candidates[0] || rows[0];
+    const historyResults = Array.isArray(chosen?.results_summary?.results) ? chosen.results_summary.results : [];
+    if (!chosen || historyResults.length === 0) {
+      return false;
+    }
+
+    applyValidationPayload({
+      request_id: chosen.request_id,
+      source_file_name: chosen.file_name,
+      history: chosen,
+      summary: {
+        safe_to_send_yes: Number(chosen?.results_summary?.safe_count || 0),
+        safe_to_send_no: Number(chosen?.results_summary?.unsafe_count || 0),
+      },
+      results: historyResults,
+    });
+
+    return true;
+  };
 
   const runValidation = async (event) => {
     event.preventDefault();
     setError('');
+    setInfo('');
     setResults([]);
     setSummary({ safe_to_send_yes: 0, safe_to_send_no: 0 });
     setLastFileName('');
+    setLatestRequestId('');
+    setProgressPercent(0);
+    setProgressStage(mode === 'file' ? 'uploading' : 'validating');
+    setStatusMessage(mode === 'file' ? 'Uploading file...' : 'Preparing validation request...');
 
     if (mode === 'single' && !singleEmail.trim()) {
       setError('Please enter an email address.');
@@ -233,6 +296,7 @@ export default function EmailValidation() {
     }
 
     setLoading(true);
+    const startedAtMs = Date.now();
     try {
       let response;
 
@@ -241,6 +305,27 @@ export default function EmailValidation() {
         formData.append('source_file', sourceFile);
         response = await API.post('email-validation/validate/', formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 900000,
+          onUploadProgress: (progressEvent) => {
+            const loaded = Number(progressEvent?.loaded || 0);
+            const total = Number(progressEvent?.total || 0);
+            if (total > 0) {
+              const percent = Math.min(100, Math.round((loaded / total) * 100));
+              if (percent < 100) {
+                setProgressStage('uploading');
+                setStatusMessage(`Uploading file... ${percent}%`);
+                setProgressPercent(Math.min(percent, 92));
+              } else {
+                setProgressStage('validating');
+                setStatusMessage('Upload complete. Validating emails...');
+                setProgressPercent((prev) => Math.max(prev, 93));
+              }
+            } else {
+              setProgressStage('uploading');
+              setStatusMessage('Uploading file...');
+              setProgressPercent((prev) => Math.max(prev, 20));
+            }
+          },
         });
       } else {
         const payload = {};
@@ -249,21 +334,16 @@ export default function EmailValidation() {
         } else if (mode === 'bulk') {
           payload.emails = bulkEmails.trim();
         }
-        response = await API.post('email-validation/validate/', payload);
+        setProgressStage('validating');
+        setStatusMessage('Validating emails...');
+        setProgressPercent(15);
+        response = await API.post('email-validation/validate/', payload, { timeout: 900000 });
       }
 
-      setResults(Array.isArray(response.data?.results) ? response.data.results : []);
-      setSummary({
-        safe_to_send_yes: Number(response.data?.summary?.safe_to_send_yes || 0),
-        safe_to_send_no: Number(response.data?.summary?.safe_to_send_no || 0),
-      });
-      if (response.data?.history) {
-        setHistoryItems((prev) => {
-          const next = [response.data.history, ...prev.filter((item) => item.id !== response.data.history.id)];
-          return next;
-        });
-      }
-      setLastFileName(response.data?.source_file_name || '');
+      applyValidationPayload(response.data || {});
+      setProgressPercent(100);
+      setStatusMessage('Validation completed successfully.');
+
       if (isAdmin) {
         const refreshedWallet = await API.get('wallet/');
         setWalletBalance(String(refreshedWallet.data?.email_validation_balance ?? walletBalance));
@@ -271,9 +351,34 @@ export default function EmailValidation() {
         setWalletBalance(String(response.data?.wallet_balance ?? walletBalance));
       }
     } catch (err) {
-      setError(err.response?.data?.detail || 'Email validation failed.');
+      const detail = err.response?.data?.detail || 'Email validation failed.';
+      const code = String(err.code || '').toUpperCase();
+      const message = String(err.message || '').toLowerCase();
+      const isTimeoutOrNetwork = code === 'ECONNABORTED' || message.includes('timeout') || message.includes('network');
+
+      if (isTimeoutOrNetwork) {
+        try {
+          const recovered = await recoverValidationFromHistory({
+            startedAtMs,
+            expectedFileName: mode === 'file' ? sourceFile?.name : '',
+          });
+          if (recovered) {
+            setInfo('Validation completed on server and results were recovered from history.');
+            setError('');
+            setProgressPercent(100);
+            setStatusMessage('Validation completed successfully.');
+            return;
+          }
+        } catch {
+          // Fall back to regular error handling below.
+        }
+      }
+
+      setError(detail);
+      setStatusMessage('Validation failed.');
     } finally {
       setLoading(false);
+      setProgressStage('idle');
     }
   };
 
@@ -484,13 +589,6 @@ export default function EmailValidation() {
     );
   };
 
-  const toggleHistoryFullResult = (requestKey) => {
-    setExpandedHistoryRequestIds((prev) => ({
-      ...prev,
-      [requestKey]: !prev[requestKey],
-    }));
-  };
-
   return (
     <div style={{ padding: '32px', maxWidth: '1240px', margin: '0 auto' }}>
       <button
@@ -524,9 +622,6 @@ export default function EmailValidation() {
         <button onClick={() => setActiveTab('api-keys')} style={tabButtonStyle(activeTab === 'api-keys')}>
           <FaKey /> API Keys
         </button>
-        <button onClick={() => setActiveTab('history')} style={tabButtonStyle(activeTab === 'history')}>
-          <FaHistory /> History
-        </button>
         <button onClick={() => setActiveTab('api-docs')} style={tabButtonStyle(activeTab === 'api-docs')}>
           <FaServer /> API Endpoints
         </button>
@@ -559,6 +654,12 @@ export default function EmailValidation() {
       {error && (
         <div style={{ marginBottom: '16px', padding: '12px', background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: '8px' }}>
           {error}
+        </div>
+      )}
+
+      {info && (
+        <div style={{ marginBottom: '16px', padding: '12px', background: '#ecfdf5', color: '#166534', border: '1px solid #a7f3d0', borderRadius: '8px' }}>
+          {info}
         </div>
       )}
 
@@ -609,7 +710,30 @@ export default function EmailValidation() {
             >
               {loading ? 'Validating...' : 'Validate Emails'}
             </button>
+
+            {loading && (
+              <div style={{ marginTop: '12px' }}>
+                <div style={{ marginBottom: '6px', fontSize: '12px', color: '#374151', fontWeight: 600 }}>{statusMessage || 'Processing...'}</div>
+                <div style={{ height: '10px', width: '100%', background: '#e5e7eb', borderRadius: '999px', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${progressPercent}%`,
+                      height: '100%',
+                      background: progressStage === 'uploading' ? '#2563eb' : '#16a34a',
+                      transition: 'width 0.3s ease',
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: '4px', fontSize: '11px', color: '#6b7280' }}>{Math.round(progressPercent)}%</div>
+              </div>
+            )}
           </form>
+
+          {latestRequestId && (
+            <div style={{ marginBottom: '10px', color: '#475569', fontSize: '13px' }}>
+              Request ID: <strong>{latestRequestId}</strong>
+            </div>
+          )}
 
           {lastFileName && (
             <div style={{ marginBottom: '10px', color: '#475569', fontSize: '13px' }}>
@@ -690,89 +814,6 @@ export default function EmailValidation() {
               <li>Returns simplified yes/no fields and detailed provider output.</li>
             </ul>
           </div>
-        </div>
-      )}
-
-      {activeTab === 'history' && (
-        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', gap: '10px', flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0 }}>Validation History by Source</h3>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              {['all', 'dashboard', 'api'].map((item) => (
-                <button key={item} onClick={() => setHistorySource(item)} style={tabButtonStyle(historySource === item)}>
-                  {item.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ marginBottom: '12px' }}>
-            <input
-              type="search"
-              value={historyQuery}
-              onChange={(e) => setHistoryQuery(e.target.value)}
-              placeholder="Search by request ID, user ID, email, or file name..."
-              style={{ width: '100%', maxWidth: '460px', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db' }}
-            />
-          </div>
-
-          {historyLoading ? (
-            <div>Loading history...</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {historyItems.map((item) => {
-                const requestKey = item.request_id || String(item.id);
-                const firstResult = Array.isArray(item.results_summary?.results) && item.results_summary.results.length > 0
-                  ? item.results_summary.results[0]
-                  : null;
-                const primaryEmail = firstResult?.email
-                  || (Array.isArray(item.emails_requested) && item.emails_requested.length > 0 ? item.emails_requested[0] : '-')
-                  || '-';
-                const primaryStatus = firstResult?.status || firstResult?.classification || 'Validation completed';
-                const isExpanded = Boolean(expandedHistoryRequestIds[requestKey]);
-                const failureReason = item.dlr_report?.failure_reason || firstResult?.failure_reason || '';
-
-                return (
-                  <div key={item.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px' }}>
-                      <div style={{ display: 'grid', gap: '3px' }}>
-                        <div style={{ fontWeight: 800 }}>Request ID: {requestKey}</div>
-                        <div style={{ fontSize: '12px', color: '#1f2937' }}>Unique ID: {item.id}</div>
-                        <div style={{ fontSize: '12px', color: '#1f2937' }}>Mail: {primaryEmail}</div>
-                        <div style={{ fontSize: '12px', color: '#1f2937' }}>Status: {primaryStatus}</div>
-                        {failureReason && (
-                          <div style={{ fontSize: '12px', color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', padding: '6px 8px', maxWidth: '760px' }}>
-                            Failure reason: {failureReason}
-                          </div>
-                        )}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => toggleHistoryFullResult(requestKey)}
-                        style={{ border: '1px solid #cbd5e1', background: '#fff', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer', fontWeight: 700, color: '#1e3a8a' }}
-                      >
-                        {isExpanded ? 'Hide Full Result' : 'Full Result'}
-                      </button>
-                    </div>
-
-                    {isExpanded && Array.isArray(item.results_summary?.results) && item.results_summary.results.length > 0 && (
-                      <div style={{ marginTop: '10px', display: 'grid', gap: '8px' }}>
-                        {item.results_summary.results.map((row, idx) => (
-                          <div key={`${item.id}-history-result-${idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px', background: '#f8fafc' }}>
-                            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '11px', color: '#334155', background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px' }}>
-                              {formatLiveResult(row)}
-                            </pre>
-                            {factorCards(row)}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {historyItems.length === 0 && <div style={{ color: '#6b7280' }}>No history records found.</div>}
-            </div>
-          )}
         </div>
       )}
 
