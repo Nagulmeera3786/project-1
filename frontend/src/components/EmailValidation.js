@@ -99,7 +99,7 @@ export default function EmailValidation() {
         const validationBalance = wallet.data?.email_validation_balance;
         setIsAdmin(adminUser);
         setCanViewSupportData(supportUser);
-        setCanManageValidation(adminUser);
+        setCanManageValidation(true);
         setWalletBalance(
           (adminUser || supportUser) && providerBalance !== undefined && providerBalance !== null
             ? String(providerBalance)
@@ -406,11 +406,6 @@ export default function EmailValidation() {
   };
 
   const createApiKey = async () => {
-    if (!canManageValidation) {
-      setError('Read-only support mode. API key changes are disabled.');
-      return;
-    }
-
     if (!newApiKeyName.trim()) {
       setError('Enter a name for API key');
       return;
@@ -426,11 +421,6 @@ export default function EmailValidation() {
   };
 
   const toggleApiKeyStatus = async (item) => {
-    if (!canManageValidation) {
-      setError('Read-only support mode. API key changes are disabled.');
-      return;
-    }
-
     try {
       await API.patch(`email-validation/api-keys/${item.id}/`, { is_active: !item.is_active });
       fetchApiKeys();
@@ -440,11 +430,6 @@ export default function EmailValidation() {
   };
 
   const deleteApiKey = async (item) => {
-    if (!canManageValidation) {
-      setError('Read-only support mode. API key changes are disabled.');
-      return;
-    }
-
     try {
       await API.delete(`email-validation/api-keys/${item.id}/`);
       fetchApiKeys();
@@ -497,7 +482,7 @@ export default function EmailValidation() {
 
   const saveCreditSetting = async () => {
     if (!canManageValidation) {
-      setError('Read-only support mode. Credit settings are disabled.');
+      setError('Only admin users can update credit settings.');
       return;
     }
 

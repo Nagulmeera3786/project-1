@@ -3751,7 +3751,7 @@ class UserAPIKeyListCreateView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        if _has_support_read_access(request.user):
+        if _has_admin_access(request.user):
             keys = UserAPIKey.objects.select_related('user').order_by('-created_at')
             return Response(AdminUserAPIKeySerializer(keys, many=True).data)
 
@@ -3759,9 +3759,6 @@ class UserAPIKeyListCreateView(generics.GenericAPIView):
         return Response(UserAPIKeySerializer(keys, many=True).data)
 
     def post(self, request):
-        if _is_active_employee(request.user) and not _has_admin_access(request.user):
-            return Response({'detail': 'Employee accounts are read-only for API keys'}, status=status.HTTP_403_FORBIDDEN)
-
         name = str(request.data.get('name') or '').strip()
         if not name:
             return Response({'detail': 'name is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -3774,9 +3771,6 @@ class UserAPIKeyDetailView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, key_id):
-        if _is_active_employee(request.user) and not _has_admin_access(request.user):
-            return Response({'detail': 'Employee accounts are read-only for API keys'}, status=status.HTTP_403_FORBIDDEN)
-
         api_key = UserAPIKey.objects.filter(id=key_id, user=request.user).first()
         if not api_key:
             return Response({'detail': 'API key not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -3789,9 +3783,6 @@ class UserAPIKeyDetailView(generics.GenericAPIView):
         return Response(UserAPIKeySerializer(api_key).data)
 
     def delete(self, request, key_id):
-        if _is_active_employee(request.user) and not _has_admin_access(request.user):
-            return Response({'detail': 'Employee accounts are read-only for API keys'}, status=status.HTTP_403_FORBIDDEN)
-
         api_key = UserAPIKey.objects.filter(id=key_id, user=request.user).first()
         if not api_key:
             return Response({'detail': 'API key not found'}, status=status.HTTP_404_NOT_FOUND)

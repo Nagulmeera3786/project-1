@@ -469,7 +469,7 @@ export default function AdminUsers() {
                         </button>
                       </>
                     ) : (
-                      <span style={{ color: '#6B7280', fontWeight: 600 }}>Read only</span>
+                      <span style={{ color: '#6B7280', fontWeight: 600 }}>Limited</span>
                     )}
                   </div>
 

@@ -149,7 +149,7 @@ const Dashboard = () => {
             boxShadow: '0 18px 50px rgba(15,23,42,0.18)',
           }}>
             <div style={{ fontSize: '12px', letterSpacing: '0.14em', textTransform: 'uppercase', opacity: 0.8 }}>Support Console</div>
-            <h1 style={{ margin: '8px 0 6px', fontSize: '28px' }}>Employee read-only workspace</h1>
+            <h1 style={{ margin: '8px 0 6px', fontSize: '28px' }}>Employee workspace</h1>
             <p style={{ margin: 0, maxWidth: '860px', lineHeight: 1.6, color: 'rgba(255,255,255,0.84)' }}>
               View users, balances, API keys, and validation history. Editing and admin changes stay restricted to administrators.
             </p>
@@ -243,7 +243,7 @@ const Dashboard = () => {
 
         <div className="dashboard-row">
           <div className="performance-section dashboard-fade-in dashboard-delay-1">
-            <h3>Read-only Access</h3>
+            <h3>Support Access</h3>
             <div style={{ display: 'grid', gap: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
               {supportServiceCards.map((card) => (
                 <button
@@ -274,7 +274,7 @@ const Dashboard = () => {
           <div className="performance-section dashboard-fade-in dashboard-delay-2">
             <h3>Support Notes</h3>
             <div style={{ display: 'grid', gap: '10px', color: '#334155', fontSize: '14px', lineHeight: 1.7 }}>
-              <div>• Employees can inspect data only. Editing controls are hidden on the detailed pages.</div>
+              <div>• Employees can work with support tools directly from this workspace.</div>
               <div>• API keys are shown with creator and usage history in the key management page.</div>
               <div>• Admin-capable accounts see provider credits in the wallet panel when available.</div>
               <div>• If you need to investigate a user issue, start from the user directory, then open their validation history or SMS history.</div>

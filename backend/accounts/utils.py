@@ -18,10 +18,18 @@ def send_otp_via_email(user, otp):
     max_attempts = max(1, int(getattr(settings, 'OTP_EMAIL_MAX_ATTEMPTS', 1) or 1))
     retry_delay_ms = max(0, int(getattr(settings, 'OTP_EMAIL_RETRY_DELAY_MS', 0) or 0))
     subject = getattr(settings, 'OTP_EMAIL_SUBJECT', 'Your verification code')
-    recipient_email = getattr(user, 'email', None) or str(user).strip()
+    recipient_email = (getattr(user, 'email', None) or str(user).strip() or '').strip().lower()
     if not recipient_email:
         logger.error("OTP email skipped because recipient email is missing")
         return False
+
+    # Some SMTP providers reject messages if From does not match authenticated mailbox.
+    from_email = (
+        str(getattr(settings, 'DEFAULT_FROM_EMAIL', '') or '').strip()
+        or str(getattr(settings, 'EMAIL_HOST_USER', '') or '').strip()
+        or 'no-reply@example.com'
+    )
+
     message = (
         f'Your OTP is {otp}\n\n'
         'This code will expire in 10 minutes.\n\n'
@@ -33,7 +41,7 @@ def send_otp_via_email(user, otp):
             sent_count = send_mail(
                 subject=subject,
                 message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
+                from_email=from_email,
                 recipient_list=[recipient_email],
                 fail_silently=False,
             )
@@ -42,6 +50,26 @@ def send_otp_via_email(user, otp):
             logger.info("OTP email sent to %s on attempt %s", recipient_email, attempt)
             return True
         except Exception as exc:
+            fallback_sender = str(getattr(settings, 'EMAIL_HOST_USER', '') or '').strip()
+            if fallback_sender and fallback_sender != from_email:
+                try:
+                    sent_count = send_mail(
+                        subject=subject,
+                        message=message,
+                        from_email=fallback_sender,
+                        recipient_list=[recipient_email],
+                        fail_silently=False,
+                    )
+                    if int(sent_count or 0) > 0:
+                        logger.info(
+                            "OTP email sent to %s on attempt %s using fallback sender",
+                            recipient_email,
+                            attempt,
+                        )
+                        return True
+                except Exception:
+                    pass
+
             logger.exception("Email sending error for user %s on attempt %s: %s", recipient_email, attempt, exc)
             if attempt < max_attempts and retry_delay_ms > 0:
                 time.sleep(retry_delay_ms / 1000)

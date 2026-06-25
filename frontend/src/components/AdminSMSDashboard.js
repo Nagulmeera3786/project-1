@@ -595,7 +595,7 @@ export default function AdminSMSDashboard() {
                 </div>
               )
             ) : (
-              <p style={{ margin: 0, color: '#666' }}>Read-only support mode. SMS credentials are hidden.</p>
+              <p style={{ margin: 0, color: '#666' }}>SMS credentials are hidden for your account role.</p>
             )}
           </div>
 
@@ -960,7 +960,7 @@ export default function AdminSMSDashboard() {
                           )}
                         </div>
                       ) : (
-                        <div style={{ color: '#6B7280', fontWeight: 600 }}>Read only</div>
+                        <div style={{ color: '#6B7280', fontWeight: 600 }}>Limited</div>
                       )}
                     </td>
                   </tr>
