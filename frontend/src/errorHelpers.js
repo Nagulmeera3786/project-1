@@ -13,6 +13,7 @@ const statusReasonMap = {
 };
 
 const genericBusyMessage = 'Server is busy, please try again later.';
+const genericConnectivityMessage = 'We are having trouble completing your request right now. Please try again shortly.';
 
 export const buildOtpDiagnostics = (data) => {
   // Never expose backend/provider diagnostic internals to end users.
@@ -35,9 +36,10 @@ export const parseApiError = (err, fallbackMessage) => {
 
   if (!response) {
     return {
-      message: '',
+      message: genericConnectivityMessage,
       diagnostics: null,
       isBuffering: true,
+      showMessageAfterMs: 3000,
     };
   }
 
@@ -78,8 +80,13 @@ export const parseApiError = (err, fallbackMessage) => {
   const shouldMaskServerAvailability = [502, 503, 504].includes(Number(status));
   const reason = shouldMaskServerAvailability ? genericBusyMessage : (statusReasonMap[status] || fallback);
   return {
-    message: shouldMaskServerAvailability ? '' : `HTTP ${status}: ${reason}`,
+    message: shouldMaskServerAvailability ? '' : reason,
     diagnostics: shouldMaskServerAvailability ? null : buildOtpDiagnostics(data),
     isBuffering: shouldMaskServerAvailability,
+    showMessageAfterMs: shouldMaskServerAvailability ? 3000 : 0,
   };
+};
+
+export const getProfessionalErrorMessage = (err, fallbackMessage) => {
+  return parseApiError(err, fallbackMessage).message;
 };

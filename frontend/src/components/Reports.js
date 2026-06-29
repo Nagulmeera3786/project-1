@@ -14,6 +14,7 @@ import {
   Legend,
 } from 'recharts';
 import API from '../api';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 
 function parseSafeDate(value) {
   if (!value) {
@@ -257,6 +258,8 @@ function flattenMailValidationRows(emailHistoryItems) {
           created_at: item?.created_at,
           status: item?.status || '-',
           source: item?.source || '-',
+          user_email: item?.user_email || '-',
+          api_key_name: item?.api_key_name || '-',
           requested_mail: mail || '-',
           validSyntax: null,
           validMailbox: null,
@@ -276,6 +279,8 @@ function flattenMailValidationRows(emailHistoryItems) {
         created_at: item?.created_at,
         status: item?.status || '-',
         source: item?.source || '-',
+        user_email: item?.user_email || '-',
+        api_key_name: item?.api_key_name || '-',
         requested_mail: result?.email || requestedEmails[idx] || requestedEmails[0] || '-',
         validSyntax: result?.validSyntax,
         validMailbox: result?.validMailbox,
@@ -317,7 +322,7 @@ export default function Reports() {
       setSmsHistory(Array.isArray(smsRes.data) ? smsRes.data : []);
       setEmailHistory(Array.isArray(emailRes.data) ? emailRes.data : []);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to load reports data');
+      setError(getProfessionalErrorMessage(err, 'Failed to load reports data'));
       setSmsHistory([]);
       setEmailHistory([]);
     } finally {
@@ -880,6 +885,8 @@ export default function Reports() {
                   <thead>
                     <tr style={{ background: '#f8fafc' }}>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Request ID</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>User</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>API Key</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Requested Mail</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Status</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>ValidSyntax</th>
@@ -897,6 +904,8 @@ export default function Reports() {
                     {filteredMailResultRows.map((row, idx) => (
                       <tr key={`${row.request_id}-${row.requested_mail}-${idx}`} style={{ borderTop: '1px solid #eef2f7' }}>
                         <td style={{ padding: '8px' }}>{row.request_id}</td>
+                        <td style={{ padding: '8px' }}>{row.user_email}</td>
+                        <td style={{ padding: '8px' }}>{row.api_key_name}</td>
                         <td style={{ padding: '8px' }}>{row.requested_mail}</td>
                         <td style={{ padding: '8px' }}>{row.status}</td>
                         <td style={{ padding: '8px' }}>{toBoolText(row.validSyntax)}</td>
@@ -912,7 +921,7 @@ export default function Reports() {
                     ))}
                     {filteredMailResultRows.length === 0 && (
                       <tr>
-                        <td colSpan={12} style={{ padding: '10px', color: '#64748b' }}>No mail validation records found.</td>
+                        <td colSpan={14} style={{ padding: '10px', color: '#64748b' }}>No mail validation records found.</td>
                       </tr>
                     )}
                   </tbody>

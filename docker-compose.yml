@@ -1,4 +1,11 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: abc-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
   db:
     image: postgres:16-alpine
     container_name: abc-db
@@ -30,7 +37,12 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-abc_sms}
       DB_SSLMODE: disable
       DB_CONN_MAX_AGE: 60
+      EMAIL_VALIDATION_USE_CELERY: "true"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
     depends_on:
+      redis:
+        condition: service_started
       db:
         condition: service_healthy
     command: >
@@ -39,6 +51,29 @@ services:
              gunicorn project.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120"
     expose:
       - "8000"
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: abc-celery-worker
+    restart: unless-stopped
+    environment:
+      SECRET_KEY: dev-secret-key-for-docker-testing
+      DEBUG: "True"
+      ALLOWED_HOSTS: localhost,127.0.0.1,nginx
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-abc_sms}
+      DB_SSLMODE: disable
+      DB_CONN_MAX_AGE: 60
+      EMAIL_VALIDATION_USE_CELERY: "true"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
+    command: celery -A project worker -l info
 
   frontend:
     build:

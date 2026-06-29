@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import API from '../api';
 import { FaCog, FaArrowLeft, FaToggleOn, FaToggleOff, FaFileAlt, FaTrash, FaSave } from 'react-icons/fa';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 
 export default function AdminSMSDashboard() {
   const [users, setUsers] = useState([]);
@@ -69,7 +70,7 @@ export default function AdminSMSDashboard() {
         setHasAdminAccess(false);
         setError('');
       } else {
-        setError(err.response?.data?.detail || 'Failed to load users');
+        setError(getProfessionalErrorMessage(err, 'Failed to load users'));
       }
       console.error('Error:', err);
     } finally {
@@ -197,7 +198,7 @@ export default function AdminSMSDashboard() {
     } catch (err) {
       const suggestions = err.response?.data?.suggestions || [];
       setSenderSuggestions((prev) => ({ ...prev, [userId]: suggestions }));
-      alert('Failed to save sender ID: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to save sender ID: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     }
   };
 
@@ -254,7 +255,7 @@ export default function AdminSMSDashboard() {
         },
       }));
     } catch (err) {
-      alert('Failed to save user details: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to save user details: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     } finally {
       setSavingUserId(null);
     }
@@ -289,7 +290,7 @@ export default function AdminSMSDashboard() {
         return next;
       });
     } catch (err) {
-      alert('Failed to delete user: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to delete user: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     } finally {
       setDeletingUserId(null);
     }
@@ -338,7 +339,7 @@ export default function AdminSMSDashboard() {
 
       alert(`${user.username} now has full admin access.`);
     } catch (err) {
-      alert('Failed to grant admin access: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to grant admin access: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     } finally {
       setGrantingAdminUserId(null);
     }
@@ -374,7 +375,7 @@ export default function AdminSMSDashboard() {
 
       alert(`${user.username} admin access has been revoked.`);
     } catch (err) {
-      alert('Failed to revoke admin access: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to revoke admin access: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     } finally {
       setGrantingAdminUserId(null);
     }
@@ -393,7 +394,7 @@ export default function AdminSMSDashboard() {
       link.click();
       link.parentElement.removeChild(link);
     } catch (err) {
-      alert('Error downloading file: ' + (err.response?.data?.detail || err.message));
+      alert(`Error downloading file: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     }
   };
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import API from '../api';
 import { FaArrowLeft, FaMoon, FaSun } from 'react-icons/fa';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 
 const THEME_STORAGE_KEY = 'dashboardTheme';
 
@@ -42,7 +43,7 @@ export default function UserProfile() {
       setSenderIdType(response.data.sender_id_type || 'alphanumeric');
       setSenderId(response.data.sender_id || '');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to load profile');
+      setError(getProfessionalErrorMessage(err, 'Failed to load profile'));
     } finally {
       setLoading(false);
     }
@@ -77,7 +78,7 @@ export default function UserProfile() {
       setSenderId(response.data.sender_id || '');
       setSaveMessage('Profile updated successfully.');
     } catch (err) {
-      const detail = err.response?.data?.detail || 'Failed to save profile settings.';
+      const detail = getProfessionalErrorMessage(err, 'Failed to save profile settings.');
       const responseSuggestions = err.response?.data?.suggestions || [];
       setSaveMessage(detail);
       setSuggestions(responseSuggestions);

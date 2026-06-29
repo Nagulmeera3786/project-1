@@ -638,6 +638,121 @@ class EmailValidationMediatorTests(TestCase):
         self.assertEqual(history_response.data[0]['user'], self.normal_user.id)
 
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
+    @patch('accounts.views._validate_email_list_with_verifalia')
+    @patch('accounts.views._get_email_validation_cost_per_request', return_value=Decimal('1.0000'))
+    def test_api_email_validation_returns_compact_bhisha_response_and_history_attribution(self, _mock_cost, mock_validate_list):
+        from accounts.models import UserAPIKey
+
+        api_key = UserAPIKey.objects.create(user=self.normal_user, name='Bhisha Client', key='a' * 64, is_active=True)
+        mock_validate_list.return_value = [
+            {
+                'email': 'yifemat211@fishnone.com',
+                'validMailbox': True,
+                'validSyntax': True,
+                'catchAll': False,
+                'didYouMean': 'yifemat211@fishnone.com',
+                'disposable': True,
+                'roleBased': False,
+                'risky': True,
+                'risk': 'low',
+                'providerMessageId': 'verifalia-job-1',
+                'summary': 'ignored',
+                'report': 'ignored',
+                'status': 'High-risk email type',
+                'statusCode': 'DomainIsWellKnownDea',
+                'classification': 'Risky',
+                'failure_reason': 'High-risk email type',
+            }
+        ]
+
+        response = self.client.post(
+            '/api/auth/email-validation/api/validate/',
+            {
+                'user_id': self.normal_user.id,
+                'password': 'UserPass123!',
+                'api_key': api_key.key,
+                'email': 'yifemat211@fishnone.com',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('count'), 1)
+        self.assertEqual(response.data.get('wallet_balance'), '1.0000')
+        self.assertNotIn('simple_results', response.data)
+        self.assertEqual(response.data['results'][0], {
+            'email': 'yifemat211@fishnone.com',
+            'valid_inbox': False,
+            'valid_syntax': True,
+            'disposable': True,
+            'role_based': False,
+            'catch_all': False,
+            'risk_factors': 'None Detected',
+            'raw_status_details': 'do_not_mail (disposable)',
+            'is_free_domain': True,
+        })
+        self.assertEqual(response.data['history']['user_email'], 'normal@example.com')
+        self.assertEqual(response.data['history']['api_key_name'], 'Bhisha Client')
+
+        history = self.normal_user.email_validations.latest('created_at')
+        self.assertEqual(history.source, 'api')
+        self.assertEqual(history.api_key_id, api_key.id)
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com', EMAIL_VALIDATION_MAX_EMAILS_PER_REQUEST=5000)
+    @patch('accounts.views._validate_email_batch_with_verifalia')
+    def test_validate_email_list_batches_large_requests(self, mock_batch_validate):
+        mock_batch_validate.side_effect = lambda batch: [
+            {
+                'email': email,
+                'validMailbox': True,
+                'validSyntax': True,
+                'catchAll': False,
+                'didYouMean': email,
+                'disposable': False,
+                'roleBased': False,
+                'risky': False,
+                'risk': 'low',
+                'providerMessageId': 'batch-job',
+                'summary': '',
+                'report': '',
+                'status': 'Validation completed.',
+                'statusCode': 'Success',
+                'classification': 'Deliverable',
+                'failure_reason': '',
+            }
+            for email in batch
+        ]
+
+        from accounts.views import _validate_email_list_with_verifalia
+
+        emails = [f'user{idx}@example.com' for idx in range(205)]
+        results = _validate_email_list_with_verifalia(emails)
+
+        self.assertEqual(len(results), 205)
+        self.assertEqual(mock_batch_validate.call_count, 2)
+        self.assertEqual(len(mock_batch_validate.call_args_list[0].args[0]), 200)
+        self.assertEqual(len(mock_batch_validate.call_args_list[1].args[0]), 5)
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com', EMAIL_VALIDATION_MAX_EMAILS_PER_REQUEST=5000)
+    def test_collect_validation_emails_accepts_large_file_limits(self):
+        from accounts.views import _collect_validation_emails
+
+        source_file = SimpleUploadedFile(
+            'bulk.txt',
+            b'user1@example.com\nuser2@example.com\n',
+            content_type='text/plain',
+        )
+
+        request = Mock()
+        request.data = {}
+        request.FILES = {'source_file': source_file}
+
+        emails, file_name = _collect_validation_emails(request)
+
+        self.assertEqual(emails, ['user1@example.com', 'user2@example.com'])
+        self.assertEqual(file_name, 'bulk.txt')
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
     def test_admin_can_add_wallet_credits_manually(self):
         self.client.force_authenticate(user=self.primary_admin)
         response = self.client.patch(

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../api';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 import { FaPaperPlane, FaArrowLeft } from 'react-icons/fa';
 
 export default function SMSSend() {
@@ -486,7 +487,7 @@ export default function SMSSend() {
       setNewGroupMembers('');
       await fetchGroups();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create group');
+      setError(getProfessionalErrorMessage(err, 'Failed to create group'));
     } finally {
       setCreatingGroup(false);
     }
@@ -512,7 +513,7 @@ export default function SMSSend() {
       setNewRedirectUrl('');
       await fetchShortUrls();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create short URL');
+      setError(getProfessionalErrorMessage(err, 'Failed to create short URL'));
     } finally {
       setCreatingShortUrl(false);
     }
@@ -537,7 +538,7 @@ export default function SMSSend() {
         setSelectedShortUrlId('');
       }
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to delete short URL');
+      setError(getProfessionalErrorMessage(err, 'Failed to delete short URL'));
     }
   };
 

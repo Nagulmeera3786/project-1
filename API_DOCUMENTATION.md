@@ -3,7 +3,7 @@
 ## 1. Overview
 This document defines the production API contract for SMS messaging and mail validation services.
 
-- Base URL: `https://<your-domain>`
+- Base URL: `https://<bhisha.com>`
 - API prefix: `/api/auth/`
 - Transport: HTTPS + JSON (`multipart/form-data` for file uploads)
 - Time format: ISO-8601 UTC
@@ -238,6 +238,14 @@ DLR report fields are available in request responses and history/search response
    External/customer API mail validation.
 3. `GET /api/auth/email-validation/history/`  
    Validation history with filters (`?source=`) and search (`?q=`).
+4. `GET /api/auth/email-validation/history/{request_id}/status/`  
+  Dashboard request live status (progress %, ETA, task state).
+5. `PATCH /api/auth/email-validation/history/{request_id}/control/`  
+  Dashboard task control (`start`, `pause`, `resume`, `stop`, `cancel`).
+6. `POST /api/auth/email-validation/api/status/`  
+  External API request live status (API key + user credentials).
+7. `POST /api/auth/email-validation/api/control/`  
+  External API task control (`start`, `pause`, `resume`, `stop`, `cancel`).
 
 ### 4.3 Admin Credits
 1. `PATCH /api/auth/admin/users/{user_id}/wallet/credits/`  
@@ -304,6 +312,34 @@ Accepted inputs:
 2. Bulk inline: `emails` (array/string)
 3. Bulk file upload: `source_file`
 
+Input syntax examples:
+
+Single (`application/json`):
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+Bulk (`application/json`, array):
+```json
+{
+  "emails": ["one@example.com", "two@example.com", "three@example.com"]
+}
+```
+
+Bulk (`application/json`, text list):
+```json
+{
+  "emails": "one@example.com\ntwo@example.com,three@example.com"
+}
+```
+
+File (`multipart/form-data`):
+- key: `source_file`
+- allowed formats: `.xlsv`, `.csv`, `.txt`, `.xls`, `.xlsx`
+- max size: 25MB
+
 Response highlights:
 - `request_id`: platform unique request ID (example `MeMV00000108ra`)
 - `results[]`: Verifalia-style result objects
@@ -311,6 +347,11 @@ Response highlights:
 - `summary.safe_to_send_yes`, `summary.safe_to_send_no`
 - `wallet_balance`
 - `dlr_report` with delivery/completion time
+
+For large file jobs, response may be asynchronous (`202 Accepted`) with:
+- `status: pending`
+- `request_id`
+- progress and final results available from status/history endpoints.
 
 Example request (single):
 ```json
@@ -358,6 +399,160 @@ Request auth fields:
 
 Same payload modes and response contract as dashboard validation.
 
+Single request:
+```json
+{
+  "api_key": "<YOUR_API_KEY>",
+  "user_id": "<YOUR_USER_ID>",
+  "password": "<YOUR_PASSWORD>",
+  "email": "user@example.com"
+}
+```
+
+Bulk request:
+```json
+{
+  "api_key": "<YOUR_API_KEY>",
+  "user_id": "<YOUR_USER_ID>",
+  "password": "<YOUR_PASSWORD>",
+  "emails": ["one@example.com", "two@example.com"]
+}
+```
+
+File request (`multipart/form-data`):
+- fields: `api_key`, `user_id`, `password`, `source_file`
+
+Popular language examples (single, bulk, file):
+
+Python (single):
+```python
+import requests
+
+base_url = "https://<bhisha.com>"
+response = requests.post(
+    base_url + "/api/auth/email-validation/api/validate/",
+    json={
+        "api_key": "<YOUR_API_KEY>",
+        "user_id": "<YOUR_USER_ID>",
+        "password": "<YOUR_PASSWORD>",
+        "email": "yifemat211@fishnone.com",
+    },
+)
+print(response.json())
+```
+
+JavaScript (bulk):
+```javascript
+const response = await fetch("https://<bhisha.com>/api/auth/email-validation/api/validate/", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    api_key: "<YOUR_API_KEY>",
+    user_id: "<YOUR_USER_ID>",
+    password: "<YOUR_PASSWORD>",
+    emails: ["one@example.com", "two@example.com", "three@example.com"],
+  }),
+});
+console.log(await response.json());
+```
+
+cURL (file):
+```bash
+curl -X POST "https://<bhisha.com>/api/auth/email-validation/api/validate/" \
+  -F "api_key=<YOUR_API_KEY>" \
+  -F "user_id=<YOUR_USER_ID>" \
+  -F "password=<YOUR_PASSWORD>" \
+  -F "source_file=@emails.xlsx"
+```
+
+Java (single):
+```java
+String payload = """
+{
+  \"api_key\": \"<YOUR_API_KEY>\",
+  \"user_id\": \"<YOUR_USER_ID>\",
+  \"password\": \"<YOUR_PASSWORD>\",
+  \"email\": \"yifemat211@fishnone.com\"
+}
+""";
+```
+
+C# (file):
+```csharp
+using var form = new MultipartFormDataContent();
+form.Add(new StringContent("<YOUR_API_KEY>"), "api_key");
+form.Add(new StringContent("<YOUR_USER_ID>"), "user_id");
+form.Add(new StringContent("<YOUR_PASSWORD>"), "password");
+form.Add(new StreamContent(File.OpenRead("emails.xlsx")), "source_file", "emails.xlsx");
+var response = await client.PostAsync("https://<bhisha.com>/api/auth/email-validation/api/validate/", form);
+```
+
+Expected result profile format:
+```text
+Results Profile for: yifemat211@fishnone.com
+----------------------------------------
+Valid Inbox:    False
+Valid Syntax:   True
+Disposable:     True
+Role Based:     False
+Catch All:      False
+Risk Factors:   None Detected
+----------------------------------------
+Raw Status Details:  do_not_mail (disposable)
+Is Free Domain?:     True
+```
+
+### 6.3 Live Status and Task Control
+
+Dashboard status:
+- `GET /api/auth/email-validation/history/{request_id}/status/`
+
+Dashboard control:
+- `PATCH /api/auth/email-validation/history/{request_id}/control/`
+```json
+{
+  "action": "pause"
+}
+```
+
+API status:
+- `POST /api/auth/email-validation/api/status/`
+```json
+{
+  "api_key": "<YOUR_API_KEY>",
+  "user_id": "<YOUR_USER_ID>",
+  "password": "<YOUR_PASSWORD>",
+  "request_id": "<REQUEST_ID>"
+}
+```
+
+API control:
+- `POST /api/auth/email-validation/api/control/`
+```json
+{
+  "api_key": "<YOUR_API_KEY>",
+  "user_id": "<YOUR_USER_ID>",
+  "password": "<YOUR_PASSWORD>",
+  "request_id": "<REQUEST_ID>",
+  "action": "resume"
+}
+```
+
+Allowed actions:
+- `start`
+- `pause`
+- `resume`
+- `stop`
+- `cancel`
+
+Status payload includes progress metadata inside `results_summary`:
+- `processed_count`
+- `total_count`
+- `progress_percent`
+- `elapsed_seconds`
+- `eta_seconds`
+- `processing_state` (`running`, `paused`, `completed`, `failed`, `cancelled`, `stopped`)
+
 Example request:
 ```json
 {
@@ -372,22 +567,22 @@ Alternative auth style:
 - Header: `X-API-Key: <YOUR_API_KEY>`
 - Body: `user_id`, `password`, plus `email` or `emails` or `source_file`
 
-### 6.3 File Upload Validation
+### 6.4 File Upload Validation
 - Endpoint: `POST /api/auth/email-validation/validate/` (JWT)
 - Endpoint: `POST /api/auth/email-validation/api/validate/` (API key mode)
 - Content-Type: `multipart/form-data`
 - File field: `source_file`
 - Allowed: `.txt`, `.csv`, `.xlsv`, `.xls`, `.xlsx`
-- Max file size: `10MB`
-- Max emails per request: `50`
+- Max file size: `25MB`
+- Large files are accepted asynchronously and return `202` with `request_id`.
 
-### 6.4 Mail Validation Error Cases
+### 6.5 Mail Validation Error Cases
 - `400` invalid payload or unsupported file
 - `401` invalid API credentials (external API mode)
 - `402` insufficient email validation credits
 - `503` provider credits unavailable
 
-'''## 7. Admin Credit Management
+## 7. Admin Credit Management
 
 ### 7.1 Add Credits Manually
 - Endpoint: `PATCH /api/auth/admin/users/{user_id}/wallet/credits/`
@@ -412,7 +607,6 @@ Response:
   "added_email_validation_credits": "250.0000"
 }
 ```
-'''
 ## 8. Search and Request Tracking
 
 ### 8.1 Request Status Search
@@ -568,6 +762,7 @@ await PostJson("/api/auth/email-validation/api/validate/", null, new {
 3. Admin can add credits manually through admin APIs and dashboard controls.
 4. APIs are deployment-safe for Linux VPS and production domains, including bhisha.com.
 5. For bulk operations, clients should store request IDs and poll/search status endpoints for operational tracking.
+6. Async mail-validation processing runs through Celery workers with Redis broker/backend when `EMAIL_VALIDATION_USE_CELERY=true`.
 
 ## 11. Error Contract
 Standard error payload:

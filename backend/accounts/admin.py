@@ -351,7 +351,7 @@ class UserWalletAdmin(admin.ModelAdmin):
 
 @admin.register(EmailValidationHistory)
 class EmailValidationHistoryAdmin(admin.ModelAdmin):
-    list_display = ('request_id', 'user', 'source', 'status', 'email_count', 'cost_deducted', 'completed_at', 'created_at')
-    search_fields = ('request_id', 'user__email', 'file_name')
+    list_display = ('request_id', 'user', 'api_key', 'source', 'status', 'email_count', 'cost_deducted', 'completed_at', 'created_at')
+    search_fields = ('request_id', 'user__email', 'api_key__name', 'file_name')
     list_filter = ('source', 'status', 'created_at')
     readonly_fields = ('created_at',)

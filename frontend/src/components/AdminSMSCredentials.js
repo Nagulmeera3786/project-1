@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../api';
 import { FaKey, FaArrowLeft, FaSave } from 'react-icons/fa';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 
 export default function AdminSMSCredentials() {
   const [showForm, setShowForm] = useState(false);
@@ -111,10 +112,7 @@ export default function AdminSMSCredentials() {
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       console.error('Error details:', err);
-      const errorMsg = err.response?.data?.detail || 
-                       (err.response?.data && typeof err.response.data === 'object' 
-                         ? JSON.stringify(err.response.data) 
-                         : err.message);
+      const errorMsg = getProfessionalErrorMessage(err, 'Could not save credentials right now.');
       setError(`Failed to save credentials: ${errorMsg}`);
     } finally {
       setSaving(false);

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../api';
 import { FaHistory, FaArrowLeft, FaRedo } from 'react-icons/fa';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 
 export default function SMSHistory() {
   const [messages, setMessages] = useState([]);
@@ -26,7 +27,7 @@ export default function SMSHistory() {
       setMessages(response.data);
       setError('');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to load messages');
+      setError(getProfessionalErrorMessage(err, 'Failed to load messages'));
       console.error('Error:', err);
     } finally {
       setLoading(false);

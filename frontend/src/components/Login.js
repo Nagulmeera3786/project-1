@@ -1,7 +1,31 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import API from '../api';
 import { useNavigate, Link } from 'react-router-dom';
 import { parseApiError } from '../errorHelpers';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientLoginError = (err) => {
+  const status = Number(err?.response?.status || 0);
+  if ([408, 429, 500, 502, 503, 504].includes(status)) {
+    return true;
+  }
+
+  if (!err?.response) {
+    const code = String(err?.code || '').toUpperCase();
+    const message = String(err?.message || '').toLowerCase();
+    return (
+      code === 'ECONNABORTED' ||
+      code === 'ERR_NETWORK' ||
+      code === 'ETIMEDOUT' ||
+      message.includes('timeout') ||
+      message.includes('network') ||
+      message.includes('failed to fetch')
+    );
+  }
+
+  return false;
+};
 
 export default function Login() {
   const [loginMode, setLoginMode] = useState('user');
@@ -11,7 +35,16 @@ export default function Login() {
   const [error, setError] = useState('');
   const [diagnostics, setDiagnostics] = useState(null);
   const [showBufferingImage, setShowBufferingImage] = useState(false);
+  const deferredErrorTimerRef = useRef(null);
   const nav = useNavigate();
+
+  useEffect(() => {
+    return () => {
+      if (deferredErrorTimerRef.current) {
+        clearTimeout(deferredErrorTimerRef.current);
+      }
+    };
+  }, []);
 
   const submit = async () => {
     if (!email || !password) {
@@ -23,10 +56,27 @@ export default function Login() {
     setError('');
     setDiagnostics(null);
     setShowBufferingImage(false);
+    if (deferredErrorTimerRef.current) {
+      clearTimeout(deferredErrorTimerRef.current);
+      deferredErrorTimerRef.current = null;
+    }
 
     try {
       const endpoint = loginMode === 'employee' ? 'employee/login/' : 'login/';
-      const res = await API.post(endpoint, { email, password });
+      let res;
+
+      try {
+        res = await API.post(endpoint, { email, password });
+      } catch (firstAttemptError) {
+        if (!isTransientLoginError(firstAttemptError)) {
+          throw firstAttemptError;
+        }
+
+        // One silent retry reduces false failures from short-lived network hiccups.
+        setShowBufferingImage(true);
+        await sleep(1200);
+        res = await API.post(endpoint, { email, password });
+      }
 
       if (loginMode !== 'employee' && res.data?.requires_otp_login) {
         const emailForVerify = res.data?.email || email;
@@ -62,8 +112,18 @@ export default function Login() {
 
       const parsed = parseApiError(err, 'Login failed. Please try again.');
       setShowBufferingImage(Boolean(parsed.isBuffering));
-      setError(parsed.isBuffering ? '' : parsed.message);
-      setDiagnostics(parsed.isBuffering ? null : parsed.diagnostics);
+      if (parsed.isBuffering) {
+        setError('');
+        setDiagnostics(null);
+        const delayMs = Number(parsed.showMessageAfterMs) > 0 ? Number(parsed.showMessageAfterMs) : 3000;
+        deferredErrorTimerRef.current = setTimeout(() => {
+          setShowBufferingImage(false);
+          setError(parsed.message || 'Request could not be completed right now. Please try again.');
+        }, delayMs);
+      } else {
+        setError(parsed.message);
+        setDiagnostics(parsed.diagnostics);
+      }
     } finally {
       setLoading(false);
     }

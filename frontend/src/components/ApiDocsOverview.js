@@ -2,9 +2,12 @@ import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FaArrowLeft, FaBookOpen, FaCode, FaKey, FaServer } from 'react-icons/fa';
 
-const BASE_URL = 'http://<your-domain-or-ip>';
+const BASE_URL = 'https://<bhisha.com>';
 const API_PREFIX = '/api/auth';
 const SMS_SEND_PATH = '/sms/send/';
+const MAIL_VALIDATE_PATH = '/email-validation/api/validate/';
+const MAIL_STATUS_PATH = '/email-validation/api/status/';
+const MAIL_CONTROL_PATH = '/email-validation/api/control/';
 
 const codeSamples = {
   cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${SMS_SEND_PATH} \\
@@ -166,6 +169,178 @@ print(res.status_code, res.json())`,
   },
 ];
 
+const mailValidationModes = ['single', 'bulk', 'file'];
+
+const mailValidationSamples = {
+  single: {
+    cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "api_key": "<YOUR_API_KEY>",
+    "user_id": "<YOUR_USER_ID>",
+    "password": "<YOUR_PASSWORD>",
+    "email": "yifemat211@fishnone.com"
+  }'`,
+    JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    api_key: "<YOUR_API_KEY>",
+    user_id: "<YOUR_USER_ID>",
+    password: "<YOUR_PASSWORD>",
+    email: "yifemat211@fishnone.com"
+  })
+});
+const data = await response.json();
+console.log(data);`,
+    Python: `import requests
+
+base_url = "${BASE_URL}"
+response = requests.post(
+    base_url + "${API_PREFIX}${MAIL_VALIDATE_PATH}",
+    json={
+        "api_key": "<YOUR_API_KEY>",
+        "user_id": "<YOUR_USER_ID>",
+        "password": "<YOUR_PASSWORD>",
+        "email": "yifemat211@fishnone.com",
+    },
+)
+
+print(response.json())`,
+    Java: `String payload = """
+{
+  \"api_key\": \"<YOUR_API_KEY>\",
+  \"user_id\": \"<YOUR_USER_ID>\",
+  \"password\": \"<YOUR_PASSWORD>\",
+  \"email\": \"yifemat211@fishnone.com\"
+}
+""";`,
+    'C#': `var payload = new {
+    api_key = "<YOUR_API_KEY>",
+    user_id = "<YOUR_USER_ID>",
+    password = "<YOUR_PASSWORD>",
+    email = "yifemat211@fishnone.com"
+};
+var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", payload);`,
+  },
+  bulk: {
+    cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "api_key": "<YOUR_API_KEY>",
+    "user_id": "<YOUR_USER_ID>",
+    "password": "<YOUR_PASSWORD>",
+    "emails": ["one@example.com", "two@example.com", "three@example.com"]
+  }'`,
+    JavaScript: `const payload = {
+  api_key: "<YOUR_API_KEY>",
+  user_id: "<YOUR_USER_ID>",
+  password: "<YOUR_PASSWORD>",
+  emails: ["one@example.com", "two@example.com", "three@example.com"],
+};
+const res = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(payload),
+});`,
+    Python: `import requests
+
+payload = {
+    "api_key": "<YOUR_API_KEY>",
+    "user_id": "<YOUR_USER_ID>",
+    "password": "<YOUR_PASSWORD>",
+    "emails": ["one@example.com", "two@example.com", "three@example.com"],
+}
+print(requests.post("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", json=payload).json())`,
+    Java: `String payload = """
+{
+  \"api_key\": \"<YOUR_API_KEY>\",
+  \"user_id\": \"<YOUR_USER_ID>\",
+  \"password\": \"<YOUR_PASSWORD>\",
+  \"emails\": [\"one@example.com\", \"two@example.com\", \"three@example.com\"]
+}
+""";`,
+    'C#': `var payload = new {
+    api_key = "<YOUR_API_KEY>",
+    user_id = "<YOUR_USER_ID>",
+    password = "<YOUR_PASSWORD>",
+    emails = new[] { "one@example.com", "two@example.com", "three@example.com" }
+};`,
+  },
+  file: {
+    cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
+  -F "api_key=<YOUR_API_KEY>" \\
+  -F "user_id=<YOUR_USER_ID>" \\
+  -F "password=<YOUR_PASSWORD>" \\
+  -F "source_file=@emails.xlsx"`,
+    JavaScript: `const formData = new FormData();
+formData.append("api_key", "<YOUR_API_KEY>");
+formData.append("user_id", "<YOUR_USER_ID>");
+formData.append("password", "<YOUR_PASSWORD>");
+formData.append("source_file", fileInput.files[0]);
+
+const res = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
+  method: "POST",
+  body: formData,
+});`,
+    Python: `import requests
+
+with open("emails.xlsx", "rb") as fp:
+    response = requests.post(
+        "${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}",
+        data={
+            "api_key": "<YOUR_API_KEY>",
+            "user_id": "<YOUR_USER_ID>",
+            "password": "<YOUR_PASSWORD>",
+        },
+        files={"source_file": fp},
+    )
+print(response.json())`,
+    Java: `MultipartBodyPublisher mp = new MultipartBodyPublisher()
+    .addPart("api_key", "<YOUR_API_KEY>")
+    .addPart("user_id", "<YOUR_USER_ID>")
+    .addPart("password", "<YOUR_PASSWORD>")
+    .addFilePart("source_file", Path.of("emails.xlsx"));`,
+    'C#': `using var form = new MultipartFormDataContent();
+form.Add(new StringContent("<YOUR_API_KEY>"), "api_key");
+form.Add(new StringContent("<YOUR_USER_ID>"), "user_id");
+form.Add(new StringContent("<YOUR_PASSWORD>"), "password");
+form.Add(new StreamContent(File.OpenRead("emails.xlsx")), "source_file", "emails.xlsx");
+var response = await client.PostAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", form);`,
+  },
+};
+
+const mailTaskControlSample = `# Status
+POST ${BASE_URL}${API_PREFIX}${MAIL_STATUS_PATH}
+{
+  "api_key": "<YOUR_API_KEY>",
+  "user_id": "<YOUR_USER_ID>",
+  "password": "<YOUR_PASSWORD>",
+  "request_id": "<REQUEST_ID>"
+}
+
+# Control
+POST ${BASE_URL}${API_PREFIX}${MAIL_CONTROL_PATH}
+{
+  "api_key": "<YOUR_API_KEY>",
+  "user_id": "<YOUR_USER_ID>",
+  "password": "<YOUR_PASSWORD>",
+  "request_id": "<REQUEST_ID>",
+  "action": "pause" // start, pause, resume, stop, cancel
+}`;
+
+const resultProfileExample = `Results Profile for: yifemat211@fishnone.com
+----------------------------------------
+Valid Inbox:    False
+Valid Syntax:   True
+Disposable:     True
+Role Based:     False
+Catch All:      False
+Risk Factors:   None Detected
+----------------------------------------
+Raw Status Details:  do_not_mail (disposable)
+Is Free Domain?:     True`;
+
 const sections = [
   {
     id: 'introduction',
@@ -218,6 +393,16 @@ const sections = [
     ],
   },
   {
+    id: 'mail-validation',
+    title: 'Mail Validation',
+    description: 'Validate single emails, bulk lists, and file uploads. Long-running jobs support status and control operations.',
+    endpoints: [
+      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key + user_id + password', description: 'Validate single, bulk, or file inputs.' },
+      { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key + user_id + password', description: 'Get live progress, elapsed time, ETA, and final status.' },
+      { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key + user_id + password', description: 'Control a running job with start/pause/resume/stop/cancel.' },
+    ],
+  },
+  {
     id: 'free-trial',
     title: 'Free Trial SMS',
     description: 'End-user path for trial sending and verified mobile workflow.',
@@ -243,6 +428,8 @@ export default function ApiDocsOverview() {
   const languages = useMemo(() => Object.keys(codeSamples), []);
   const navigationItems = useMemo(() => sections.map((section) => ({ id: section.id, title: section.title })), []);
   const [activeLanguage, setActiveLanguage] = useState('cURL');
+  const [activeMailLanguage, setActiveMailLanguage] = useState('Python');
+  const [activeMailMode, setActiveMailMode] = useState('single');
 
   return (
     <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #F5F1FF 0%, #F0EFFE 100%)', padding: '24px' }}>
@@ -426,6 +613,80 @@ export default function ApiDocsOverview() {
                     </pre>
                   </div>
                 ))}
+              </div>
+            </section>
+
+            <section style={cardStyle}>
+              <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#1A0E4E' }}>Mail Validation Examples (Single, Bulk, File)</h3>
+              <p style={{ marginTop: 0, color: '#6B6B8A', lineHeight: 1.6 }}>
+                Use these request syntaxes for Bhisha mail validation API with API key credentials.
+              </p>
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                {mailValidationModes.map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setActiveMailMode(mode)}
+                    style={{
+                      border: '1px solid #DDD4F8',
+                      backgroundColor: activeMailMode === mode ? '#5B3FA8' : '#F5F3FF',
+                      color: activeMailMode === mode ? '#ffffff' : '#4B4B6B',
+                      borderRadius: '999px',
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      textTransform: 'capitalize',
+                    }}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                {Object.keys(mailValidationSamples[activeMailMode]).map((language) => (
+                  <button
+                    key={language}
+                    type="button"
+                    onClick={() => setActiveMailLanguage(language)}
+                    style={{
+                      border: '1px solid #DDD4F8',
+                      backgroundColor: activeMailLanguage === language ? '#5B3FA8' : '#F5F3FF',
+                      color: activeMailLanguage === language ? '#ffffff' : '#4B4B6B',
+                      borderRadius: '999px',
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {language}
+                  </button>
+                ))}
+              </div>
+
+              <pre style={{ margin: 0, background: '#020617', color: '#e2e8f0', padding: '12px', overflowX: 'auto', fontSize: '12px', lineHeight: 1.5, borderRadius: '10px', border: '1px solid #1f2937' }}>
+                <code>{mailValidationSamples[activeMailMode][activeMailLanguage]}</code>
+              </pre>
+
+              <div style={{ marginTop: '12px', border: '1px solid #EDE8FB', borderRadius: '12px', overflow: 'hidden' }}>
+                <div style={{ background: '#F5F3FF', borderBottom: '1px solid #EDE8FB', padding: '10px 12px', fontWeight: 700, color: '#1A0E4E' }}>
+                  Status + Control APIs
+                </div>
+                <pre style={{ margin: 0, background: '#020617', color: '#e2e8f0', padding: '12px', overflowX: 'auto', fontSize: '12px', lineHeight: 1.5 }}>
+                  <code>{mailTaskControlSample}</code>
+                </pre>
+              </div>
+
+              <div style={{ marginTop: '12px', border: '1px solid #EDE8FB', borderRadius: '12px', overflow: 'hidden' }}>
+                <div style={{ background: '#F5F3FF', borderBottom: '1px solid #EDE8FB', padding: '10px 12px', fontWeight: 700, color: '#1A0E4E' }}>
+                  Expected Result Profile Format
+                </div>
+                <pre style={{ margin: 0, background: '#020617', color: '#e2e8f0', padding: '12px', overflowX: 'auto', fontSize: '12px', lineHeight: 1.5 }}>
+                  <code>{resultProfileExample}</code>
+                </pre>
               </div>
             </section>
           </main>

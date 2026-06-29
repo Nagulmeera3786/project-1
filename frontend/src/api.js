@@ -120,9 +120,8 @@ const resolvedBaseUrl = (() => {
 
   // For local development on any frontend port, default API calls to backend :8000.
   if (typeof window !== 'undefined' && !isProductionBuild && String(window.location.port) !== '8000') {
-    const hostname = window.location.hostname || '127.0.0.1';
-    const protocol = isLoopbackHost(hostname) ? 'http:' : (window.location.protocol || 'http:');
-    return toAuthApiBaseUrl(`${protocol}//${hostname}:8000`);
+    // Keep dev routing pinned to loopback to avoid non-routable hostnames in local browser sessions.
+    return 'http://127.0.0.1:8000/api/auth/';
   }
 
   // In production, avoid hard-coding machine-local hosts.
@@ -165,6 +164,63 @@ const API = axios.create({
   baseURL: resolvedBaseUrl,
   timeout: requestTimeoutMs,
 });
+
+const technicalDetailPattern = /(traceback|exception|stack\s*trace|sql|database|operationalerror|django|celery|redis|backend|api\s*url|server\s*logs|connection\s*refused|cors)/i;
+
+const getProfessionalStatusMessage = (status) => {
+  switch (Number(status)) {
+    case 400:
+      return 'We could not process your request. Please review the details and try again.';
+    case 401:
+      return 'Your session has expired or credentials are invalid. Please sign in again.';
+    case 403:
+      return 'You do not have permission to perform this action.';
+    case 404:
+      return 'Requested resource is not available right now.';
+    case 408:
+      return 'The request timed out. Please try again.';
+    case 429:
+      return 'Too many requests. Please wait a moment and try again.';
+    case 500:
+    case 502:
+    case 503:
+    case 504:
+      return 'Service is temporarily unavailable. Please try again shortly.';
+    default:
+      return 'Something went wrong. Please try again.';
+  }
+};
+
+const sanitizeErrorForUi = (error) => {
+  if (!error) {
+    return error;
+  }
+
+  const response = error.response;
+  const status = response?.status;
+  const detail = response?.data?.detail;
+
+  if (!response) {
+    error.message = 'Request could not be completed right now. Please try again shortly.';
+    return error;
+  }
+
+  if (typeof detail === 'string' && detail.trim()) {
+    const cleanDetail = detail.trim();
+    const shouldMask = Number(status) >= 500 || technicalDetailPattern.test(cleanDetail);
+    if (shouldMask) {
+      response.data = response.data || {};
+      response.data.detail = getProfessionalStatusMessage(status);
+    }
+  } else if (response?.data && typeof response.data === 'object') {
+    const shouldMaskByStatus = Number(status) >= 500;
+    if (shouldMaskByStatus) {
+      response.data.detail = getProfessionalStatusMessage(status);
+    }
+  }
+
+  return error;
+};
 
 const refreshClient = axios.create({ baseURL: resolvedBaseUrl });
 
@@ -297,7 +353,7 @@ API.interceptors.response.use(
         localStorage.removeItem('access');
         localStorage.removeItem('refresh');
         localStorage.removeItem('authToken');
-        return Promise.reject(refreshError);
+        return Promise.reject(sanitizeErrorForUi(refreshError));
       } finally {
         isRefreshing = false;
       }
@@ -308,7 +364,7 @@ API.interceptors.response.use(
       localStorage.removeItem('refresh');
       localStorage.removeItem('authToken');
     }
-    return Promise.reject(error);
+    return Promise.reject(sanitizeErrorForUi(error));
   }
 );
 

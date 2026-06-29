@@ -1,6 +1,7 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import API from '../api';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 import { FaArrowLeft, FaUpload, FaEnvelopeOpenText, FaListUl, FaKey, FaServer, FaUserShield } from 'react-icons/fa';
 
 const tabButtonStyle = (active) => ({
@@ -47,6 +48,27 @@ const endpointCards = [
       source_file: '<multipart-file>',
     },
   },
+  {
+    title: 'Check Validation Status (API)',
+    path: '/api/auth/email-validation/api/status/',
+    payload: {
+      api_key: '<YOUR_API_KEY>',
+      user_id: '<YOUR_USER_ID>',
+      password: '<YOUR_PASSWORD>',
+      request_id: '<REQUEST_ID>',
+    },
+  },
+  {
+    title: 'Control Validation Task (API)',
+    path: '/api/auth/email-validation/api/control/',
+    payload: {
+      api_key: '<YOUR_API_KEY>',
+      user_id: '<YOUR_USER_ID>',
+      password: '<YOUR_PASSWORD>',
+      request_id: '<REQUEST_ID>',
+      action: 'pause',
+    },
+  },
 ];
 
 export default function EmailValidation() {
@@ -74,6 +96,10 @@ export default function EmailValidation() {
   const [results, setResults] = useState([]);
   const [summary, setSummary] = useState({ safe_to_send_yes: 0, safe_to_send_no: 0 });
   const progressIntervalRef = useRef(null);
+  const pollIntervalRef = useRef(null);
+  const [activeRequestMeta, setActiveRequestMeta] = useState(null);
+  const [progressTimeline, setProgressTimeline] = useState([]);
+  const [keepInBackground, setKeepInBackground] = useState(false);
 
   const [apiKeys, setApiKeys] = useState([]);
   const [newApiKeyName, setNewApiKeyName] = useState('');
@@ -161,7 +187,7 @@ export default function EmailValidation() {
       console.error('Error fetching admin data:', err);
       setLatestByUser([]);
       setAdminUsers([]);
-      setError(`Admin data load failed: ${err.response?.data?.detail || err.message || 'Unknown error'}`);
+      setError(`Admin data load failed: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     } finally {
       setAdminLoading(false);
     }
@@ -222,6 +248,85 @@ export default function EmailValidation() {
     setLatestRequestId(data?.request_id || history?.request_id || '');
   };
 
+  const hydrateFromHistoryRow = (current = {}) => {
+    const rs = current?.results_summary || {};
+    const progressPercent = Number(rs?.progress_percent || 0);
+    const processedCount = Number(rs?.processed_count || 0);
+    const totalCount = Number(rs?.total_count || current?.email_count || 0);
+    const elapsedSeconds = Number(rs?.elapsed_seconds || 0);
+    const etaSeconds = Number(rs?.eta_seconds || 0);
+    const processingState = String(current?.processing_state || rs?.processing_state || current?.status || 'pending').toLowerCase();
+
+    setActiveRequestMeta({
+      requestId: current?.request_id || '',
+      status: String(current?.status || 'pending').toLowerCase(),
+      processingState,
+      progressPercent,
+      processedCount,
+      totalCount,
+      elapsedSeconds,
+      etaSeconds,
+      workerActive: Boolean(current?.worker_active),
+      fileName: current?.file_name || '',
+    });
+
+    setProgressPercent(progressPercent);
+    setStatusMessage(`Validation ${processingState} - ${progressPercent}%`);
+    setProgressStage('validating');
+    setProgressTimeline((prev) => {
+      const next = [...prev, { at: Date.now(), value: progressPercent }];
+      return next.slice(-24);
+    });
+
+    const stateDone = ['completed', 'failed', 'cancelled', 'stopped'].includes(processingState);
+    if (stateDone || String(current?.status || '').toLowerCase() === 'completed' || String(current?.status || '').toLowerCase() === 'failed') {
+      applyValidationPayload({
+        request_id: current?.request_id,
+        source_file_name: current?.file_name,
+        history: current,
+        results: Array.isArray(rs?.results) ? rs.results : [],
+        summary: {
+          safe_to_send_yes: Number(rs?.safe_count || 0),
+          safe_to_send_no: Number(rs?.unsafe_count || 0),
+        },
+      });
+      if (stateDone) {
+        setLoading(false);
+        localStorage.removeItem('emailValidationActiveRequestId');
+      }
+    }
+
+    return stateDone;
+  };
+
+  const loadRequestStatus = async (requestId) => {
+    if (!requestId) {
+      return false;
+    }
+
+    const response = await API.get(`email-validation/history/${requestId}/status/`, { timeout: 60000 });
+    return hydrateFromHistoryRow(response.data || {});
+  };
+
+  const runRequestAction = async (action) => {
+    const requestId = activeRequestMeta?.requestId || latestRequestId;
+    if (!requestId) {
+      setError('No active request found.');
+      return;
+    }
+
+    try {
+      setError('');
+      const response = await API.patch(`email-validation/history/${requestId}/control/`, { action });
+      const done = hydrateFromHistoryRow(response.data || {});
+      if (!done) {
+        setLoading(true);
+      }
+    } catch (err) {
+      setError(getProfessionalErrorMessage(err, 'Could not apply request action.'));
+    }
+  };
+
   const recoverValidationFromHistory = async ({ startedAtMs, expectedFileName }) => {
     const response = await API.get('email-validation/history/', {
       params: { source: 'dashboard' },
@@ -265,6 +370,88 @@ export default function EmailValidation() {
     return true;
   };
 
+  const waitForValidationHistoryCompletion = async (requestId) => {
+    if (!requestId) {
+      return false;
+    }
+
+    const maxAttempts = 60;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const response = await API.get('email-validation/history/', {
+        params: { q: requestId },
+        timeout: 60000,
+      });
+
+      const rows = Array.isArray(response.data) ? response.data : [];
+      const current = rows.find((item) => String(item?.request_id || '') === String(requestId)) || rows[0];
+      if (current && String(current?.status || '').toLowerCase() === 'completed') {
+        applyValidationPayload({
+          request_id: current.request_id,
+          source_file_name: current.file_name,
+          history: current,
+          results: Array.isArray(current?.results_summary?.results) ? current.results_summary.results : [],
+          summary: {
+            safe_to_send_yes: Number(current?.results_summary?.safe_count || 0),
+            safe_to_send_no: Number(current?.results_summary?.unsafe_count || 0),
+          },
+        });
+        return true;
+      }
+
+      if (current && String(current?.status || '').toLowerCase() === 'failed') {
+        setError(String(current?.results_summary?.error || 'Email validation failed.'));
+        setStatusMessage('Validation failed.');
+        return false;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    return false;
+  };
+
+  useEffect(() => {
+    if (!activeRequestMeta?.requestId || keepInBackground) {
+      return undefined;
+    }
+
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const done = await loadRequestStatus(activeRequestMeta.requestId);
+        if (done && pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+          localStorage.removeItem('emailValidationActiveRequestId');
+        }
+      } catch {
+        // Keep polling silently; network hiccups should not stop UI tracking.
+      }
+    }, 2000);
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [activeRequestMeta?.requestId, keepInBackground]);
+
+  useEffect(() => {
+    const persistedRequestId = localStorage.getItem('emailValidationActiveRequestId');
+    if (!persistedRequestId) {
+      return;
+    }
+
+    loadRequestStatus(persistedRequestId).catch(() => {
+      localStorage.removeItem('emailValidationActiveRequestId');
+    });
+  }, []);
+
   const runValidation = async (event) => {
     event.preventDefault();
     setError('');
@@ -273,6 +460,9 @@ export default function EmailValidation() {
     setSummary({ safe_to_send_yes: 0, safe_to_send_no: 0 });
     setLastFileName('');
     setLatestRequestId('');
+    setActiveRequestMeta(null);
+    setProgressTimeline([]);
+    setKeepInBackground(false);
     setProgressPercent(0);
     setProgressStage(mode === 'file' ? 'uploading' : 'validating');
     setStatusMessage(mode === 'file' ? 'Uploading file...' : 'Preparing validation request...');
@@ -340,6 +530,25 @@ export default function EmailValidation() {
         response = await API.post('email-validation/validate/', payload, { timeout: 900000 });
       }
 
+      const isQueuedFileValidation = mode === 'file' && String(response?.status || '').toLowerCase() === '202';
+      const pendingRequestId = response.data?.request_id || response.data?.history?.request_id || '';
+
+      if (isQueuedFileValidation || String(response.data?.status || '').toLowerCase() === 'pending') {
+        setStatusMessage('File accepted. Validation is running in the background...');
+        setProgressStage('validating');
+        setProgressPercent(35);
+        setLatestRequestId(pendingRequestId);
+        localStorage.setItem('emailValidationActiveRequestId', String(pendingRequestId));
+        await loadRequestStatus(pendingRequestId);
+        if (isAdmin) {
+          const refreshedWallet = await API.get('wallet/');
+          setWalletBalance(String(refreshedWallet.data?.email_validation_balance ?? walletBalance));
+        } else {
+          setWalletBalance(String(response.data?.wallet_balance ?? walletBalance));
+        }
+        return;
+      }
+
       applyValidationPayload(response.data || {});
       setProgressPercent(100);
       setStatusMessage('Validation completed successfully.');
@@ -351,7 +560,7 @@ export default function EmailValidation() {
         setWalletBalance(String(response.data?.wallet_balance ?? walletBalance));
       }
     } catch (err) {
-      const detail = err.response?.data?.detail || 'Email validation failed.';
+      const detail = getProfessionalErrorMessage(err, 'Email validation failed.');
       const code = String(err.code || '').toUpperCase();
       const message = String(err.message || '').toLowerCase();
       const isTimeoutOrNetwork = code === 'ECONNABORTED' || message.includes('timeout') || message.includes('network');
@@ -396,8 +605,8 @@ export default function EmailValidation() {
       return;
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      setError('File too large. Maximum allowed size is 10MB.');
+    if (file.size > 25 * 1024 * 1024) {
+      setError('File too large. Maximum allowed size is 25MB.');
       return;
     }
 
@@ -416,7 +625,7 @@ export default function EmailValidation() {
       setNewApiKeyName('');
       fetchApiKeys();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Could not create API key');
+      setError(getProfessionalErrorMessage(err, 'Could not create API key'));
     }
   };
 
@@ -425,7 +634,7 @@ export default function EmailValidation() {
       await API.patch(`email-validation/api-keys/${item.id}/`, { is_active: !item.is_active });
       fetchApiKeys();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Could not update API key');
+      setError(getProfessionalErrorMessage(err, 'Could not update API key'));
     }
   };
 
@@ -434,7 +643,7 @@ export default function EmailValidation() {
       await API.delete(`email-validation/api-keys/${item.id}/`);
       fetchApiKeys();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Could not delete API key');
+      setError(getProfessionalErrorMessage(err, 'Could not delete API key'));
     }
   };
 
@@ -476,7 +685,7 @@ export default function EmailValidation() {
       setSelectedUserCreditDraft({ add_message_credits: '', add_email_validation_credits: '' });
       await loadUserHistory(selectedUserDetails.id);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Could not update user credits.');
+      setError(getProfessionalErrorMessage(err, 'Could not update user credits.'));
     }
   };
 
@@ -493,7 +702,7 @@ export default function EmailValidation() {
       });
       fetchAdminData();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Could not save credit setting');
+      setError(getProfessionalErrorMessage(err, 'Could not save credit setting'));
     }
   };
 
@@ -684,13 +893,13 @@ export default function EmailValidation() {
               <div>
                 <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>Upload File (.xlsv, .csv, .txt, .xls, .xlsx)</label>
                 <input type="file" onChange={handleFileChange} accept=".xlsv,.csv,.txt,.xls,.xlsx" style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
-                <small style={{ color: '#6b7280' }}>{sourceFile ? `Selected: ${sourceFile.name}` : 'Maximum file size: 10MB'}</small>
+                <small style={{ color: '#6b7280' }}>{sourceFile ? `Selected: ${sourceFile.name}` : 'Maximum file size: 25MB'}</small>
               </div>
             )}
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading && !activeRequestMeta?.requestId}
               style={{ marginTop: '14px', padding: '10px 16px', border: 'none', borderRadius: '8px', background: '#1d4ed8', color: '#fff', fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer' }}
             >
               {loading ? 'Validating...' : 'Validate Emails'}
@@ -710,6 +919,55 @@ export default function EmailValidation() {
                   />
                 </div>
                 <div style={{ marginTop: '4px', fontSize: '11px', color: '#6b7280' }}>{Math.round(progressPercent)}%</div>
+              </div>
+            )}
+
+            {activeRequestMeta?.requestId && (
+              <div style={{ marginTop: '12px', border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: '8px', padding: '10px' }}>
+                <div style={{ fontSize: '12px', color: '#1e3a8a', fontWeight: 700, marginBottom: '6px' }}>
+                  Live Task Status: {activeRequestMeta.processingState || activeRequestMeta.status}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '12px', color: '#1f2937', marginBottom: '8px' }}>
+                  <span><strong>Progress:</strong> {activeRequestMeta.progressPercent || 0}%</span>
+                  <span><strong>Processed:</strong> {activeRequestMeta.processedCount || 0}/{activeRequestMeta.totalCount || 0}</span>
+                  <span><strong>Elapsed:</strong> {activeRequestMeta.elapsedSeconds || 0}s</span>
+                  <span><strong>ETA:</strong> {activeRequestMeta.etaSeconds || 0}s</span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'end', gap: '2px', height: '36px', marginBottom: '8px' }}>
+                  {(progressTimeline.length ? progressTimeline : [{ value: activeRequestMeta.progressPercent || 0 }]).map((point, index) => (
+                    <div
+                      key={`spark-${index}`}
+                      title={`${Math.round(point.value || 0)}%`}
+                      style={{
+                        width: '6px',
+                        height: `${Math.max(3, Math.round((Number(point.value || 0) / 100) * 34))}px`,
+                        background: '#2563eb',
+                        borderRadius: '3px',
+                      }}
+                    />
+                  ))}
+                </div>
+
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <button type="button" onClick={() => runRequestAction('start')} style={{ border: '1px solid #bfdbfe', background: '#ffffff', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer' }}>Start</button>
+                  <button type="button" onClick={() => runRequestAction('pause')} style={{ border: '1px solid #bfdbfe', background: '#ffffff', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer' }}>Pause</button>
+                  <button type="button" onClick={() => runRequestAction('resume')} style={{ border: '1px solid #bfdbfe', background: '#ffffff', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer' }}>Resume</button>
+                  <button type="button" onClick={() => runRequestAction('stop')} style={{ border: '1px solid #fed7aa', background: '#fff7ed', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer' }}>Stop</button>
+                  <button type="button" onClick={() => runRequestAction('cancel')} style={{ border: '1px solid #fecaca', background: '#fef2f2', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer' }}>Cancel</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setKeepInBackground((prev) => !prev);
+                      if (!keepInBackground) {
+                        setLoading(false);
+                      }
+                    }}
+                    style={{ border: '1px solid #cbd5e1', background: '#f8fafc', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer' }}
+                  >
+                    {keepInBackground ? 'Resume Live Tracking' : 'Run In Background'}
+                  </button>
+                </div>
               </div>
             )}
           </form>
@@ -796,7 +1054,7 @@ export default function EmailValidation() {
               <li>Send `api_key`, `user_id`, and `password` in request body or `X-API-Key` header.</li>
               <li>Use endpoint: `/api/auth/email-validation/api/validate/`</li>
               <li>Supports `email`, `emails`, or `source_file` (multipart).</li>
-              <li>Returns simplified yes/no fields and detailed provider output.</li>
+              <li>Returns only the compact Bhisha result fields for each email, plus request metadata.</li>
             </ul>
           </div>
         </div>
@@ -804,6 +1062,10 @@ export default function EmailValidation() {
 
       {activeTab === 'api-docs' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px' }}>
+          <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '10px', padding: '12px', color: '#1e3a8a', fontSize: '13px', lineHeight: 1.6 }}>
+            Email validation input syntax: use `email` for single, `emails` (array or newline/comma string) for bulk, and `source_file` as multipart file upload.
+            Long file jobs return pending status with a `request_id`. Use status and control APIs with actions: `start`, `pause`, `resume`, `stop`, `cancel`.
+          </div>
           {endpointCards.map((item) => (
             <div key={item.title} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px' }}>
               <div style={{ fontWeight: 800, color: '#111827', marginBottom: '8px' }}>{item.title}</div>
@@ -911,11 +1173,12 @@ export default function EmailValidation() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {selectedUserHistory.map((item) => (
                   <div key={item.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px' }}>
-                    <div style={{ fontWeight: 700 }}>#{item.id} Â· User ID: {item.user} Â· {item.source}</div>
+                    <div style={{ fontWeight: 700 }}>#{item.id} · User ID: {item.user} · {item.user_email || 'Unknown user'} · {item.source}</div>
+                    <div style={{ fontSize: '12px', color: '#1f2937' }}>API Key: {item.api_key_name || 'Dashboard / direct request'}</div>
                     {item.provider_message_id && (
                       <div style={{ fontSize: '12px', color: '#1f2937' }}>Provider Message ID: {item.provider_message_id}</div>
                     )}
-                    <div style={{ fontSize: '12px', color: '#6b7280' }}>{item.email_count} emails Â· Cost {item.cost_deducted} Â· {new Date(item.created_at).toLocaleString()}</div>
+                    <div style={{ fontSize: '12px', color: '#6b7280' }}>{item.email_count} emails · Cost {item.cost_deducted} · {new Date(item.created_at).toLocaleString()}</div>
                   </div>
                 ))}
               </div>

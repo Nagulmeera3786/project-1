@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FaArrowLeft, FaCheckCircle, FaLock, FaPaperPlane } from 'react-icons/fa';
 import API from '../api';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 
 export default function FreeTrialSMS() {
   const navigate = useNavigate();
@@ -37,7 +38,7 @@ export default function FreeTrialSMS() {
       setSignupNumber(profileResponse.data?.phone_number || '');
       setUsage(usageResponse.data || { used_messages: 0, available_messages: 3, total_limit: 3 });
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to load free trial data');
+      setError(getProfessionalErrorMessage(err, 'Failed to load free trial data'));
     } finally {
       setLoading(false);
     }
@@ -76,7 +77,7 @@ export default function FreeTrialSMS() {
       setMessageContent('');
       await refreshUsage();
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to send free trial SMS');
+      setError(getProfessionalErrorMessage(err, 'Failed to send free trial SMS'));
       await refreshUsage();
     } finally {
       setSendingSms(false);

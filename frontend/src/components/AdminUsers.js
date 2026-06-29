@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import API from '../api';
 import { FaUsers, FaDownload, FaArrowLeft } from 'react-icons/fa';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 
 export default function AdminUsers() {
   const [users, setUsers] = useState([]);
@@ -61,7 +62,7 @@ export default function AdminUsers() {
       if (err.response?.status === 403) {
         setError('You do not have permission to access this page. Support or admin access required.');
       } else {
-        setError(err.response?.data?.detail || 'Failed to load users');
+        setError(getProfessionalErrorMessage(err, 'Failed to load users'));
       }
       console.error('Error:', err);
     } finally {
@@ -116,7 +117,7 @@ export default function AdminUsers() {
     } catch (err) {
       const suggestions = err.response?.data?.suggestions || [];
       setSenderSuggestions((prev) => ({ ...prev, [userId]: suggestions }));
-      alert('Failed to save sender ID: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to save sender ID: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     }
   };
 
@@ -141,7 +142,7 @@ export default function AdminUsers() {
         )
       );
     } catch (err) {
-      alert('Failed to update permission: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to update permission: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     }
   };
 
@@ -169,7 +170,7 @@ export default function AdminUsers() {
         return next;
       });
     } catch (err) {
-      alert('Failed to delete user: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to delete user: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     } finally {
       setDeletingUserId(null);
     }
@@ -223,7 +224,7 @@ export default function AdminUsers() {
         },
       }));
     } catch (err) {
-      alert('Failed to update credits: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to update credits: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     }
   };
 
@@ -258,7 +259,7 @@ export default function AdminUsers() {
       link.click();
       link.parentElement.removeChild(link);
     } catch (err) {
-      alert('Error downloading file: ' + (err.response?.data?.detail || err.message));
+      alert(`Error downloading file: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     }
   };
 

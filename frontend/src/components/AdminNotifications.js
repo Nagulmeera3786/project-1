@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../api';
 import { FaArrowLeft, FaBell, FaPaperPlane } from 'react-icons/fa';
+import { getProfessionalErrorMessage } from '../errorHelpers';
 
 const FILTERS = [
   { value: 'all_users', label: 'All Users' },
@@ -35,7 +36,7 @@ export default function AdminNotifications() {
       setPreview(response.data.preview_recipients || []);
       setPreviewCount(response.data.total_recipients || 0);
     } catch (err) {
-      setMessage(err.response?.data?.detail || 'Failed to load recipients preview');
+      setMessage(getProfessionalErrorMessage(err, 'Failed to load recipients preview'));
       setPreview([]);
       setPreviewCount(0);
     } finally {
@@ -76,7 +77,7 @@ export default function AdminNotifications() {
       await loadPreview(audienceFilter);
       await loadHistory();
     } catch (err) {
-      setMessage(err.response?.data?.detail || 'Failed to send notification');
+      setMessage(getProfessionalErrorMessage(err, 'Failed to send notification'));
     } finally {
       setSending(false);
     }
