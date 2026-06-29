@@ -924,7 +924,7 @@ def _normalize_email_validation_flags(email, entry, quality_info):
 def _normalize_optional_bool(value):
     if isinstance(value, bool):
         return value
-    return None
+    return False
 
 
 def _to_client_validation_result(item):

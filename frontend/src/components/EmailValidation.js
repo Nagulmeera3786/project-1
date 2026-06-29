@@ -718,15 +718,25 @@ export default function EmailValidation() {
   }, [summary]);
 
   const formatLiveResult = (row) => {
+    const sanitizeUnknownInResultText = (text) => String(text || '').replace(/\bunknown\b/gi, 'Undeliverable');
+
+    const normalizedClassification = (() => {
+      const raw = String(row?.classification || '').trim();
+      if (!raw || raw.toLowerCase() === 'unknown') {
+        return 'Undeliverable';
+      }
+      return raw;
+    })();
+
     if (row?.summary) {
-      return row.summary;
+      return sanitizeUnknownInResultText(row.summary);
     }
 
     return [
       '#### Validation summary',
       `Input data:**${row?.email || '-'}**`,
       '',
-      `Classification:${row?.classification || 'Unknown'}`,
+      `Classification:${normalizedClassification}`,
       '',
       '---',
       `Status:${row?.status || 'Validation completed.'}`,
@@ -739,20 +749,35 @@ export default function EmailValidation() {
     if (value === true) {
       return 'Yes';
     }
-    if (value === false) {
-      return 'No';
-    }
-    return 'Unknown';
+    return 'No';
   };
 
   const getBoolStyles = (value) => {
     if (value === true) {
       return { color: '#166534', background: '#dcfce7', border: '#86efac' };
     }
-    if (value === false) {
-      return { color: '#991b1b', background: '#fee2e2', border: '#fca5a5' };
+    return { color: '#991b1b', background: '#fee2e2', border: '#fca5a5' };
+  };
+
+  const getRiskFactorValue = (row) => {
+    const classification = String(row?.classification || '').trim().toLowerCase();
+
+    if (classification === 'deliverable') {
+      return 'Low';
     }
-    return { color: '#475569', background: '#e2e8f0', border: '#cbd5e1' };
+
+    if (classification === 'undeliverable') {
+      return 'High';
+    }
+
+    return 'High';
+  };
+
+  const getRiskStyles = (riskFactorValue) => {
+    if (riskFactorValue === 'Low') {
+      return { color: '#166534', background: '#dcfce7', border: '#86efac' };
+    }
+    return { color: '#991b1b', background: '#fee2e2', border: '#fca5a5' };
   };
 
   const factorCards = (row) => {
@@ -763,14 +788,21 @@ export default function EmailValidation() {
       { label: 'didYouMean', type: 'text', value: row?.didYouMean || row?.email || '-' },
       { label: 'disposable', type: 'bool', value: row?.disposable },
       { label: 'roleBased', type: 'bool', value: row?.roleBased },
-      { label: 'Risk', type: 'bool', value: row?.risky },
+      { label: 'Risk', type: 'risk', value: getRiskFactorValue(row) },
     ];
 
     return (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px', marginTop: '10px' }}>
         {factors.map((factor) => {
-          const style = factor.type === 'bool' ? getBoolStyles(factor.value) : { color: '#1f2937', background: '#eef2ff', border: '#c7d2fe' };
-          const displayValue = factor.type === 'bool' ? formatBoolValue(factor.value) : String(factor.value);
+          const style = factor.type === 'bool'
+            ? getBoolStyles(factor.value)
+            : factor.type === 'risk'
+              ? getRiskStyles(factor.value)
+              : { color: '#1f2937', background: '#eef2ff', border: '#c7d2fe' };
+
+          const displayValue = factor.type === 'bool'
+            ? formatBoolValue(factor.value)
+            : String(factor.value);
 
           return (
             <div key={`${row?.email || 'factor'}-${factor.label}`} style={{ border: `1px solid ${style.border}`, borderRadius: '8px', padding: '8px', background: style.background }}>
