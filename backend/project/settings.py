@@ -362,6 +362,17 @@ EMAIL_PORT        = int(_env_text('EMAIL_PORT', str(_pd.get('port', 587))))
 EMAIL_USE_TLS     = _env_bool('EMAIL_USE_TLS', _pd.get('use_tls', True))
 EMAIL_USE_SSL     = _env_bool('EMAIL_USE_SSL', _pd.get('use_ssl', False))
 
+# Guard against common IONOS misconfiguration where port and SSL/TLS flags are mixed.
+if _email_provider == 'ionos':
+    if EMAIL_PORT == 587 and EMAIL_USE_SSL:
+        EMAIL_USE_SSL = False
+        EMAIL_USE_TLS = True
+        logger.warning('Adjusted IONOS SMTP config: port 587 requires TLS (SSL disabled).')
+    elif EMAIL_PORT == 465 and EMAIL_USE_TLS:
+        EMAIL_USE_TLS = False
+        EMAIL_USE_SSL = True
+        logger.warning('Adjusted IONOS SMTP config: port 465 requires SSL (TLS disabled).')
+
 # SendGrid requires 'apikey' as the SMTP username; other providers use the real email address.
 _default_smtp_user    = _pd.get('user') or ''
 EMAIL_HOST_USER       = _env_text('EMAIL_USER') or _env_text('EMAIL_HOST_USER') or _default_smtp_user

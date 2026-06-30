@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FaArrowLeft, FaBookOpen, FaCode, FaKey, FaServer } from 'react-icons/fa';
 
-const BASE_URL = 'https://<bhisha.com>';
+const BASE_URL = 'https://bhisha.com';
 const API_PREFIX = '/api/auth';
 const SMS_SEND_PATH = '/sms/send/';
 const MAIL_VALIDATE_PATH = '/email-validation/api/validate/';
@@ -16,7 +16,7 @@ const codeSamples = {
   -d '{
     "display_sender_id": "BHISHA",
     "message_content": "Hello from Bhisha",
-    "recipient_number": "+919876543210"
+    "recipient_number": "+91XXXXXXXXXX"
   }'`,
   JavaScript: `const baseUrl = "${BASE_URL}";
 const response = await fetch(baseUrl + "${API_PREFIX}${SMS_SEND_PATH}", {
@@ -28,7 +28,7 @@ const response = await fetch(baseUrl + "${API_PREFIX}${SMS_SEND_PATH}", {
   body: JSON.stringify({
     display_sender_id: 'BHISHA',
     message_content: 'Hello from Bhisha',
-    recipient_number: '+919876543210',
+    recipient_number: '+91XXXXXXXXXX',
   }),
 });
 
@@ -42,7 +42,7 @@ response = requests.post(
     json={
         'display_sender_id': 'BHISHA',
         'message_content': 'Hello from Bhisha',
-        'recipient_number': '+919876543210',
+        'recipient_number': '+91XXXXXXXXXX',
     },
 )
 
@@ -56,7 +56,7 @@ HttpRequest request = HttpRequest.newBuilder()
         {
           \"display_sender_id\": \"BHISHA\",
           \"message_content\": \"Hello from Bhisha\",
-          \"recipient_number\": \"+919876543210\"
+          \"recipient_number\": \"+91XXXXXXXXXX\"
         }
         """))
     .build();`,
@@ -68,7 +68,7 @@ client.DefaultRequestHeaders.Authorization =
 var payload = new {
     display_sender_id = "BHISHA",
     message_content = "Hello from Bhisha",
-    recipient_number = "+919876543210"
+    recipient_number = "+91XXXXXXXXXX"
 };
 
 var response = await client.PostAsJsonAsync("${API_PREFIX}${SMS_SEND_PATH}", payload);`,
@@ -76,7 +76,7 @@ var response = await client.PostAsJsonAsync("${API_PREFIX}${SMS_SEND_PATH}", pay
 $payload = [
   'display_sender_id' => 'BHISHA',
   'message_content' => 'Hello from Bhisha',
-  'recipient_number' => '+919876543210',
+  'recipient_number' => '+91XXXXXXXXXX',
 ];
 
 $ch = curl_init($baseUrl . '${API_PREFIX}${SMS_SEND_PATH}');
@@ -89,7 +89,7 @@ curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));`,
 payload := strings.NewReader(` + "`" + `{
   "display_sender_id":"BHISHA",
   "message_content":"Hello from Bhisha",
-  "recipient_number":"+919876543210"
+  "recipient_number":"+91XXXXXXXXXX"
 }` + "`" + `)
 
 req, _ := http.NewRequest("POST", baseURL + "${API_PREFIX}${SMS_SEND_PATH}", payload)
@@ -108,7 +108,7 @@ const advancedSendExamples = [
     "send_mode": "single",
     "display_sender_id": "SENDERID",
     "message_content": "Your OTP is 384221",
-    "recipient_number": "919876543210"
+    "recipient_number": "91XXXXXXXXXX"
   }'`,
   },
   {
@@ -135,7 +135,7 @@ payload = {
     "smpp_profile": "standard",
     "display_sender_id": "SENDERID",
     "message_content": "SMPP route test message",
-    "recipient_number": "919876543210",
+    "recipient_number": "91XXXXXXXXXX",
     "smpp_host": "smpp.your-provider.com",
     "smpp_port": 2775,
     "smpp_system_id": "your_system_id",
@@ -157,7 +157,7 @@ print(res.status_code, res.json())`,
   "smpp_profile": "dlt",
   "display_sender_id": "SENDERID",
   "message_content": "Your order #1234 is dispatched.",
-  "recipient_number": "919876543210",
+  "recipient_number": "91XXXXXXXXXX",
   "smpp_host": "smpp.your-provider.com",
   "smpp_port": 2775,
   "smpp_system_id": "your_system_id",
@@ -174,113 +174,126 @@ const mailValidationModes = ['single', 'bulk', 'file'];
 const mailValidationSamples = {
   single: {
     cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
+  -H "X-API-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "api_key": "<YOUR_API_KEY>",
-    "user_id": "<YOUR_USER_ID>",
+    "user_id": 7,
     "password": "<YOUR_PASSWORD>",
-    "email": "yifemat211@fishnone.com"
+    "email": "user@example.com"
   }'`,
     JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
+  headers: {
+    "Content-Type": "application/json",
+    "X-API-Key": "<YOUR_API_KEY>",
+  },
   body: JSON.stringify({
-    api_key: "<YOUR_API_KEY>",
-    user_id: "<YOUR_USER_ID>",
+    user_id: 7,
     password: "<YOUR_PASSWORD>",
-    email: "yifemat211@fishnone.com"
+    email: "user@example.com"
   })
 });
+
 const data = await response.json();
-console.log(data);`,
+console.log(data.results?.[0]);`,
     Python: `import requests
 
 base_url = "${BASE_URL}"
 response = requests.post(
     base_url + "${API_PREFIX}${MAIL_VALIDATE_PATH}",
+    headers={"X-API-Key": "<YOUR_API_KEY>"},
     json={
-        "api_key": "<YOUR_API_KEY>",
-        "user_id": "<YOUR_USER_ID>",
+        "user_id": 7,
         "password": "<YOUR_PASSWORD>",
-        "email": "yifemat211@fishnone.com",
+        "email": "user@example.com",
     },
 )
 
 print(response.json())`,
     Java: `String payload = """
 {
-  \"api_key\": \"<YOUR_API_KEY>\",
-  \"user_id\": \"<YOUR_USER_ID>\",
+  \"user_id\": 7,
   \"password\": \"<YOUR_PASSWORD>\",
-  \"email\": \"yifemat211@fishnone.com\"
+  \"email\": \"user@example.com\"
 }
 """;`,
-    'C#': `var payload = new {
-    api_key = "<YOUR_API_KEY>",
-    user_id = "<YOUR_USER_ID>",
-    password = "<YOUR_PASSWORD>",
-    email = "yifemat211@fishnone.com"
+    'C#': `using var client = new HttpClient();
+client.BaseAddress = new Uri("${BASE_URL}");
+client.DefaultRequestHeaders.Add("X-API-Key", "<YOUR_API_KEY>");
+
+var payload = new {
+  user_id = 7,
+  password = "<YOUR_PASSWORD>",
+  email = "user@example.com"
 };
+
 var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", payload);`,
   },
   bulk: {
     cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
+  -H "X-API-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "api_key": "<YOUR_API_KEY>",
-    "user_id": "<YOUR_USER_ID>",
+    "user_id": 7,
     "password": "<YOUR_PASSWORD>",
     "emails": ["one@example.com", "two@example.com", "three@example.com"]
   }'`,
     JavaScript: `const payload = {
-  api_key: "<YOUR_API_KEY>",
-  user_id: "<YOUR_USER_ID>",
+  user_id: 7,
   password: "<YOUR_PASSWORD>",
   emails: ["one@example.com", "two@example.com", "three@example.com"],
 };
+
 const res = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
+  headers: {
+    "Content-Type": "application/json",
+    "X-API-Key": "<YOUR_API_KEY>",
+  },
   body: JSON.stringify(payload),
-});`,
+});
+
+console.log(await res.json());`,
     Python: `import requests
 
 payload = {
-    "api_key": "<YOUR_API_KEY>",
-    "user_id": "<YOUR_USER_ID>",
+    "user_id": 7,
     "password": "<YOUR_PASSWORD>",
     "emails": ["one@example.com", "two@example.com", "three@example.com"],
 }
-print(requests.post("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", json=payload).json())`,
+
+print(requests.post(
+    "${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}",
+    headers={"X-API-Key": "<YOUR_API_KEY>"},
+    json=payload
+).json())`,
     Java: `String payload = """
 {
-  \"api_key\": \"<YOUR_API_KEY>\",
-  \"user_id\": \"<YOUR_USER_ID>\",
+  \"user_id\": 7,
   \"password\": \"<YOUR_PASSWORD>\",
   \"emails\": [\"one@example.com\", \"two@example.com\", \"three@example.com\"]
 }
 """;`,
     'C#': `var payload = new {
-    api_key = "<YOUR_API_KEY>",
-    user_id = "<YOUR_USER_ID>",
-    password = "<YOUR_PASSWORD>",
-    emails = new[] { "one@example.com", "two@example.com", "three@example.com" }
+  user_id = 7,
+  password = "<YOUR_PASSWORD>",
+  emails = new[] { "one@example.com", "two@example.com", "three@example.com" }
 };`,
   },
   file: {
     cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
-  -F "api_key=<YOUR_API_KEY>" \\
-  -F "user_id=<YOUR_USER_ID>" \\
+  -H "X-API-Key: <YOUR_API_KEY>" \\
+  -F "user_id=7" \\
   -F "password=<YOUR_PASSWORD>" \\
   -F "source_file=@emails.xlsx"`,
     JavaScript: `const formData = new FormData();
-formData.append("api_key", "<YOUR_API_KEY>");
-formData.append("user_id", "<YOUR_USER_ID>");
+formData.append("user_id", "XXXX");
 formData.append("password", "<YOUR_PASSWORD>");
 formData.append("source_file", fileInput.files[0]);
 
 const res = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
   method: "POST",
+  headers: { "X-API-Key": "<YOUR_API_KEY>" },
   body: formData,
 });`,
     Python: `import requests
@@ -288,33 +301,35 @@ const res = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
 with open("emails.xlsx", "rb") as fp:
     response = requests.post(
         "${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}",
+        headers={"X-API-Key": "<YOUR_API_KEY>"},
         data={
-            "api_key": "<YOUR_API_KEY>",
-            "user_id": "<YOUR_USER_ID>",
+            "user_id": 7,
             "password": "<YOUR_PASSWORD>",
         },
         files={"source_file": fp},
     )
+
 print(response.json())`,
     Java: `MultipartBodyPublisher mp = new MultipartBodyPublisher()
-    .addPart("api_key", "<YOUR_API_KEY>")
-    .addPart("user_id", "<YOUR_USER_ID>")
+    .addPart("user_id", "7")
     .addPart("password", "<YOUR_PASSWORD>")
     .addFilePart("source_file", Path.of("emails.xlsx"));`,
     'C#': `using var form = new MultipartFormDataContent();
-form.Add(new StringContent("<YOUR_API_KEY>"), "api_key");
-form.Add(new StringContent("<YOUR_USER_ID>"), "user_id");
+form.Add(new StringContent("7"), "user_id");
 form.Add(new StringContent("<YOUR_PASSWORD>"), "password");
 form.Add(new StreamContent(File.OpenRead("emails.xlsx")), "source_file", "emails.xlsx");
-var response = await client.PostAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", form);`,
+
+using var req = new HttpRequestMessage(HttpMethod.Post, "${API_PREFIX}${MAIL_VALIDATE_PATH}");
+req.Headers.Add("X-API-Key", "<YOUR_API_KEY>");
+req.Content = form;
+var response = await client.SendAsync(req);`,
   },
 };
 
 const mailTaskControlSample = `# Status
 POST ${BASE_URL}${API_PREFIX}${MAIL_STATUS_PATH}
 {
-  "api_key": "<YOUR_API_KEY>",
-  "user_id": "<YOUR_USER_ID>",
+  "user_id": 7,
   "password": "<YOUR_PASSWORD>",
   "request_id": "<REQUEST_ID>"
 }
@@ -322,14 +337,32 @@ POST ${BASE_URL}${API_PREFIX}${MAIL_STATUS_PATH}
 # Control
 POST ${BASE_URL}${API_PREFIX}${MAIL_CONTROL_PATH}
 {
-  "api_key": "<YOUR_API_KEY>",
-  "user_id": "<YOUR_USER_ID>",
+  "user_id": 7,
   "password": "<YOUR_PASSWORD>",
   "request_id": "<REQUEST_ID>",
   "action": "pause" // start, pause, resume, stop, cancel
 }`;
 
-const resultProfileExample = `Results Profile for: yifemat211@fishnone.com
+const compactApiResponseExample = `{
+  "request_id": "f526f9c1-1037-4519-ba2f-b87febcf8931",
+  "count": 1,
+  "wallet_balance": "XXXX.0000",
+  "results": [
+    {
+      "email": "user@example.com",
+      "valid_inbox": true,
+      "valid_syntax": true,
+      "disposable": false,
+      "role_based": false,
+      "catch_all": false,
+      "risk_factors": "None Detected",
+      "raw_status_details": "safe_to_mail",
+      "is_free_domain": true
+    }
+  ]
+}`;
+
+const resultProfileExample = `Results Profile for: user@example.com
 ----------------------------------------
 Valid Inbox:    False
 Valid Syntax:   True
@@ -356,25 +389,9 @@ const sections = [
   {
     id: 'authentication',
     title: 'Authentication & Access',
-    description: 'Use signup/login OTP flow and JWT tokens for secure access.',
+    description: 'Use login OTP flow and JWT tokens for secure access.',
     endpoints: [
-      { method: 'POST', path: '/signup/', auth: 'Public', description: 'Create account and trigger OTP flow.' },
-      { method: 'POST', path: '/verify-otp/', auth: 'Public', description: 'Verify OTP and activate account.' },
-      { method: 'POST', path: '/resend-otp/', auth: 'Public', description: 'Regenerate and resend OTP.' },
       { method: 'POST', path: '/login/', auth: 'Public', description: 'Login and receive JWT access/refresh tokens.' },
-      { method: 'POST', path: '/token/refresh/', auth: 'Public', description: 'Refresh expired access token.' },
-      { method: 'POST', path: '/forgot-password/', auth: 'Public', description: 'Start password reset OTP flow.' },
-      { method: 'POST', path: '/reset-password/', auth: 'Public', description: 'Reset password using OTP.' },
-    ],
-  },
-  {
-    id: 'profile',
-    title: 'Profile & Wallet',
-    description: 'Fetch and update user profile, usage data, sender identity, and wallet summary.',
-    endpoints: [
-      { method: 'GET', path: '/profile/', auth: 'JWT', description: 'Returns profile, SMS usage, and wallet values.' },
-      { method: 'PATCH', path: '/profile/', auth: 'JWT', description: 'Update profile and sender identity details.' },
-      { method: 'GET', path: '/sms/usage-summary/', auth: 'JWT', description: 'Get aggregated SMS usage for current user.' },
     ],
   },
   {
@@ -400,6 +417,16 @@ const sections = [
       { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key + user_id + password', description: 'Validate single, bulk, or file inputs.' },
       { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key + user_id + password', description: 'Get live progress, elapsed time, ETA, and final status.' },
       { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key + user_id + password', description: 'Control a running job with start/pause/resume/stop/cancel.' },
+    ],
+  },
+  {
+    id: 'profile',
+    title: 'Profile & Wallet',
+    description: 'Fetch and update user profile, usage data, sender identity, and wallet summary.',
+    endpoints: [
+      { method: 'GET', path: '/profile/', auth: 'JWT', description: 'Returns profile, SMS usage, and wallet values.' },
+      { method: 'PATCH', path: '/profile/', auth: 'JWT', description: 'Update profile and sender identity details.' },
+      { method: 'GET', path: '/sms/usage-summary/', auth: 'JWT', description: 'Get aggregated SMS usage for current user.' },
     ],
   },
   {
@@ -619,7 +646,7 @@ export default function ApiDocsOverview() {
             <section style={cardStyle}>
               <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#1A0E4E' }}>Mail Validation Examples (Single, Bulk, File)</h3>
               <p style={{ marginTop: 0, color: '#6B6B8A', lineHeight: 1.6 }}>
-                Use these request syntaxes for Bhisha mail validation API with API key credentials.
+                Use these request syntaxes for Bhisha mail validation API. user_id must be a numeric Bhisha user ID and must belong to the same account as the API key.
               </p>
 
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
@@ -677,6 +704,15 @@ export default function ApiDocsOverview() {
                 </div>
                 <pre style={{ margin: 0, background: '#020617', color: '#e2e8f0', padding: '12px', overflowX: 'auto', fontSize: '12px', lineHeight: 1.5 }}>
                   <code>{mailTaskControlSample}</code>
+                </pre>
+              </div>
+
+              <div style={{ marginTop: '12px', border: '1px solid #EDE8FB', borderRadius: '12px', overflow: 'hidden' }}>
+                <div style={{ background: '#F5F3FF', borderBottom: '1px solid #EDE8FB', padding: '10px 12px', fontWeight: 700, color: '#1A0E4E' }}>
+                  Compact API Response (Recommended Fields)
+                </div>
+                <pre style={{ margin: 0, background: '#020617', color: '#e2e8f0', padding: '12px', overflowX: 'auto', fontSize: '12px', lineHeight: 1.5 }}>
+                  <code>{compactApiResponseExample}</code>
                 </pre>
               </div>
 
