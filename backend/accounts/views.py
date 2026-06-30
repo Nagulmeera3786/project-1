@@ -779,10 +779,10 @@ def _infer_verifalia_classification(current_value, status_text='', summary_text=
 
 def _infer_verifalia_bool_from_text(text_blob, positive_phrases, negative_phrases):
     normalized_text = str(text_blob or '').lower()
-    if any(phrase in normalized_text for phrase in positive_phrases):
-        return True
     if any(phrase in normalized_text for phrase in negative_phrases):
         return False
+    if any(phrase in normalized_text for phrase in positive_phrases):
+        return True
     return None
 
 
@@ -899,7 +899,25 @@ def _normalize_email_validation_flags(email, entry, quality_info):
     if risk == 'unknown' and ('high-risk email type' in provider_text.lower() or disposable):
         risk = 'high'
 
+    status_code_hint = str(quality_info.get('status_code') or '').strip().lower()
     classification_hint = str(quality_info.get('classification') or '').strip().lower()
+    has_syntax_failure_text = any(
+        phrase in provider_text.lower()
+        for phrase in ['invalid email address', 'syntax error', 'syntax validation failed']
+    )
+    has_mailbox_failure_text = any(
+        phrase in provider_text.lower()
+        for phrase in ['mailbox validation failed', 'cannot correctly receive messages']
+    )
+
+    # If Verifalia says this is a successful deliverable result, prefer that signal
+    # over sparse/ambiguous nested booleans extracted from the payload.
+    if status_code_hint == 'success' and classification_hint in ['deliverable', 'safe']:
+        if not has_syntax_failure_text:
+            valid_syntax = True
+        if not has_mailbox_failure_text:
+            valid_mailbox = True
+
     derived_risky = risk in ['high', 'medium', 'risky']
     if classification_hint == 'risky' or 'high-risk email type' in provider_text.lower() or 'well-known disposable email address provider' in provider_text.lower():
         derived_risky = True
@@ -1804,7 +1822,7 @@ def _build_bhisha_risk_factors(item):
         factors.append('Catch All Mailbox')
 
     risk_value = str(item.get('risk') or '').strip().lower()
-    if risk_value in {'high', 'very_high', 'medium', 'unknown'} and not item.get('disposable'):
+    if risk_value in {'high', 'very_high', 'medium'} and not item.get('disposable'):
         factors.append(f'Provider Risk: {risk_value}')
 
     return ', '.join(factors) if factors else 'None Detected'

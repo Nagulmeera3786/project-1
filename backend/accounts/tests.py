@@ -698,6 +698,42 @@ class EmailValidationMediatorTests(TestCase):
         self.assertEqual(history.source, 'api')
         self.assertEqual(history.api_key_id, api_key.id)
 
+    def test_compact_result_prefers_verifalia_success_deliverable_over_conflicting_flags(self):
+        from accounts.views import _build_bhisha_api_validation_result, _build_validation_result_from_verifalia
+
+        entry = {
+            'email': 'mrmeera786@gmail.com',
+            'validSyntax': False,
+            'validMailbox': True,
+            'disposable': False,
+            'roleBased': False,
+            'catchAll': False,
+            'statusCode': 'Success',
+            'classification': 'Deliverable',
+            'status': 'Valid email, with no high-risk factors detected: safe to send mail.',
+            'summary': 'Valid email, with no high-risk factors detected: safe to send mail.',
+            'report': (
+                'Syntax validation\n'
+                ' The address is valid according to syntax rules.\n\n'
+                'Mailbox validation\n'
+                ' The mail exchanger responsible for the email address domain can correctly receive messages sent to the email address being tested.'
+            ),
+        }
+
+        result = _build_validation_result_from_verifalia(
+            'mrmeera786@gmail.com',
+            entry,
+            {},
+            provider_message_id='provider-job-1',
+            provider_status_text='Completed',
+        )
+        compact = _build_bhisha_api_validation_result(result)
+
+        self.assertEqual(compact['valid_syntax'], True)
+        self.assertEqual(compact['valid_inbox'], True)
+        self.assertEqual(compact['risk_factors'], 'None Detected')
+        self.assertEqual(compact['raw_status_details'], 'safe_to_mail')
+
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com', EMAIL_VALIDATION_MAX_EMAILS_PER_REQUEST=5000)
     @patch('accounts.views._validate_email_batch_with_verifalia')
     def test_validate_email_list_batches_large_requests(self, mock_batch_validate):
