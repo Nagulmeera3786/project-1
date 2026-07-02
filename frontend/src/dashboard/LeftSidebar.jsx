@@ -90,7 +90,7 @@ const LeftSidebar = () => {
     { icon: <FaEnvelope />, label: 'Send SMS', action: () => navigate('/sms/send') },
     { icon: <FaEnvelope />, label: 'Email Validation', action: () => navigate('/broadcast/email-validation') },
     { icon: <FaWhatsapp />, label: 'Send WhatsApp', action: null },
-    { icon: <FaCommentDots />, label: 'Send RCS', action: null },
+    { icon: <FaBroadcastTower />, label: 'Send RCS', action: null },
     { icon: <FaPhoneAlt />, label: 'Send Voice', action: null },
     { icon: <FaEnvelope />, label: 'Omni Channel', action: () => navigate('/sms/send') },
   ];
