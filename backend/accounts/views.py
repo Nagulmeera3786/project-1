@@ -10,7 +10,7 @@ from django.db import transaction
 from django.db import close_old_connections
 from django.db.models import Q, Count, F
 from decimal import Decimal, InvalidOperation
-from django.http import HttpResponseRedirect, Http404
+from django.http import HttpResponseRedirect, Http404, HttpResponse
 from django.views import View
 import requests
 import time
@@ -1907,6 +1907,54 @@ def _build_bhisha_result_profile(result):
         f'Raw Status Details:  {raw_status_details}',
         f'Is Free Domain?:     {str(is_free_domain)}',
     ])
+
+
+def _extract_api_result_profiles(result_items):
+    profiles = []
+
+    for item in result_items or []:
+        if not isinstance(item, dict):
+            continue
+
+        bhisha_result = item.get('bhisha_result') if isinstance(item.get('bhisha_result'), dict) else item
+        profile = str(bhisha_result.get('result_profile') or '').strip()
+        if not profile and isinstance(bhisha_result, dict):
+            profile = _build_bhisha_result_profile(bhisha_result)
+
+        if profile:
+            profiles.append(profile)
+
+    return profiles
+
+
+def _build_concise_api_validation_response(result_items):
+    profiles = _extract_api_result_profiles(result_items)
+    if len(profiles) == 1:
+        return profiles[0]
+    return {'results': profiles}
+
+
+def _build_concise_api_status_response(history):
+    processing_state = _get_history_processing_state(history)
+
+    if processing_state in {'completed'}:
+        summary = _get_history_summary(history)
+        stored_results = summary.get('results') if isinstance(summary.get('results'), list) else []
+        return _build_concise_api_validation_response(stored_results)
+
+    if processing_state in {'failed', 'cancelled', 'stopped'}:
+        summary = _get_history_summary(history)
+        failure_reason = str(summary.get('failure_reason') or summary.get('error') or processing_state).strip()
+        return {
+            'request_id': history.request_id,
+            'status': processing_state,
+            'detail': failure_reason,
+        }
+
+    return {
+        'request_id': history.request_id,
+        'status': processing_state,
+    }
 
 
 def _get_history_summary(history):
@@ -4452,19 +4500,8 @@ class APIEmailValidationView(generics.GenericAPIView):
             return Response(
                 {
                     'request_id': history.request_id,
-                    'count': len(unique_emails),
-                    'wallet_balance': str(remaining_balance),
-                    'source_file_name': file_name,
                     'status': 'pending',
-                    'detail': 'File accepted and queued for background validation. Poll history using request_id.',
-                    'history': history_payload,
-                    'dlr_report': {
-                        'request_id': history.request_id,
-                        'status': history.status,
-                        'completed': False,
-                        'delivery_time': None,
-                        'failure_reason': '',
-                    },
+                    'detail': 'File accepted and queued for background validation.',
                 },
                 status=status.HTTP_202_ACCEPTED,
             )
@@ -4489,27 +4526,11 @@ class APIEmailValidationView(generics.GenericAPIView):
         }
         history.completed_at = timezone.now()
         history.save(update_fields=['status', 'results_summary', 'completed_at'])
-        history_payload = EmailValidationHistorySerializer(history).data
-        compact_results = [_build_bhisha_api_validation_result(item) for item in client_results]
 
-        return Response(
-            {
-                'request_id': history.request_id,
-                'count': len(client_results),
-                'wallet_balance': str(remaining_balance),
-                'source_file_name': file_name,
-                'results': compact_results,
-                'history': history_payload,
-                'dlr_report': {
-                    'request_id': history.request_id,
-                    'status': history.status,
-                    'completed': history.status == EmailValidationHistory.STATUS_COMPLETED,
-                    'delivery_time': history.completed_at,
-                    'failure_reason': '',
-                },
-            },
-            status=status.HTTP_200_OK,
-        )
+        concise_response = _build_concise_api_validation_response(client_results)
+        if isinstance(concise_response, str):
+            return HttpResponse(concise_response, content_type='text/plain; charset=utf-8', status=status.HTTP_200_OK)
+        return Response(concise_response, status=status.HTTP_200_OK)
 
 
 class ValidationHistoryListView(generics.ListAPIView):
@@ -4605,10 +4626,10 @@ class APIEmailValidationStatusView(generics.GenericAPIView):
         if not history:
             return Response({'detail': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        payload = EmailValidationHistorySerializer(history).data
-        payload['worker_active'] = _is_worker_active(history.id)
-        payload['processing_state'] = _get_history_processing_state(history)
-        return Response(payload)
+        concise_response = _build_concise_api_status_response(history)
+        if isinstance(concise_response, str):
+            return HttpResponse(concise_response, content_type='text/plain; charset=utf-8', status=status.HTTP_200_OK)
+        return Response(concise_response)
 
 
 class APIEmailValidationControlView(generics.GenericAPIView):
