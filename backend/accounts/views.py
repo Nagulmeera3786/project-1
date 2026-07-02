@@ -10,7 +10,7 @@ from django.db import transaction
 from django.db import close_old_connections
 from django.db.models import Q, Count, F
 from decimal import Decimal, InvalidOperation
-from django.http import HttpResponseRedirect, Http404, HttpResponse
+from django.http import HttpResponseRedirect, Http404
 from django.views import View
 import requests
 import time
@@ -1930,7 +1930,7 @@ def _extract_api_result_profiles(result_items):
 def _build_concise_api_validation_response(result_items):
     profiles = _extract_api_result_profiles(result_items)
     if len(profiles) == 1:
-        return profiles[0]
+        return {'result': profiles[0]}
     return {'results': profiles}
 
 
@@ -4528,8 +4528,6 @@ class APIEmailValidationView(generics.GenericAPIView):
         history.save(update_fields=['status', 'results_summary', 'completed_at'])
 
         concise_response = _build_concise_api_validation_response(client_results)
-        if isinstance(concise_response, str):
-            return HttpResponse(concise_response, content_type='text/plain; charset=utf-8', status=status.HTTP_200_OK)
         return Response(concise_response, status=status.HTTP_200_OK)
 
 
@@ -4627,8 +4625,6 @@ class APIEmailValidationStatusView(generics.GenericAPIView):
             return Response({'detail': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
 
         concise_response = _build_concise_api_status_response(history)
-        if isinstance(concise_response, str):
-            return HttpResponse(concise_response, content_type='text/plain; charset=utf-8', status=status.HTTP_200_OK)
         return Response(concise_response)
 
 
