@@ -33,6 +33,7 @@ const landingMenus = [
       { label: 'SMPP Messaging', to: '/#services' },
       { label: 'WhatsApp Messaging', to: '/#services' },
       { label: 'RCS Messaging', to: '/#services' },
+      { label: 'Omni Channel Messaging', to: '/#services' },
       { label: 'Mail Validations', to: '/#services' }
     ],
   },
@@ -40,9 +41,10 @@ const landingMenus = [
     key: 'solutions',
     label: 'Solutions',
     items: [
-      { label: 'Customer Engagement', to: '/#why' },
-      { label: 'Notifications', to: '/#services' },
-      { label: 'Support Workflows', to: '/contact-support' },
+      { label: 'Business Segments', to: '/#solutions' },
+      { label: 'Industry Verticals', to: '/#solutions' },
+      { label: 'Department Use Cases', to: '/#solutions' },
+      { label: 'Current and Future Services', to: '/#solutions' },
     ],  
   },
   
@@ -212,9 +214,6 @@ function App() {
       <div className="bhisha-header-shell" onMouseLeave={closeMenu}>
         <div className="bhisha-utility-bar">
           <div className="bhisha-utility-actions">
-            <Link to="/signup" className="bhisha-utility-signup" onClick={closeMenu}>
-              Sign up
-            </Link>
             <Link to="/login" className="bhisha-utility-login" onClick={closeMenu}>
               Login
             </Link>
@@ -267,9 +266,6 @@ function App() {
               <button type="button" className="bhisha-search-btn" aria-label="Search">
                 <FaSearch />
               </button>
-              <Link to="/signup" className="bhisha-btn bhisha-btn-ghost" onClick={closeMenu}>
-                Try for free
-              </Link>
               <Link to="/contact-support" className="bhisha-btn bhisha-btn-outline" onClick={closeMenu}>
                 Contact us
               </Link>

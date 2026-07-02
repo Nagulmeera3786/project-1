@@ -953,6 +953,8 @@ def _to_client_validation_result(item):
     status_text = str(item.get('status') or 'Validation completed.').strip() or 'Validation completed.'
     status_code = str(item.get('statusCode') or item.get('status_code') or 'Success').strip() or 'Success'
 
+    bhisha_result = _build_bhisha_api_validation_result(item)
+
     return {
         'email': entered_email,
         'validMailbox': _normalize_optional_bool(item.get('validMailbox')),
@@ -969,6 +971,7 @@ def _to_client_validation_result(item):
         'statusCode': status_code,
         'summary': str(item.get('summary') or '').strip(),
         'report': str(item.get('report') or '').strip(),
+        'bhisha_result': bhisha_result,
     }
 
 
@@ -1861,7 +1864,7 @@ def _build_bhisha_api_validation_result(item):
     )
     disposable = bool(item.get('disposable'))
 
-    return {
+    result = {
         'email': str(item.get('email') or '').strip().lower(),
         'valid_inbox': valid_inbox,
         'valid_syntax': valid_syntax,
@@ -1872,6 +1875,38 @@ def _build_bhisha_api_validation_result(item):
         'raw_status_details': _build_bhisha_raw_status_details(item),
         'is_free_domain': _is_free_email_domain(item.get('email'), disposable=disposable),
     }
+
+    result['result_profile'] = _build_bhisha_result_profile(result)
+    return result
+
+
+def _build_bhisha_result_profile(result):
+    if not isinstance(result, dict):
+        return ''
+
+    email = str(result.get('email') or '').strip().lower()
+    valid_inbox = bool(result.get('valid_inbox'))
+    valid_syntax = bool(result.get('valid_syntax'))
+    disposable = bool(result.get('disposable'))
+    role_based = bool(result.get('role_based'))
+    catch_all = bool(result.get('catch_all'))
+    risk_factors = str(result.get('risk_factors') or 'None Detected').strip() or 'None Detected'
+    raw_status_details = str(result.get('raw_status_details') or '').strip() or 'safe_to_mail'
+    is_free_domain = bool(result.get('is_free_domain'))
+
+    return '\n'.join([
+        f'Results Profile for: {email}',
+        '----------------------------------------',
+        f'Valid Inbox:    {str(valid_inbox)}',
+        f'Valid Syntax:   {str(valid_syntax)}',
+        f'Disposable:     {str(disposable)}',
+        f'Role Based:     {str(role_based)}',
+        f'Catch All:      {str(catch_all)}',
+        f'Risk Factors:   {risk_factors}',
+        '----------------------------------------',
+        f'Raw Status Details:  {raw_status_details}',
+        f'Is Free Domain?:     {str(is_free_domain)}',
+    ])
 
 
 def _get_history_summary(history):
@@ -4314,7 +4349,7 @@ class UserAPIKeyListCreateView(generics.GenericAPIView):
 
     def get(self, request):
         if _has_admin_access(request.user):
-            keys = UserAPIKey.objects.select_related('user').order_by('-created_at')
+            keys = UserAPIKey.objects.select_related('user').annotate(usage_count=Count('validations')).order_by('-created_at')
             return Response(AdminUserAPIKeySerializer(keys, many=True).data)
 
         keys = UserAPIKey.objects.filter(user=request.user).order_by('-created_at')

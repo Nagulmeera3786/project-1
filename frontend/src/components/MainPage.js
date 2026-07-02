@@ -73,6 +73,45 @@ const capabilityRows = [
   },
 ];
 
+const solutionsBoards = [
+  {
+    title: 'Business Segments',
+    items: [
+      { heading: 'B2B platforms', text: 'Enable client communication traffic at scale with shared campaign operations.' },
+      { heading: 'Digital natives', text: 'Launch product messaging quickly with SMS, OTP, and validation APIs.' },
+      { heading: 'Enterprise', text: 'Coordinate global communication workflows across multiple teams.' },
+      { heading: 'Wholesale', text: 'Expand high-volume messaging channels for partner-driven businesses.' },
+    ],
+  },
+  {
+    title: 'Industry Verticals',
+    items: [
+      { heading: 'Finance', text: 'Secure OTP and transactional messaging for regulated interactions.' },
+      { heading: 'Retail and eCommerce', text: 'Improve conversion with timely alerts and journey messaging.' },
+      { heading: 'Telecoms', text: 'Manage high-throughput customer journey communication.' },
+      { heading: 'Healthcare', text: 'Deliver appointment and patient notifications with verified contacts.' },
+      { heading: 'Transportation', text: 'Keep customers updated with dispatch, route, and delay notifications.' },
+      { heading: 'Government', text: 'Support citizen communication with dependable multi-channel delivery.' },
+    ],
+  },
+  {
+    title: 'Departments',
+    items: [
+      { heading: 'Marketing', text: 'Run omnichannel campaign automation and engagement journeys.' },
+      { heading: 'Sales', text: 'Automate lead and follow-up notifications from one dashboard.' },
+      { heading: 'Customer service', text: 'Provide channel-ready support messaging with tracking visibility.' },
+    ],
+  },
+  {
+    title: 'Our Services',
+    items: [
+      { heading: 'Now: SMS and OTP', text: 'Production-ready messaging and verification workflows.' },
+      { heading: 'Now: Email validation', text: 'Use Verifalia-backed checks to keep customer data clean.' },
+      { heading: 'Next: Omnichannel orchestration', text: 'Grow into WhatsApp and journey-led automation modules.' },
+    ],
+  },
+];
+
 const footerColumns = [
   {
     title: 'Business',
@@ -188,6 +227,32 @@ export default function MainPage() {
                   <li key={item}>{item}</li>
                 ))}
               </ul>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="landing-section landing-solutions-board" id="solutions">
+        <div className="landing-section-heading">
+          <span className="landing-section-kicker">Solutions</span>
+          <h2>Where you can use Bhisha now and in the future</h2>
+          <p>
+            This view maps the most relevant business segments, departments, and service directions for the Bhisha application.
+          </p>
+        </div>
+
+        <div className="landing-solutions-grid">
+          {solutionsBoards.map((board) => (
+            <article key={board.title} className="landing-solutions-column">
+              <span className="landing-solutions-pill">{board.title}</span>
+              <div className="landing-solutions-list">
+                {board.items.map((item) => (
+                  <div key={`${board.title}-${item.heading}`} className="landing-solutions-item">
+                    <strong>{item.heading}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                ))}
+              </div>
             </article>
           ))}
         </div>

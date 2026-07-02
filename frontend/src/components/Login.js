@@ -28,7 +28,6 @@ const isTransientLoginError = (err) => {
 };
 
 export default function Login() {
-  const [loginMode, setLoginMode] = useState('user');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -62,7 +61,7 @@ export default function Login() {
     }
 
     try {
-      const endpoint = loginMode === 'employee' ? 'employee/login/' : 'login/';
+      const endpoint = 'login/';
       let res;
 
       try {
@@ -78,7 +77,7 @@ export default function Login() {
         res = await API.post(endpoint, { email, password });
       }
 
-      if (loginMode !== 'employee' && res.data?.requires_otp_login) {
+      if (res.data?.requires_otp_login) {
         const emailForVerify = res.data?.email || email;
         nav(`/verify-otp?email=${encodeURIComponent(emailForVerify)}`, {
           state: {
@@ -97,7 +96,7 @@ export default function Login() {
       // Use window.location to force refresh and update isLoggedIn state
       window.location.href = '/dashboard';
     } catch (err) {
-      const requiresOtp = loginMode !== 'employee' && Boolean(err.response?.data?.requires_otp_verification);
+      const requiresOtp = Boolean(err.response?.data?.requires_otp_verification);
       if (requiresOtp) {
         const emailForVerify = err.response?.data?.email || email;
         nav(`/verify-otp?email=${encodeURIComponent(emailForVerify)}`, {
@@ -147,30 +146,22 @@ export default function Login() {
         boxShadow: '0 24px 64px rgba(26,14,78,0.35)',
       }}>
         {/* Logo / Brand */}
-                <div style={{ marginBottom: '14px', display: 'flex', gap: '8px' }}>
-                  {[
-                    { key: 'user', label: 'User Login' },
-                    { key: 'employee', label: 'Employee Login' },
-                  ].map((item) => (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => setLoginMode(item.key)}
-                      style={{
-                        flex: 1,
-                        padding: '9px 10px',
-                        borderRadius: '8px',
-                        border: loginMode === item.key ? '1px solid #7C5DC7' : '1px solid #DDD4F8',
-                        background: loginMode === item.key ? '#F5F2FF' : '#fff',
-                        color: loginMode === item.key ? '#4C3A92' : '#6B6B8A',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
+        <div style={{ marginBottom: '14px', display: 'flex', gap: '8px' }}>
+          <div
+            style={{
+              width: '100%',
+              padding: '9px 10px',
+              borderRadius: '8px',
+              border: '1px solid #7C5DC7',
+              background: '#F5F2FF',
+              color: '#4C3A92',
+              fontWeight: 700,
+              textAlign: 'center',
+            }}
+          >
+            User Login
+          </div>
+        </div>
 
         <div style={{ textAlign: 'center', marginBottom: '28px' }}>
           <div style={{
@@ -272,28 +263,22 @@ export default function Login() {
             transition: 'opacity 0.2s',
           }}
         >
-          {loading ? 'Signing in...' : (loginMode === 'employee' ? 'Employee Sign In' : 'Sign In')}
+          {loading ? 'Signing in...' : 'Sign In'}
         </button>
 
         <p style={{ marginTop: '16px', textAlign: 'center', color: '#6B6B8A', fontSize: '13.5px' }}>
           Forgot password? <Link to="/forgot-password" style={{ color: '#5B3FA8', textDecoration: 'none', fontWeight: '600' }}>Reset here</Link>
         </p>
 
-        {loginMode !== 'employee' && (
-          <p style={{ marginTop: '10px', textAlign: 'center', color: '#6B6B8A', fontSize: '13.5px' }}>
-            Not verified yet?{' '}
-            <Link
-              to={email ? `/verify-otp?email=${encodeURIComponent(email)}` : '/signup'}
-              state={email ? { email, fromLogin: true } : undefined}
-              style={{ color: '#5B3FA8', textDecoration: 'none', fontWeight: '600' }}
-            >
-              Verify with OTP
-            </Link>
-          </p>
-        )}
-
         <p style={{ marginTop: '10px', textAlign: 'center', color: '#6B6B8A', fontSize: '13.5px' }}>
-          Don't have an account? <Link to="/signup" style={{ color: '#5B3FA8', textDecoration: 'none', fontWeight: '600' }}>Sign up</Link>
+          Not verified yet?{' '}
+          <Link
+            to={email ? `/verify-otp?email=${encodeURIComponent(email)}` : '/verify-otp'}
+            state={email ? { email, fromLogin: true } : undefined}
+            style={{ color: '#5B3FA8', textDecoration: 'none', fontWeight: '600' }}
+          >
+            Verify with OTP
+          </Link>
         </p>
       </div>
     </div>

@@ -4,19 +4,14 @@ import {
   FaHome,
   FaBook,
   FaBroadcastTower,
-  FaCommentDots,
-  FaRobot,
-  FaChartBar,
   FaUsers,
   FaFileAlt,
-  FaExchangeAlt,
   FaEnvelope,
   FaCog,
   FaKey,
   FaWhatsapp,
   FaPhoneAlt,
   FaMoneyBillWave,
-  FaCreditCard,
   FaWallet,
   FaChartLine,
 
@@ -31,6 +26,7 @@ const LeftSidebar = () => {
   const [showBroadcastSubmenu, setShowBroadcastSubmenu] = useState(false);
   const [showPeopleSubmenu, setShowPeopleSubmenu] = useState(false);
   const [showUtilitiesSubmenu, setShowUtilitiesSubmenu] = useState(false);
+  const [sidebarNotice, setSidebarNotice] = useState('');
   const [groups, setGroups] = useState([]);
   const navigate = useNavigate();
   const location = useLocation();
@@ -56,17 +52,14 @@ const LeftSidebar = () => {
 
   const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/');
 
+  const showRechargeNotice = () => {
+    setSidebarNotice('please contact you supporter/admin for recharging your account');
+  };
+
   const adminBaseMenuItems = [
     { icon: <FaHome />, label: "Home", path: '/dashboard', action: () => navigate('/dashboard') },
-    { icon: <FaBroadcastTower />, label: "Channels", path: null, action: null },
     { icon: <FaBroadcastTower />, label: "Broadcast", path: null, action: () => setShowBroadcastSubmenu((prev) => !prev) },
-    { icon: <FaCommentDots />, label: "Conversations", path: null, action: null },
-    { icon: <FaRobot />, label: "Chatbots", path: null, action: null },
-    { icon: <FaChartBar />, label: "Analyze", path: null, action: null },
     { icon: <FaUsers />, label: "People", path: null, action: () => setShowPeopleSubmenu((prev) => !prev) },
-    { icon: <FaFileAlt />, label: "Content", path: null, action: null },
-    { icon: <FaExchangeAlt />, label: "Exchange", path: null, action: null },
-    { icon: <FaKey />, label: "API Keys", path: null, action: null },
     { icon: <FaChartLine />, label: "Reports", path: '/reports', action: () => navigate('/reports') },
     { icon: <FaMoneyBillWave />, label: "Utilities", path: null, action: () => setShowUtilitiesSubmenu((prev) => !prev) },
     { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
@@ -87,7 +80,6 @@ const LeftSidebar = () => {
     { icon: <FaHome />, label: "Support Home", path: '/dashboard', action: () => navigate('/dashboard') },
     { icon: <FaUsers />, label: "Users", path: '/admin/users', action: () => navigate('/admin/users') },
     { icon: <FaChartLine />, label: "Reports", path: '/reports', action: () => navigate('/reports') },
-    { icon: <FaKey />, label: "API Keys", path: '/broadcast/email-validation?tab=keys', action: () => navigate('/broadcast/email-validation?tab=keys') },
     { icon: <FaWallet />, label: "Wallet & Credits", path: '/broadcast/email-validation', action: () => navigate('/broadcast/email-validation') },
     { icon: <FaPhoneAlt />, label: "Notifications", path: '/admin/notifications', action: () => navigate('/admin/notifications') },
   ];
@@ -113,11 +105,7 @@ const LeftSidebar = () => {
   ];
 
   const utilitiesSubMenuItems = [
-    { icon: <FaChartLine />, label: 'Reports', path: '/reports', action: () => navigate('/reports') },
-    { icon: <FaKey />, label: 'API Keys', path: '/broadcast/email-validation?tab=keys', action: () => navigate('/broadcast/email-validation?tab=keys') },
-    { icon: <FaCreditCard />, label: 'Credit Details', path: '/dashboard/recharge?tab=credit-details', action: () => navigate('/dashboard/recharge?tab=credit-details') },
-    { icon: <FaWallet />, label: 'Recharge Account', path: '/dashboard/recharge?tab=recharge', action: () => navigate('/dashboard/recharge?tab=recharge') },
-    { icon: <FaMoneyBillWave />, label: 'Payment Details', path: '/dashboard/recharge?tab=payment-details', action: () => navigate('/dashboard/recharge?tab=payment-details') },
+    { icon: <FaWallet />, label: 'Recharge Account', path: null, action: showRechargeNotice },
   ];
 
   const adminSMSMenuItems = [
@@ -171,6 +159,12 @@ const LeftSidebar = () => {
       </div>
 
       <div className="menu">
+        {isOpen && sidebarNotice && (
+          <div style={{ margin: '8px 10px 10px', padding: '10px', borderRadius: '8px', background: 'rgba(255, 255, 255, 0.12)', color: '#f8fafc', fontSize: '12px', lineHeight: 1.5 }}>
+            {sidebarNotice}
+          </div>
+        )}
+
         {/* Base Menu Items */}
         {baseMenuItems.map((item, index) => (
           <React.Fragment key={`base-${index}`}>
@@ -225,7 +219,12 @@ const LeftSidebar = () => {
             {isOpen && item.label === 'Utilities' && showUtilitiesSubmenu && (
               <div style={{ marginLeft: '12px', marginBottom: '4px' }}>
                 {utilitiesSubMenuItems.map((subItem, subIndex) => {
-                  const activeSubItem = subItem.path && location.pathname === '/dashboard/recharge' && location.search.includes(subItem.path.split('?')[1]);
+                  const activeSubItem = Boolean(
+                    subItem.path
+                    && location.pathname === '/dashboard/recharge'
+                    && subItem.path.includes('?')
+                    && location.search.includes(subItem.path.split('?')[1])
+                  );
                   return (
                     <div
                       key={`utilities-sub-${subIndex}`}

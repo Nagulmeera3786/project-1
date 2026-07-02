@@ -425,6 +425,9 @@ class UserAPIKeySerializer(serializers.ModelSerializer):
 class AdminUserAPIKeySerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source='user.id', read_only=True)
     user_email = serializers.CharField(source='user.email', read_only=True)
+    created_by = serializers.CharField(source='user.email', read_only=True)
+    used_by = serializers.SerializerMethodField()
+    usage_count = serializers.SerializerMethodField()
     masked_key = serializers.SerializerMethodField()
 
     def get_masked_key(self, obj):
@@ -433,11 +436,22 @@ class AdminUserAPIKeySerializer(serializers.ModelSerializer):
             return key
         return f"{key[:6]}...{key[-6:]}"
 
+    def get_used_by(self, obj):
+        if getattr(obj, 'last_used_at', None):
+            return str(getattr(obj.user, 'email', '') or '')
+        return ''
+
+    def get_usage_count(self, obj):
+        annotated_count = getattr(obj, 'usage_count', None)
+        if annotated_count is not None:
+            return int(annotated_count)
+        return int(obj.validations.count())
+
     class Meta:
         model = UserAPIKey
         fields = [
-            'id', 'user_id', 'user_email', 'name', 'masked_key',
-            'is_active', 'created_at', 'last_used_at'
+            'id', 'user_id', 'user_email', 'created_by', 'used_by', 'usage_count',
+            'name', 'masked_key', 'is_active', 'created_at', 'last_used_at'
         ]
         read_only_fields = fields
 

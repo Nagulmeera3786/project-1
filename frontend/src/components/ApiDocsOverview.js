@@ -350,14 +350,15 @@ const compactApiResponseExample = `{
   "results": [
     {
       "email": "user@example.com",
-      "valid_inbox": true,
+      "valid_inbox": false,
       "valid_syntax": true,
-      "disposable": false,
+      "disposable": true,
       "role_based": false,
       "catch_all": false,
       "risk_factors": "None Detected",
-      "raw_status_details": "safe_to_mail",
-      "is_free_domain": true
+      "raw_status_details": "do_not_mail (disposable)",
+      "is_free_domain": true,
+      "result_profile": "Results Profile for: user@example.com\\n----------------------------------------\\nValid Inbox:    False\\nValid Syntax:   True\\nDisposable:     True\\nRole Based:     False\\nCatch All:      False\\nRisk Factors:   None Detected\\n----------------------------------------\\nRaw Status Details:  do_not_mail (disposable)\\nIs Free Domain?:     True"
     }
   ]
 }`;

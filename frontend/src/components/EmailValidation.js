@@ -199,8 +199,11 @@ export default function EmailValidation() {
     }
     if (activeTab === 'admin') {
       fetchAdminData();
+      if (isAdmin) {
+        fetchApiKeys();
+      }
     }
-  }, [activeTab, canViewSupportData]);
+  }, [activeTab, canViewSupportData, isAdmin]);
 
   useEffect(() => {
     if (!loading) {
@@ -718,30 +721,38 @@ export default function EmailValidation() {
   }, [summary]);
 
   const formatLiveResult = (row) => {
-    const sanitizeUnknownInResultText = (text) => String(text || '').replace(/\bunknown\b/gi, 'Undeliverable');
-
-    const normalizedClassification = (() => {
-      const raw = String(row?.classification || '').trim();
-      if (!raw || raw.toLowerCase() === 'unknown') {
-        return 'Undeliverable';
-      }
-      return raw;
-    })();
-
-    if (row?.summary) {
-      return sanitizeUnknownInResultText(row.summary);
+    const profile = row?.bhisha_result?.result_profile;
+    if (profile) {
+      return profile;
     }
 
+    const validSyntax = Boolean(row?.validSyntax);
+    const disposable = Boolean(row?.disposable);
+    const roleBased = Boolean(row?.roleBased);
+    const catchAll = Boolean(row?.catchAll);
+    const validInbox = Boolean(row?.validMailbox && validSyntax && !disposable && !roleBased);
+    const rawStatus = disposable
+      ? 'do_not_mail (disposable)'
+      : roleBased
+        ? 'do_not_mail (role_based)'
+        : catchAll
+          ? 'risky (catch_all)'
+          : validSyntax
+            ? 'safe_to_mail'
+            : 'invalid (syntax)';
+
     return [
-      '#### Validation summary',
-      `Input data:**${row?.email || '-'}**`,
-      '',
-      `Classification:${normalizedClassification}`,
-      '',
-      '---',
-      `Status:${row?.status || 'Validation completed.'}`,
-      '',
-      `Status code:${row?.statusCode || 'Success'}`,
+      `Results Profile for: ${String(row?.email || '').trim().toLowerCase()}`,
+      '----------------------------------------',
+      `Valid Inbox:    ${String(validInbox)}`,
+      `Valid Syntax:   ${String(validSyntax)}`,
+      `Disposable:     ${String(disposable)}`,
+      `Role Based:     ${String(roleBased)}`,
+      `Catch All:      ${String(catchAll)}`,
+      'Risk Factors:   None Detected',
+      '----------------------------------------',
+      `Raw Status Details:  ${rawStatus}`,
+      `Is Free Domain?:     ${String(Boolean(row?.email && String(row.email).includes('@')) || disposable)}`,
     ].join('\n');
   };
 
@@ -759,36 +770,16 @@ export default function EmailValidation() {
     return { color: '#991b1b', background: '#fee2e2', border: '#fca5a5' };
   };
 
-  const getRiskFactorValue = (row) => {
-    const classification = String(row?.classification || '').trim().toLowerCase();
-
-    if (classification === 'deliverable') {
-      return 'Low';
-    }
-
-    if (classification === 'undeliverable') {
-      return 'High';
-    }
-
-    return 'High';
-  };
-
-  const getRiskStyles = (riskFactorValue) => {
-    if (riskFactorValue === 'Low') {
-      return { color: '#166534', background: '#dcfce7', border: '#86efac' };
-    }
-    return { color: '#991b1b', background: '#fee2e2', border: '#fca5a5' };
-  };
-
   const factorCards = (row) => {
+    const bhisha = row?.bhisha_result || {};
     const factors = [
-      { label: 'ValidMailbox', type: 'bool', value: row?.validMailbox },
-      { label: 'ValidSyntax', type: 'bool', value: row?.validSyntax },
-      { label: 'catchAll', type: 'bool', value: row?.catchAll },
-      { label: 'didYouMean', type: 'text', value: row?.didYouMean || row?.email || '-' },
-      { label: 'disposable', type: 'bool', value: row?.disposable },
-      { label: 'roleBased', type: 'bool', value: row?.roleBased },
-      { label: 'Risk', type: 'risk', value: getRiskFactorValue(row) },
+      { label: 'Valid Inbox', type: 'bool', value: bhisha.valid_inbox ?? row?.validMailbox },
+      { label: 'Valid Syntax', type: 'bool', value: bhisha.valid_syntax ?? row?.validSyntax },
+      { label: 'Catch All', type: 'bool', value: bhisha.catch_all ?? row?.catchAll },
+      { label: 'Disposable', type: 'bool', value: bhisha.disposable ?? row?.disposable },
+      { label: 'Role Based', type: 'bool', value: bhisha.role_based ?? row?.roleBased },
+      { label: 'Risk Factors', type: 'text', value: bhisha.risk_factors || 'None Detected' },
+      { label: 'Raw Status', type: 'text', value: bhisha.raw_status_details || row?.statusCode || 'safe_to_mail' },
     ];
 
     return (
@@ -796,9 +787,7 @@ export default function EmailValidation() {
         {factors.map((factor) => {
           const style = factor.type === 'bool'
             ? getBoolStyles(factor.value)
-            : factor.type === 'risk'
-              ? getRiskStyles(factor.value)
-              : { color: '#1f2937', background: '#eef2ff', border: '#c7d2fe' };
+            : { color: '#1f2937', background: '#eef2ff', border: '#c7d2fe' };
 
           const displayValue = factor.type === 'bool'
             ? formatBoolValue(factor.value)
@@ -1063,6 +1052,11 @@ export default function EmailValidation() {
                       <div>
                         <div style={{ fontWeight: 700 }}>{item.name}</div>
                         <div style={{ fontSize: '12px', color: '#6b7280' }}>{item.key}</div>
+                        {isAdmin && (
+                          <div style={{ fontSize: '12px', color: '#374151', marginTop: '4px' }}>
+                            Created by: {item.created_by || item.user_email || '-'} · Used by: {item.used_by || '-'} · Usage: {item.usage_count ?? 0}
+                          </div>
+                        )}
                       </div>
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <button onClick={() => toggleApiKeyStatus(item)} style={{ border: '1px solid #d1d5db', background: '#fff', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer' }}>
@@ -1195,6 +1189,23 @@ export default function EmailValidation() {
                     Add Credits
                   </button>
                 </div>
+              </div>
+            )}
+
+            <h3 style={{ marginTop: '16px', marginBottom: '10px' }}>API Keys (Admin Visibility)</h3>
+            {apiKeys.length === 0 ? (
+              <div style={{ color: '#6b7280', marginBottom: '10px' }}>No API keys found.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: '8px', marginBottom: '14px' }}>
+                {apiKeys.map((item) => (
+                  <div key={`admin-key-${item.id}`} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
+                    <div style={{ fontWeight: 700, color: '#111827' }}>{item.name}</div>
+                    <div style={{ fontSize: '12px', color: '#475569' }}>Key: {item.masked_key || item.key || '-'}</div>
+                    <div style={{ fontSize: '12px', color: '#1f2937' }}>Created by: {item.created_by || item.user_email || '-'}</div>
+                    <div style={{ fontSize: '12px', color: '#1f2937' }}>Used by: {item.used_by || '-'}</div>
+                    <div style={{ fontSize: '12px', color: '#1f2937' }}>Usage Count: {item.usage_count ?? 0}</div>
+                  </div>
+                ))}
               </div>
             )}
 
