@@ -1,0 +1,11 @@
+{
+  "name": "project-root",
+  "private": true,
+  "scripts": {
+    "start": "npm --prefix frontend start",
+    "start:lan": "npm --prefix frontend run start:lan",
+    "build": "npm --prefix frontend run build",
+    "test": "npm --prefix frontend test",
+    "install:frontend": "npm --prefix frontend install"
+  }
+}

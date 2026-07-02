@@ -1,93 +1,295 @@
 import { Link } from 'react-router-dom';
+import {
+  FaArrowRight,
+  FaChartLine,
+  FaCheckCircle,
+  FaEnvelope,
+  FaFacebookF,
+  FaHeadset,
+  FaInstagram,
+  FaPaperPlane,
+  FaLinkedinIn,
+  FaYoutube,
+  FaShieldAlt,
+  FaSms,
+  FaWhatsapp,
+} from 'react-icons/fa';
+
+const services = [
+  {
+    icon: <FaSms />,
+    title: 'Bulk SMS campaigns',
+    description: 'Send transactional and promotional SMS at scale with clear delivery-focused workflows.',
+  },
+  {
+    icon: <FaShieldAlt />,
+    title: 'OTP and verification',
+    description: 'Secure sign-up and login journeys with fast OTP delivery and account verification.',
+  },
+  {
+    icon: <FaWhatsapp />,
+    title: 'WhatsApp messaging',
+    description: 'Reach customers on WhatsApp for alerts, follow-ups, reminders, and conversational support.',
+  },
+  {
+    icon: <FaEnvelope />,
+    title: 'Email validation',
+    description: 'Keep your contact lists clean and improve campaign quality with email validation tools.',
+  },
+  {
+    icon: <FaChartLine />,
+    title: 'Tracking and reporting',
+    description: 'Monitor message performance, campaign activity, and operational trends from one place.',
+  },
+  {
+    icon: <FaHeadset />,
+    title: 'Campaign orchestration',
+    description: 'Coordinate journeys, routing, and channel activity from a single control layer.',
+  },
+];
+
+const highlights = [
+  'Fast onboarding for communication teams',
+  'Single dashboard for messaging and customer journeys',
+  'Built for operations, growth, and delivery scale',
+];
+
+const capabilityRows = [
+  {
+    title: 'Messaging',
+    items: ['SMS campaigns', 'WhatsApp alerts', 'Notifications'],
+  },
+  {
+    title: 'Security',
+    items: ['OTP verification', 'Login protection', 'Account checks'],
+  },
+  {
+    title: 'Data quality',
+    items: ['Email validation', 'List hygiene', 'Quality checks'],
+  },
+  {
+    title: 'Insight',
+    items: ['Tracking', 'Reporting', 'Delivery visibility'],
+  },
+];
+
+const footerColumns = [
+  {
+    title: 'Business',
+    items: ['SMS Messaging', 'OTP Verification', 'WhatsApp Messaging', 'Email Validation', 'Tracking'],
+  },
+  {
+    title: 'Solutions',
+    items: ['Customer journeys', 'Notifications', 'Campaign automation', 'Reporting', 'Integrations'],
+  },
+  {
+    title: 'Company',
+    items: ['About Bhisha', 'Pricing', 'API Docs', 'Login', 'Try for free'],
+  },
+  {
+    title: 'Support',
+    items: ['Support center', 'Contact us', 'Service status', 'External connectivity status', 'Startups'],
+  },
+];
+
+const footerLinkTo = (item) => {
+  if (item === 'Contact us' || item === 'Support center' || item === 'Service status' || item === 'External connectivity status') {
+    return '/contact-support';
+  }
+
+  if (item === 'API Docs') {
+    return '/api-docs';
+  }
+
+  if (item === 'Login') {
+    return '/login';
+  }
+
+  if (item === 'Try for free' || item === 'Pricing') {
+    return '/signup';
+  }
+
+  return '/#services';
+};
 
 export default function MainPage() {
   return (
-    <div style={{
-      minHeight: 'calc(100vh - 64px)',
-      background: 'linear-gradient(135deg, #1A0E4E 0%, #3D2B82 50%, #5B3FA8 100%)',
-      display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      padding: '60px 24px', textAlign: 'center',
-      fontFamily: "'Poppins', 'Segoe UI', sans-serif",
-    }}>
-      {/* Hero badge */}
-      <div style={{
-        display: 'inline-flex', alignItems: 'center', gap: '8px',
-        background: 'rgba(255,255,255,0.12)', backdropFilter: 'blur(8px)',
-        borderRadius: '100px', padding: '6px 18px', marginBottom: '32px',
-        border: '1px solid rgba(255,255,255,0.2)',
-      }}>
-        <div style={{
-          width: '8px', height: '8px', borderRadius: '50%',
-          background: '#A78BFA', boxShadow: '0 0 8px #A78BFA',
-        }} />
-        <span style={{ color: 'rgba(255,255,255,0.9)', fontSize: '13px', fontWeight: '500' }}>
-          Trusted by professionals worldwide
-        </span>
-      </div>
+    <div className="landing-page">
+      <section className="landing-hero" id="home">
+        <div className="landing-hero-copy">
+          <div className="landing-badge">
+            <span className="landing-badge-dot" />
+            Bhisha communications platform
+          </div>
 
-      {/* Main heading */}
-      <h1 style={{
-        margin: '0 0 16px', fontSize: 'clamp(32px, 6vw, 62px)',
-        fontWeight: '800', color: 'white', lineHeight: 1.15,
-        maxWidth: '760px',
-      }}>
-        Hey, you're at the <span style={{
-          background: 'linear-gradient(90deg, #A78BFA, #60A5FA)',
-          WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-        }}>right place</span> 👋
-      </h1>
+          <h1 className="landing-title">
+            A polished messaging platform built for fast customer communication.
+          </h1>
 
-      {/* Subheading */}
-      <p style={{
-        margin: '0 0 48px', fontSize: 'clamp(15px, 2.5vw, 20px)',
-        color: 'rgba(255,255,255,0.72)', lineHeight: 1.65,
-        maxWidth: '600px', fontStyle: 'italic',
-      }}>
-        Join a growing community of professionals collaborating across the globe.
-        Communicate smarter, reach further.
-      </p>
+          <p className="landing-subtitle">
+            Bhisha helps teams deliver SMS, OTP, WhatsApp, email validation, notifications, and campaign orchestration from one clear dashboard.
+            The experience is designed to feel enterprise-ready, easy to trust, and easy to use.
+          </p>
 
-      {/* CTA buttons */}
-      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center' }}>
-        <Link to="/signup" style={{
-          padding: '14px 36px', borderRadius: '12px',
-          background: 'white', color: '#3D2B82',
-          fontWeight: '700', fontSize: '15px', textDecoration: 'none',
-          boxShadow: '0 6px 24px rgba(0,0,0,0.25)',
-          transition: 'transform 0.15s',
-        }}
-          onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'}
-          onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
-        >Get Started — It's Free</Link>
+          <div className="landing-actions">
+            <Link to="/signup" className="landing-primary-action">
+              Get started
+              <FaArrowRight />
+            </Link>
+            <a href="#services" className="landing-secondary-action">
+              Explore services
+            </a>
+            <Link to="/api-docs" className="landing-secondary-action landing-secondary-action-quiet">
+              View APIs
+            </Link>
+          </div>
 
-        <Link to="/dashboard" style={{
-          padding: '14px 36px', borderRadius: '12px',
-          background: 'rgba(255,255,255,0.14)',
-          backdropFilter: 'blur(8px)',
-          border: '1.5px solid rgba(255,255,255,0.3)',
-          color: 'white', fontWeight: '600', fontSize: '15px',
-          textDecoration: 'none', transition: 'transform 0.15s',
-        }}
-          onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'}
-          onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
-        >Go to Dashboard →</Link>
-      </div>
+          <div className="landing-highlights">
+            {highlights.map((item) => (
+              <div key={item} className="landing-highlight-chip">
+                <FaCheckCircle />
+                <span>{item}</span>
+              </div>
+            ))}
+          </div>
+        </div>
 
-      {/* Feature pills */}
-      <div style={{
-        display: 'flex', gap: '12px', flexWrap: 'wrap',
-        justifyContent: 'center', marginTop: '64px',
-      }}>
-        {['📨 Bulk SMS', '🔐 Secure Auth', '📊 Analytics', '🌍 Global Reach'].map(feat => (
-          <div key={feat} style={{
-            background: 'rgba(255,255,255,0.10)', backdropFilter: 'blur(6px)',
-            border: '1px solid rgba(255,255,255,0.18)', borderRadius: '100px',
-            padding: '8px 20px', color: 'rgba(255,255,255,0.85)',
-            fontSize: '13px', fontWeight: '500',
-          }}>{feat}</div>
-        ))}
-      </div>
+        <div className="landing-hero-panel" aria-label="Bhisha platform overview">
+          <div className="landing-panel-topline">One platform for growth and operations</div>
+          <div className="landing-panel-card landing-panel-card-primary">
+            <span className="landing-panel-label">Core capability</span>
+            <strong>Send, verify, engage, and manage customer communication in one workflow.</strong>
+            <p>
+              From first verification to ongoing notifications, Bhisha gives your team a clean operating layer for communication.
+            </p>
+          </div>
+          <div className="landing-panel-grid">
+            <div className="landing-panel-card">
+              <FaPaperPlane />
+              <strong>Delivery focused</strong>
+              <span>Run dependable SMS and WhatsApp communication.</span>
+            </div>
+            <div className="landing-panel-card">
+              <FaShieldAlt />
+              <strong>Secure flows</strong>
+              <span>Support OTP and verification journeys with confidence.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section landing-capability-section">
+        <div className="landing-capability-grid">
+          {capabilityRows.map((capability) => (
+            <article key={capability.title} className="landing-capability-card">
+              <span className="landing-section-kicker">{capability.title}</span>
+              <ul>
+                {capability.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="landing-section" id="services">
+        <div className="landing-section-heading">
+          <span className="landing-section-kicker">Services</span>
+          <h2>What Bhisha does</h2>
+          <p>
+            The landing page should make it clear what the platform offers, so this section highlights the actual services available in Bhisha.
+          </p>
+        </div>
+
+        <div className="landing-service-grid">
+          {services.map((service) => (
+            <article key={service.title} className="landing-service-card">
+              <div className="landing-service-icon">{service.icon}</div>
+              <h3>{service.title}</h3>
+              <p>{service.description}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="landing-section landing-section-split" id="why">
+        <div className="landing-section-heading landing-section-heading-compact">
+          <span className="landing-section-kicker">Why Bhisha</span>
+          <h2>A cleaner story for teams that need to communicate at scale</h2>
+          <p>
+            Bhisha is positioned as a practical communications platform for marketing, operations, and customer-facing teams.
+          </p>
+        </div>
+
+        <div className="landing-value-grid">
+          <div className="landing-value-card">
+            <strong>Unified operations</strong>
+            <p>Manage messaging, verification, notifications, and analytics without switching tools.</p>
+          </div>
+          <div className="landing-value-card">
+            <strong>Professional presentation</strong>
+            <p>A modern layout, clean visual hierarchy, and stronger service messaging improve the first impression.</p>
+          </div>
+          <div className="landing-value-card">
+            <strong>Built for scale</strong>
+            <p>Designed for teams that need reliable customer communication and predictable delivery.</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-footer-cta">
+        <div>
+          <span className="landing-section-kicker">Ready to start</span>
+          <h2>Bring Bhisha to your communication workflow</h2>
+          <p>
+            Bhisha now presents a clearer enterprise-style story with services, capabilities, and product value similar to the reference layout.
+          </p>
+        </div>
+        <div className="landing-actions landing-actions-footer">
+          <Link to="/signup" className="landing-primary-action">
+            Create account
+            <FaArrowRight />
+          </Link>
+          <Link to="/login" className="landing-secondary-action landing-secondary-action-light">
+            Sign in
+          </Link>
+        </div>
+      </section>
+
+      <section className="landing-footer-options">
+        <div className="landing-footer-options-brand">
+          <div className="landing-footer-brand-mark">B</div>
+          <div>
+            <strong>Bhisha</strong>
+            <p>Communication services, platform tools, and support access in one place.</p>
+          </div>
+        </div>
+
+        <div className="landing-footer-columns">
+          {footerColumns.map((column) => (
+            <div key={column.title} className="landing-footer-column">
+              <h3>{column.title}</h3>
+              <div className="landing-footer-links">
+                {column.items.map((item) => (
+                  <Link key={item} to={footerLinkTo(item)} className="landing-footer-link-btn">
+                    {item}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="landing-bottom-bar">
+        <div className="landing-bottom-copy">Copyright © 2020-2026 Bhisha Ltd.</div>
+        <div className="landing-bottom-links">
+          <a href="/" className="landing-bottom-link">Terms & Conditions</a>
+          <a href="/" className="landing-bottom-link">Privacy Notice</a>
+          <a href="/" className="landing-bottom-link">Terms of Use</a>
+        </div>
+      </section>
     </div>
   );
 }

@@ -21,6 +21,67 @@ import AdminNotifications from './components/AdminNotifications';
 import UserNotifications from './components/UserNotifications';
 import EmailValidation from './components/EmailValidation';
 import Reports from './components/Reports';
+import ContactSupportPage from './dashboard/ContactSupportPage';
+import { FaChevronDown, FaSearch } from 'react-icons/fa';
+
+const landingMenus = [
+  {
+    key: 'products',
+    label: 'Products',
+    items: [
+      { label: 'SMS Messaging', to: '/#services' },
+      { label: 'SMPP Messaging', to: '/#services' },
+      { label: 'WhatsApp Messaging', to: '/#services' },
+      { label: 'RCS Messaging', to: '/#services' },
+      { label: 'Mail Validations', to: '/#services' }
+    ],
+  },
+  {
+    key: 'solutions',
+    label: 'Solutions',
+    items: [
+      { label: 'Customer Engagement', to: '/#why' },
+      { label: 'Notifications', to: '/#services' },
+      { label: 'Support Workflows', to: '/contact-support' },
+    ],  
+  },
+  
+  {
+    key: 'partnerships',
+    label: 'Partnerships',
+    items: [
+      { label: 'Integrations', to: '/api-docs' },
+      { label: 'Reseller Program', to: '/signup' },
+      { label: 'Technology Partners', to: '/signup' },
+    ],
+  },
+  {
+    key: 'developers',
+    label: 'Developers',
+    items: [
+      { label: 'API Documentation', to: '/api-docs' },
+      { label: 'Integration Guides', to: '/api-docs' },
+      
+    ],
+  },
+  {
+    key: 'about us',
+    label: 'About Us',
+    items: [
+      { label: 'About Bhisha', to: '/' },
+      
+    ],
+  },
+  {
+    key: 'pricing',
+    label: 'Pricing',
+    items: [
+      { label: 'View plans', to: '/signup' },
+      { label: 'Try for free', to: '/signup' },
+      { label: 'Talk to sales', to: '/contact-support' },
+    ],
+  },
+];
 
 // dashboard components imported from the integrated Main_Panel
 import DashboardLayout from './dashboard/Layout';
@@ -34,6 +95,7 @@ function App() {
   const [isSupportUser, setIsSupportUser] = useState(false);
   const [loading, setLoading] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [openMenu, setOpenMenu] = useState(null);
 
   useEffect(() => {
     const storedTheme = localStorage.getItem('dashboardTheme');
@@ -108,6 +170,11 @@ function App() {
     return <div style={{ padding: '20px' }}>Loading...</div>;
   }
 
+  const isPublicRoute = !/^\/(dashboard|admin|sms|broadcast|reports|notifications|profile)/.test(window.location.pathname);
+
+  const closeMenu = () => setOpenMenu(null);
+  const toggleMenu = (menuKey) => setOpenMenu((current) => (current === menuKey ? null : menuKey));
+
   const wrapModule = (moduleName, element) => (
     <RouteErrorBoundary moduleName={moduleName}>{element}</RouteErrorBoundary>
   );
@@ -141,65 +208,78 @@ function App() {
 
   return (
     <BrowserRouter>
-      {!isLoggedIn && (
-      <nav style={{
-        position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 32px', height: '64px',
-        background: 'linear-gradient(90deg, #1A0E4E 0%, #2D1B69 60%, #3D2B82 100%)',
-        boxShadow: '0 2px 16px rgba(26,14,78,0.45)',
-      }}>
-        {/* Brand */}
-        <Link to="/" style={{ display: 'flex', alignItems: 'center', textDecoration: 'none' }}>
-          <span style={{ color: 'white', fontWeight: '700', fontSize: '17px', letterSpacing: '0.3px' }}>Bhisha</span>
-        </Link>
-
-        {/* Nav links — top right */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <Link to="/" style={{
-            color: 'rgba(255,255,255,0.85)', textDecoration: 'none',
-            padding: '7px 16px', borderRadius: '8px', fontSize: '14px', fontWeight: '500',
-            transition: 'background 0.2s',
-          }}
-            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
-            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-          >Home</Link>
-
-          {!isLoggedIn ? (
-            <>
-              <Link to="/signup" style={{
-                color: 'rgba(255,255,255,0.85)', textDecoration: 'none',
-                padding: '7px 16px', borderRadius: '8px', fontSize: '14px', fontWeight: '500',
-              }}
-                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-              >Sign Up</Link>
-              <Link to="/login" style={{
-                color: 'white', textDecoration: 'none',
-                padding: '7px 18px', borderRadius: '8px', fontSize: '14px', fontWeight: '600',
-                background: 'linear-gradient(135deg, #5B3FA8, #7C5DC7)',
-                boxShadow: '0 2px 10px rgba(91,63,168,0.45)',
-              }}
-                onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
-                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
-              >Login</Link>
-            </>
-          ) : (
-            <Link to="/dashboard" style={{
-              color: 'white', textDecoration: 'none',
-              padding: '7px 18px', borderRadius: '8px', fontSize: '14px', fontWeight: '600',
-              background: 'linear-gradient(135deg, #5B3FA8, #7C5DC7)',
-              boxShadow: '0 2px 10px rgba(91,63,168,0.45)',
-            }}
-              onMouseEnter={e => e.currentTarget.style.opacity = '0.9'}
-              onMouseLeave={e => e.currentTarget.style.opacity = '1'}
-            >Go to Dashboard</Link>
-          )}
+      {isPublicRoute && (
+      <div className="bhisha-header-shell" onMouseLeave={closeMenu}>
+        <div className="bhisha-utility-bar">
+          <div className="bhisha-utility-actions">
+            <Link to="/signup" className="bhisha-utility-signup" onClick={closeMenu}>
+              Sign up
+            </Link>
+            <Link to="/login" className="bhisha-utility-login" onClick={closeMenu}>
+              Login
+            </Link>
+          </div>
         </div>
-      </nav>
+
+        <nav className="bhisha-top-nav">
+          <div className="bhisha-top-nav-inner">
+            <Link to="/" className="bhisha-brand" onClick={closeMenu}>
+              <span className="bhisha-brand-mark">B</span>
+              <span className="bhisha-brand-text">Bhisha</span>
+            </Link>
+
+            <div className="bhisha-nav-menus">
+              {landingMenus.map((menu) => (
+                <div
+                  key={menu.key}
+                  className="bhisha-nav-item"
+                  onMouseEnter={() => setOpenMenu(menu.key)}
+                  onMouseLeave={() => setOpenMenu(null)}
+                >
+                  <button
+                    type="button"
+                    className="bhisha-nav-trigger"
+                    aria-expanded={openMenu === menu.key}
+                    onClick={() => toggleMenu(menu.key)}
+                  >
+                    <span>{menu.label}</span>
+                    <FaChevronDown />
+                  </button>
+
+                  <div className={`bhisha-dropdown ${openMenu === menu.key ? 'open' : ''}`}>
+                    {menu.items.map((item) => (
+                      item.to.startsWith('http') ? (
+                        <a key={item.label} href={item.to} className="bhisha-dropdown-link" onClick={closeMenu}>
+                          {item.label}
+                        </a>
+                      ) : (
+                        <Link key={item.label} to={item.to} className="bhisha-dropdown-link" onClick={closeMenu}>
+                          {item.label}
+                        </Link>
+                      )
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="bhisha-nav-actions">
+              <button type="button" className="bhisha-search-btn" aria-label="Search">
+                <FaSearch />
+              </button>
+              <Link to="/signup" className="bhisha-btn bhisha-btn-ghost" onClick={closeMenu}>
+                Try for free
+              </Link>
+              <Link to="/contact-support" className="bhisha-btn bhisha-btn-outline" onClick={closeMenu}>
+                Contact us
+              </Link>
+            </div>
+          </div>
+        </nav>
+      </div>
       )}
       {/* Spacer for fixed navbar */}
-      {!isLoggedIn && <div style={{ height: '64px' }} />}
+      {isPublicRoute && <div style={{ height: '144px' }} />}
       <Routes>
         <Route
           path="/signup"
@@ -239,6 +319,7 @@ function App() {
         <Route path="/broadcast/email-validation" element={privateRoute('Email Validation', <EmailValidation />)} />
         <Route path="/reports" element={privateRoute('Reports', <Reports />)} />
         <Route path="/notifications" element={privateRoute('User Notifications', <UserNotifications />)} />
+        <Route path="/contact-support" element={wrapModule('Contact Support', <ContactSupportPage />)} />
         
         <Route path="/" element={wrapModule('Home', <MainPage />)} />
       </Routes>
