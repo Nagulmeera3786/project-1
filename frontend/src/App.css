@@ -1846,7 +1846,7 @@ body.dark-theme .btn-purple:disabled {
 }
 
 .bhisha-header-shell {
-  position: fixed;
+  position: relative;
   top: 0;
   left: 0;
   right: 0;

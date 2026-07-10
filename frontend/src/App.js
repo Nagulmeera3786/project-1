@@ -214,6 +214,9 @@ function App() {
       <div className="bhisha-header-shell" onMouseLeave={closeMenu}>
         <div className="bhisha-utility-bar">
           <div className="bhisha-utility-actions">
+            <Link to="/signup" className="bhisha-utility-signup" onClick={closeMenu}>
+              Sign up
+            </Link>
             <Link to="/login" className="bhisha-utility-login" onClick={closeMenu}>
               Login
             </Link>
@@ -277,8 +280,6 @@ function App() {
         </nav>
       </div>
       )}
-      {/* Spacer for fixed navbar */}
-      {isPublicRoute && <div style={{ height: '144px' }} />}
       <Routes>
         <Route
           path="/signup"
