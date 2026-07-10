@@ -9,6 +9,8 @@ from django.db import IntegrityError
 from django.db import transaction
 from django.db import close_old_connections
 from django.db.models import Q, Count, F
+from django.core.mail import get_connection, EmailMessage
+from django.core.validators import validate_email
 from decimal import Decimal, InvalidOperation
 from django.http import HttpResponseRedirect, Http404
 from django.views import View
@@ -940,9 +942,10 @@ def _normalize_email_validation_flags(email, entry, quality_info):
 
 
 def _normalize_optional_bool(value):
-    if isinstance(value, bool):
-        return value
-    return False
+    parsed = _to_bool_or_none(value)
+    if parsed is None:
+        return False
+    return bool(parsed)
 
 
 def _to_client_validation_result(item):
@@ -952,18 +955,64 @@ def _to_client_validation_result(item):
     classification = str(item.get('classification') or 'Unknown').strip() or 'Unknown'
     status_text = str(item.get('status') or 'Validation completed.').strip() or 'Validation completed.'
     status_code = str(item.get('statusCode') or item.get('status_code') or 'Success').strip() or 'Success'
+    classification_lower = classification.lower()
+    status_text_lower = status_text.lower()
+    status_code_lower = status_code.lower()
 
-    bhisha_result = _build_bhisha_api_validation_result(item)
+    deliverable_signal = bool(
+        classification_lower in {'deliverable', 'safe'}
+        or ('safe to send mail' in status_text_lower and status_code_lower == 'success')
+    )
+
+    valid_syntax_raw = _to_bool_or_none(item.get('validSyntax'))
+    valid_mailbox_raw = _to_bool_or_none(item.get('validMailbox'))
+    catch_all_raw = _to_bool_or_none(item.get('catchAll'))
+    disposable_raw = _to_bool_or_none(item.get('disposable'))
+    role_based_raw = _to_bool_or_none(item.get('roleBased'))
+    risky_raw = _to_bool_or_none(item.get('risky'))
+
+    valid_syntax = bool(valid_syntax_raw) if valid_syntax_raw is not None else deliverable_signal
+    valid_mailbox = bool(valid_mailbox_raw) if valid_mailbox_raw is not None else deliverable_signal
+    catch_all = bool(catch_all_raw) if catch_all_raw is not None else False
+    disposable = bool(disposable_raw) if disposable_raw is not None else False
+    role_based = bool(role_based_raw) if role_based_raw is not None else False
+
+    if risky_raw is not None:
+        risky = bool(risky_raw)
+    elif deliverable_signal:
+        risky = False
+    else:
+        risky = _is_high_risk_value(risk)
+
+    if deliverable_signal and risk in {'unknown', ''}:
+        risk = 'low'
+
+    normalized_item = {
+        **item,
+        'email': entered_email,
+        'validMailbox': valid_mailbox,
+        'validSyntax': valid_syntax,
+        'catchAll': catch_all,
+        'disposable': disposable,
+        'roleBased': role_based,
+        'risky': risky,
+        'risk': risk,
+        'classification': classification,
+        'status': status_text,
+        'statusCode': status_code,
+    }
+
+    bhisha_result = _build_bhisha_api_validation_result(normalized_item)
 
     return {
         'email': entered_email,
-        'validMailbox': _normalize_optional_bool(item.get('validMailbox')),
-        'validSyntax': _normalize_optional_bool(item.get('validSyntax')),
-        'catchAll': _normalize_optional_bool(item.get('catchAll')),
+        'validMailbox': valid_mailbox,
+        'validSyntax': valid_syntax,
+        'catchAll': catch_all,
         'didYouMean': did_you_mean or entered_email,
-        'disposable': _normalize_optional_bool(item.get('disposable')),
-        'roleBased': _normalize_optional_bool(item.get('roleBased')),
-        'risky': _normalize_optional_bool(item.get('risky')),
+        'disposable': disposable,
+        'roleBased': role_based,
+        'risky': risky,
         'risk': risk,
         'providerMessageId': str(item.get('providerMessageId') or '').strip(),
         'classification': classification,
@@ -1083,6 +1132,26 @@ def _build_verifalia_style_report(normalized_flags, quality_info):
 def _collect_emails_from_text_blob(text_blob):
     pieces = re.split(r'[\n,;\s\t]+', str(text_blob or ''))
     return [str(item).strip().lower() for item in pieces if str(item).strip()]
+
+
+def _collect_unique_emails_from_input(raw_value):
+    if isinstance(raw_value, list):
+        candidates = [str(item or '').strip().lower() for item in raw_value]
+    else:
+        candidates = _collect_emails_from_text_blob(raw_value)
+
+    unique_emails = []
+    seen = set()
+    for email in candidates:
+        if not email or email in seen:
+            continue
+        try:
+            validate_email(email)
+        except ValidationError:
+            continue
+        unique_emails.append(email)
+        seen.add(email)
+    return unique_emails
 
 
 def _extract_emails_from_uploaded_file(source_file):
@@ -1737,18 +1806,41 @@ def _validate_email_list_with_verifalia(unique_emails):
 def _authenticate_api_key_request(request):
     api_key_value = str(request.headers.get('X-API-Key') or request.data.get('api_key') or '').strip()
     user_id = request.data.get('user_id')
+    login_value = str(
+        request.data.get('login')
+        or request.data.get('username')
+        or request.data.get('email')
+        or ''
+    ).strip()
     password = str(request.data.get('password') or '').strip()
 
-    if not api_key_value or not user_id or not password:
-        raise ValueError('api_key, user_id and password are required')
+    if not api_key_value or not password:
+        raise ValueError('api_key, password, and login/email are required')
 
-    try:
-        user = User.objects.get(id=int(user_id))
-    except (User.DoesNotExist, ValueError, TypeError):
-        raise ValueError('Invalid user_id')
+    user = None
+
+    if login_value:
+        if '@' in login_value:
+            user = User.objects.filter(email__iexact=login_value).order_by('-is_active', '-id').first()
+        else:
+            user = (
+                User.objects
+                .filter(Q(username__iexact=login_value) | Q(email__iexact=login_value))
+                .order_by('-is_active', '-id')
+                .first()
+            )
+
+    if user is None and user_id not in [None, '']:
+        try:
+            user = User.objects.get(id=int(user_id))
+        except (User.DoesNotExist, ValueError, TypeError):
+            user = None
+
+    if user is None:
+        raise ValueError('Invalid login/email')
 
     if not user.check_password(password):
-        raise ValueError('Invalid user_id or password')
+        raise ValueError('Invalid login/email or password')
 
     api_key = UserAPIKey.objects.filter(user=user, key=api_key_value, is_active=True).first()
     if not api_key:
@@ -1928,10 +2020,28 @@ def _extract_api_result_profiles(result_items):
 
 
 def _build_concise_api_validation_response(result_items):
-    profiles = _extract_api_result_profiles(result_items)
-    if len(profiles) == 1:
-        return {'result': profiles[0]}
-    return {'results': profiles}
+    normalized_results = []
+    for item in result_items or []:
+        if not isinstance(item, dict):
+            continue
+        bhisha_result = item.get('bhisha_result') if isinstance(item.get('bhisha_result'), dict) else item
+        if isinstance(bhisha_result, dict):
+            normalized_results.append({
+                'email': str(bhisha_result.get('email') or '').strip().lower(),
+                'valid_inbox': bool(bhisha_result.get('valid_inbox')),
+                'valid_syntax': bool(bhisha_result.get('valid_syntax')),
+                'disposable': bool(bhisha_result.get('disposable')),
+                'role_based': bool(bhisha_result.get('role_based')),
+                'catch_all': bool(bhisha_result.get('catch_all')),
+                'risk_factors': str(bhisha_result.get('risk_factors') or 'None Detected'),
+                'raw_status_details': str(bhisha_result.get('raw_status_details') or ''),
+                'is_free_domain': bool(bhisha_result.get('is_free_domain')),
+            })
+
+    return {
+        'count': len(normalized_results),
+        'results': normalized_results,
+    }
 
 
 def _build_concise_api_status_response(history):
@@ -4605,6 +4715,118 @@ class EmailValidationControlView(generics.GenericAPIView):
         payload['processing_state'] = _get_history_processing_state(history)
         payload['last_action'] = action
         return Response(payload)
+
+
+class SendDeliverableEmailsView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        deliverable_emails = _collect_unique_emails_from_input(request.data.get('deliverable_emails'))
+        if not deliverable_emails:
+            return Response({'detail': 'No valid deliverable email addresses were provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        subject = str(request.data.get('subject') or '').strip()
+        body = str(request.data.get('body') or '').strip()
+        if not subject:
+            return Response({'detail': 'subject is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not body:
+            return Response({'detail': 'body is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        smtp_host = str(request.data.get('smtp_host') or '').strip()
+        smtp_username = str(request.data.get('smtp_username') or '').strip()
+        smtp_password = str(request.data.get('smtp_password') or '').strip()
+        smtp_provider = str(request.data.get('smtp_provider') or '').strip()
+        from_email = str(request.data.get('from_email') or smtp_username or '').strip()
+
+        try:
+            smtp_port = int(request.data.get('smtp_port') or 0)
+        except (TypeError, ValueError):
+            smtp_port = 0
+
+        use_tls = bool(request.data.get('smtp_use_tls', True))
+        use_ssl = bool(request.data.get('smtp_use_ssl', False))
+
+        if not smtp_host:
+            return Response({'detail': 'smtp_host is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if smtp_port <= 0:
+            return Response({'detail': 'smtp_port must be a valid positive integer'}, status=status.HTTP_400_BAD_REQUEST)
+        if not smtp_username:
+            return Response({'detail': 'smtp_username is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not smtp_password:
+            return Response({'detail': 'smtp_password is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not from_email:
+            return Response({'detail': 'from_email is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if use_tls and use_ssl:
+            return Response({'detail': 'Choose either TLS or SSL, not both.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            validate_email(from_email)
+        except ValidationError:
+            return Response({'detail': 'from_email is not a valid email address'}, status=status.HTTP_400_BAD_REQUEST)
+
+        max_recipients = int(getattr(settings, 'EMAIL_MANUAL_SEND_MAX_RECIPIENTS', 1000) or 1000)
+        if len(deliverable_emails) > max_recipients:
+            return Response(
+                {'detail': f'Maximum {max_recipients} recipients allowed per request.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        connection = get_connection(
+            backend='django.core.mail.backends.smtp.EmailBackend',
+            host=smtp_host,
+            port=smtp_port,
+            username=smtp_username,
+            password=smtp_password,
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            timeout=20,
+            fail_silently=False,
+        )
+
+        try:
+            connection.open()
+        except Exception as exc:
+            return Response(
+                {'detail': f'Unable to connect or authenticate with SMTP server: {type(exc).__name__}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        sent_count = 0
+        failed_recipients = []
+        for recipient in deliverable_emails:
+            try:
+                message = EmailMessage(
+                    subject=subject,
+                    body=body,
+                    from_email=from_email,
+                    to=[recipient],
+                    connection=connection,
+                )
+                message.send(fail_silently=False)
+                sent_count += 1
+            except Exception as exc:
+                failed_recipients.append(
+                    {
+                        'email': recipient,
+                        'error': type(exc).__name__,
+                    }
+                )
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+        return Response(
+            {
+                'smtp_provider': smtp_provider,
+                'requested_count': len(deliverable_emails),
+                'sent_count': sent_count,
+                'failed_count': len(failed_recipients),
+                'failed_recipients': failed_recipients,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class APIEmailValidationStatusView(generics.GenericAPIView):

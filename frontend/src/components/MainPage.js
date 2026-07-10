@@ -131,6 +131,29 @@ const footerColumns = [
   },
 ];
 
+const associationPartners = [
+  { name: 'Infobip', logo: '/logos/infobip-logo.svg' },
+  { name: 'Broadnet', logo: '/logos/broadnet-logo.webp' },
+  { name: 'SMS Country', logo: '/logos/sms-country-logo.png' },
+  { name: 'Telebu', logo: '/logos/telebu-logo.png' },
+  { name: 'Bankainet', logo: '/logos/bankai-logo.jfif' },
+];
+
+const clientPartners = [
+  {
+    name: 'Partha Dental',
+    logo: '/logos/partha-logo.webp',
+  },
+  {
+    name: 'ICAI SIRC Branch',
+    logo: '/logos/icai-logo.png',
+  },
+  {
+    name: 'Lalitha Jewellery',
+    logo: '/logos/lalitha-logo.svg',
+  },
+];
+
 const footerLinkTo = (item) => {
   if (item === 'Contact us' || item === 'Support center' || item === 'Service status' || item === 'External connectivity status') {
     return '/contact-support';
@@ -303,6 +326,42 @@ export default function MainPage() {
         </div>
       </section>
 
+      <section className="landing-section landing-trust-section" id="associations">
+        <div className="landing-section-heading">
+          <span className="landing-section-kicker">Trust Network</span>
+          <h2>our associations with</h2>
+          <p>
+            Bhisha works with established ecosystem partners for messaging and communication infrastructure.
+          </p>
+        </div>
+
+        <div className="landing-logo-grid landing-logo-grid-associations">
+          {associationPartners.map((partner) => (
+            <article key={partner.name} className="landing-logo-card" aria-label={partner.name}>
+              <img src={partner.logo} alt={partner.name} loading="lazy" />
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="landing-section landing-trust-section" id="clients">
+        <div className="landing-section-heading">
+          <span className="landing-section-kicker">Client Proof</span>
+          <h2>our clients</h2>
+          <p>
+            Trusted by organizations across healthcare, finance, and enterprise communication operations.
+          </p>
+        </div>
+
+        <div className="landing-logo-grid landing-logo-grid-clients">
+          {clientPartners.map((client) => (
+            <article key={client.name} className="landing-logo-card" aria-label={client.name}>
+              <img src={client.logo} alt={client.name} loading="lazy" />
+            </article>
+          ))}
+        </div>
+      </section>
+
       <section className="landing-footer-cta">
         <div>
           <span className="landing-section-kicker">Ready to start</span>
@@ -324,7 +383,7 @@ export default function MainPage() {
 
       <section className="landing-footer-options">
         <div className="landing-footer-options-brand">
-          <div className="landing-footer-brand-mark">B</div>
+          <img src="/bhisha-logo.svg" alt="Bhisha" className="landing-footer-brand-logo" />
           <div>
             <strong>Bhisha</strong>
             <p>Communication services, platform tools, and support access in one place.</p>

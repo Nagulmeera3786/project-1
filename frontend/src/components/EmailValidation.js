@@ -95,6 +95,21 @@ export default function EmailValidation() {
   const [latestRequestId, setLatestRequestId] = useState('');
   const [results, setResults] = useState([]);
   const [summary, setSummary] = useState({ safe_to_send_yes: 0, safe_to_send_no: 0 });
+  const [deliverableEmailsText, setDeliverableEmailsText] = useState('');
+  const [showComposePanel, setShowComposePanel] = useState(false);
+  const [sendingDeliverableEmails, setSendingDeliverableEmails] = useState(false);
+  const [sendSummary, setSendSummary] = useState(null);
+  const [mailDraft, setMailDraft] = useState({ subject: '', body: '' });
+  const [smtpDraft, setSmtpDraft] = useState({
+    provider: '',
+    host: '',
+    port: '587',
+    username: '',
+    password: '',
+    fromEmail: '',
+    useTls: true,
+    useSsl: false,
+  });
   const progressIntervalRef = useRef(null);
   const pollIntervalRef = useRef(null);
   const [activeRequestMeta, setActiveRequestMeta] = useState(null);
@@ -138,6 +153,28 @@ export default function EmailValidation() {
 
     initialize();
   }, []);
+
+  const refreshWalletBalance = async (preferResponseBalance) => {
+    if (!isAdmin && preferResponseBalance !== undefined && preferResponseBalance !== null) {
+      setWalletBalance(String(preferResponseBalance));
+      return;
+    }
+
+    try {
+      const refreshedWallet = await API.get('wallet/');
+      const providerBalance = refreshedWallet.data?.verifalia_credits;
+      const validationBalance = refreshedWallet.data?.email_validation_balance;
+      setWalletBalance(
+        isAdmin
+          ? String(providerBalance ?? validationBalance ?? walletBalance)
+          : String(validationBalance ?? preferResponseBalance ?? walletBalance)
+      );
+    } catch {
+      if (preferResponseBalance !== undefined && preferResponseBalance !== null) {
+        setWalletBalance(String(preferResponseBalance));
+      }
+    }
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -461,6 +498,9 @@ export default function EmailValidation() {
     setInfo('');
     setResults([]);
     setSummary({ safe_to_send_yes: 0, safe_to_send_no: 0 });
+    setDeliverableEmailsText('');
+    setShowComposePanel(false);
+    setSendSummary(null);
     setLastFileName('');
     setLatestRequestId('');
     setActiveRequestMeta(null);
@@ -543,12 +583,7 @@ export default function EmailValidation() {
         setLatestRequestId(pendingRequestId);
         localStorage.setItem('emailValidationActiveRequestId', String(pendingRequestId));
         await loadRequestStatus(pendingRequestId);
-        if (isAdmin) {
-          const refreshedWallet = await API.get('wallet/');
-          setWalletBalance(String(refreshedWallet.data?.email_validation_balance ?? walletBalance));
-        } else {
-          setWalletBalance(String(response.data?.wallet_balance ?? walletBalance));
-        }
+        await refreshWalletBalance(response.data?.wallet_balance);
         return;
       }
 
@@ -556,12 +591,7 @@ export default function EmailValidation() {
       setProgressPercent(100);
       setStatusMessage('Validation completed successfully.');
 
-      if (isAdmin) {
-        const refreshedWallet = await API.get('wallet/');
-        setWalletBalance(String(refreshedWallet.data?.email_validation_balance ?? walletBalance));
-      } else {
-        setWalletBalance(String(response.data?.wallet_balance ?? walletBalance));
-      }
+      await refreshWalletBalance(response.data?.wallet_balance);
     } catch (err) {
       const detail = getProfessionalErrorMessage(err, 'Email validation failed.');
       const code = String(err.code || '').toUpperCase();
@@ -720,16 +750,116 @@ export default function EmailValidation() {
     };
   }, [summary]);
 
+  const isDeliverableResult = (row) => {
+    const quality = String(row?.bhisha_result?.quality || row?.classification || '').trim().toLowerCase();
+    if (quality === 'deliverable' || quality === 'safe') {
+      return true;
+    }
+    return Boolean(
+      row?.validMailbox
+      && row?.validSyntax
+      && !row?.disposable
+      && !row?.roleBased
+      && !row?.risky
+    );
+  };
+
+  const deliverableEmails = useMemo(() => {
+    const seen = new Set();
+    const normalized = [];
+    results.forEach((row) => {
+      const email = String(row?.email || '').trim().toLowerCase();
+      if (!email || seen.has(email) || !isDeliverableResult(row)) {
+        return;
+      }
+      seen.add(email);
+      normalized.push(email);
+    });
+    return normalized;
+  }, [results]);
+
+  useEffect(() => {
+    if (deliverableEmails.length === 0) {
+      setDeliverableEmailsText('');
+      setShowComposePanel(false);
+      return;
+    }
+    setDeliverableEmailsText(deliverableEmails.join('\n'));
+  }, [deliverableEmails]);
+
+  const sendToDeliverableEmails = async () => {
+    setError('');
+    setInfo('');
+    setSendSummary(null);
+
+    if (!deliverableEmailsText.trim()) {
+      setError('Deliverable email list is empty.');
+      return;
+    }
+    if (!mailDraft.subject.trim()) {
+      setError('Enter mail subject.');
+      return;
+    }
+    if (!mailDraft.body.trim()) {
+      setError('Enter mail body.');
+      return;
+    }
+    if (!smtpDraft.host.trim() || !smtpDraft.port.trim() || !smtpDraft.username.trim() || !smtpDraft.password.trim()) {
+      setError('Enter all required SMTP details: host, port, username, password.');
+      return;
+    }
+
+    setSendingDeliverableEmails(true);
+    try {
+      const response = await API.post('email-validation/send-deliverable-mails/', {
+        deliverable_emails: deliverableEmailsText,
+        subject: mailDraft.subject,
+        body: mailDraft.body,
+        smtp_provider: smtpDraft.provider,
+        smtp_host: smtpDraft.host,
+        smtp_port: smtpDraft.port,
+        smtp_username: smtpDraft.username,
+        smtp_password: smtpDraft.password,
+        from_email: smtpDraft.fromEmail || smtpDraft.username,
+        smtp_use_tls: smtpDraft.useTls,
+        smtp_use_ssl: smtpDraft.useSsl,
+      });
+      setSendSummary(response.data || null);
+      setInfo(`Mail send completed. Sent: ${response.data?.sent_count || 0}, Failed: ${response.data?.failed_count || 0}.`);
+    } catch (err) {
+      setError(getProfessionalErrorMessage(err, 'Could not send mails to deliverable emails.'));
+    } finally {
+      setSendingDeliverableEmails(false);
+    }
+  };
+
   const formatLiveResult = (row) => {
+    const toBool = (value) => {
+      if (typeof value === 'boolean') {
+        return value;
+      }
+      if (typeof value === 'number') {
+        return value !== 0;
+      }
+      const normalized = String(value || '').trim().toLowerCase();
+      if (['true', '1', 'yes', 'y'].includes(normalized)) {
+        return true;
+      }
+      if (['false', '0', 'no', 'n'].includes(normalized)) {
+        return false;
+      }
+      return false;
+    };
+
     const profile = row?.bhisha_result?.result_profile;
     if (profile) {
       return profile;
     }
 
-    const validSyntax = Boolean(row?.validSyntax);
-    const disposable = Boolean(row?.disposable);
-    const roleBased = Boolean(row?.roleBased);
-    const catchAll = Boolean(row?.catchAll);
+    const validSyntax = toBool(row?.bhisha_result?.valid_syntax ?? row?.validSyntax);
+    const disposable = toBool(row?.bhisha_result?.disposable ?? row?.disposable);
+    const roleBased = toBool(row?.bhisha_result?.role_based ?? row?.roleBased);
+    const catchAll = toBool(row?.bhisha_result?.catch_all ?? row?.catchAll);
     const validInbox = Boolean(row?.validMailbox && validSyntax && !disposable && !roleBased);
     const rawStatus = disposable
       ? 'do_not_mail (disposable)'
@@ -771,13 +901,30 @@ export default function EmailValidation() {
   };
 
   const factorCards = (row) => {
+    const toBool = (value) => {
+      if (typeof value === 'boolean') {
+        return value;
+      }
+      if (typeof value === 'number') {
+        return value !== 0;
+      }
+      const normalized = String(value || '').trim().toLowerCase();
+      if (['true', '1', 'yes', 'y'].includes(normalized)) {
+        return true;
+      }
+      if (['false', '0', 'no', 'n'].includes(normalized)) {
+        return false;
+      }
+      return false;
+    };
+
     const bhisha = row?.bhisha_result || {};
     const factors = [
-      { label: 'Valid Inbox', type: 'bool', value: bhisha.valid_inbox ?? row?.validMailbox },
-      { label: 'Valid Syntax', type: 'bool', value: bhisha.valid_syntax ?? row?.validSyntax },
-      { label: 'Catch All', type: 'bool', value: bhisha.catch_all ?? row?.catchAll },
-      { label: 'Disposable', type: 'bool', value: bhisha.disposable ?? row?.disposable },
-      { label: 'Role Based', type: 'bool', value: bhisha.role_based ?? row?.roleBased },
+      { label: 'Valid Inbox', type: 'bool', value: toBool(bhisha.valid_inbox ?? row?.validMailbox) },
+      { label: 'Valid Syntax', type: 'bool', value: toBool(bhisha.valid_syntax ?? row?.validSyntax) },
+      { label: 'Catch All', type: 'bool', value: toBool(bhisha.catch_all ?? row?.catchAll) },
+      { label: 'Disposable', type: 'bool', value: toBool(bhisha.disposable ?? row?.disposable) },
+      { label: 'Role Based', type: 'bool', value: toBool(bhisha.role_based ?? row?.roleBased) },
       { label: 'Risk Factors', type: 'text', value: bhisha.risk_factors || 'None Detected' },
       { label: 'Raw Status', type: 'text', value: bhisha.raw_status_details || row?.statusCode || 'safe_to_mail' },
     ];
@@ -1020,6 +1167,74 @@ export default function EmailValidation() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {results.length > 0 && (
+            <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px', marginBottom: '16px' }}>
+              <div style={{ fontWeight: 800, color: '#111827', marginBottom: '8px' }}>
+                Deliverable Emails ({deliverableEmails.length})
+              </div>
+              <div style={{ color: '#6b7280', fontSize: '12px', marginBottom: '8px' }}>
+                After validation, review/edit the list below and proceed to write and send mail using your own SMTP credentials.
+              </div>
+              <textarea
+                value={deliverableEmailsText}
+                onChange={(e) => setDeliverableEmailsText(e.target.value)}
+                rows={8}
+                placeholder="Deliverable emails will appear here (one per line)"
+                style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db', resize: 'vertical', marginBottom: '10px' }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowComposePanel((prev) => !prev)}
+                disabled={!deliverableEmailsText.trim()}
+                style={{ padding: '10px 12px', border: 'none', borderRadius: '8px', background: '#1d4ed8', color: '#fff', fontWeight: 700, cursor: deliverableEmailsText.trim() ? 'pointer' : 'not-allowed' }}
+              >
+                {showComposePanel ? 'Hide Mail Writer' : 'Proceed / Write Mails to Deliverable Emails'}
+              </button>
+
+              {showComposePanel && (
+                <div style={{ marginTop: '12px', border: '1px solid #dbeafe', background: '#f8fbff', borderRadius: '8px', padding: '12px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e3a8a', marginBottom: '8px' }}>Sender Mail Details (your SMTP)</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '8px', marginBottom: '8px' }}>
+                    <input type="text" placeholder="Email provider (e.g. Gmail, Outlook)" value={smtpDraft.provider} onChange={(e) => setSmtpDraft((prev) => ({ ...prev, provider: e.target.value }))} style={{ padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+                    <input type="text" placeholder="SMTP host" value={smtpDraft.host} onChange={(e) => setSmtpDraft((prev) => ({ ...prev, host: e.target.value }))} style={{ padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+                    <input type="number" placeholder="SMTP port" value={smtpDraft.port} onChange={(e) => setSmtpDraft((prev) => ({ ...prev, port: e.target.value }))} style={{ padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+                    <input type="text" placeholder="SMTP username / mail" value={smtpDraft.username} onChange={(e) => setSmtpDraft((prev) => ({ ...prev, username: e.target.value }))} style={{ padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+                    <input type="password" placeholder="SMTP password / app passkey" value={smtpDraft.password} onChange={(e) => setSmtpDraft((prev) => ({ ...prev, password: e.target.value }))} style={{ padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+                    <input type="email" placeholder="From email (optional)" value={smtpDraft.fromEmail} onChange={(e) => setSmtpDraft((prev) => ({ ...prev, fromEmail: e.target.value }))} style={{ padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '12px', marginBottom: '10px', color: '#1f2937', fontSize: '13px' }}>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <input type="checkbox" checked={smtpDraft.useTls} onChange={(e) => setSmtpDraft((prev) => ({ ...prev, useTls: e.target.checked }))} /> Use TLS
+                    </label>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <input type="checkbox" checked={smtpDraft.useSsl} onChange={(e) => setSmtpDraft((prev) => ({ ...prev, useSsl: e.target.checked }))} /> Use SSL
+                    </label>
+                  </div>
+
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e3a8a', marginBottom: '8px' }}>Mail Content</div>
+                  <input type="text" placeholder="Subject" value={mailDraft.subject} onChange={(e) => setMailDraft((prev) => ({ ...prev, subject: e.target.value }))} style={{ width: '100%', padding: '9px', borderRadius: '6px', border: '1px solid #d1d5db', marginBottom: '8px' }} />
+                  <textarea value={mailDraft.body} onChange={(e) => setMailDraft((prev) => ({ ...prev, body: e.target.value }))} rows={5} placeholder="Write your email message" style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #d1d5db', resize: 'vertical', marginBottom: '10px' }} />
+
+                  <button
+                    type="button"
+                    onClick={sendToDeliverableEmails}
+                    disabled={sendingDeliverableEmails}
+                    style={{ padding: '10px 12px', border: 'none', borderRadius: '8px', background: '#16a34a', color: '#fff', fontWeight: 700, cursor: sendingDeliverableEmails ? 'not-allowed' : 'pointer' }}
+                  >
+                    {sendingDeliverableEmails ? 'Checking SMTP and Sending...' : 'Check Details and Send Mails'}
+                  </button>
+
+                  {sendSummary && (
+                    <div style={{ marginTop: '10px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: '8px', padding: '10px', color: '#166534', fontSize: '13px' }}>
+                      Requested: <strong>{sendSummary.requested_count || 0}</strong> · Sent: <strong>{sendSummary.sent_count || 0}</strong> · Failed: <strong>{sendSummary.failed_count || 0}</strong>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </>

@@ -177,7 +177,7 @@ const mailValidationSamples = {
   -H "X-API-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "user_id": 7,
+    "login": "user@example.com",
     "password": "<YOUR_PASSWORD>",
     "email": "user@example.com"
   }'`,
@@ -188,7 +188,7 @@ const mailValidationSamples = {
     "X-API-Key": "<YOUR_API_KEY>",
   },
   body: JSON.stringify({
-    user_id: 7,
+    login: "user@example.com",
     password: "<YOUR_PASSWORD>",
     email: "user@example.com"
   })
@@ -203,7 +203,7 @@ response = requests.post(
     base_url + "${API_PREFIX}${MAIL_VALIDATE_PATH}",
     headers={"X-API-Key": "<YOUR_API_KEY>"},
     json={
-        "user_id": 7,
+      "login": "user@example.com",
         "password": "<YOUR_PASSWORD>",
         "email": "user@example.com",
     },
@@ -212,7 +212,7 @@ response = requests.post(
 print(response.json())`,
     Java: `String payload = """
 {
-  \"user_id\": 7,
+  \"login\": \"user@example.com\",
   \"password\": \"<YOUR_PASSWORD>\",
   \"email\": \"user@example.com\"
 }
@@ -222,7 +222,7 @@ client.BaseAddress = new Uri("${BASE_URL}");
 client.DefaultRequestHeaders.Add("X-API-Key", "<YOUR_API_KEY>");
 
 var payload = new {
-  user_id = 7,
+  login = "user@example.com",
   password = "<YOUR_PASSWORD>",
   email = "user@example.com"
 };
@@ -234,12 +234,12 @@ var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}"
   -H "X-API-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "user_id": 7,
+    "login": "user@example.com",
     "password": "<YOUR_PASSWORD>",
     "emails": ["one@example.com", "two@example.com", "three@example.com"]
   }'`,
     JavaScript: `const payload = {
-  user_id: 7,
+  login: "user@example.com",
   password: "<YOUR_PASSWORD>",
   emails: ["one@example.com", "two@example.com", "three@example.com"],
 };
@@ -257,7 +257,7 @@ console.log(await res.json());`,
     Python: `import requests
 
 payload = {
-    "user_id": 7,
+  "login": "user@example.com",
     "password": "<YOUR_PASSWORD>",
     "emails": ["one@example.com", "two@example.com", "three@example.com"],
 }
@@ -269,13 +269,13 @@ print(requests.post(
 ).json())`,
     Java: `String payload = """
 {
-  \"user_id\": 7,
+  \"login\": \"user@example.com\",
   \"password\": \"<YOUR_PASSWORD>\",
   \"emails\": [\"one@example.com\", \"two@example.com\", \"three@example.com\"]
 }
 """;`,
     'C#': `var payload = new {
-  user_id = 7,
+  login = "user@example.com",
   password = "<YOUR_PASSWORD>",
   emails = new[] { "one@example.com", "two@example.com", "three@example.com" }
 };`,
@@ -283,11 +283,11 @@ print(requests.post(
   file: {
     cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
   -H "X-API-Key: <YOUR_API_KEY>" \\
-  -F "user_id=7" \\
+    -F "login=user@example.com" \\
   -F "password=<YOUR_PASSWORD>" \\
   -F "source_file=@emails.xlsx"`,
     JavaScript: `const formData = new FormData();
-formData.append("user_id", "XXXX");
+  formData.append("login", "user@example.com");
 formData.append("password", "<YOUR_PASSWORD>");
 formData.append("source_file", fileInput.files[0]);
 
@@ -303,7 +303,7 @@ with open("emails.xlsx", "rb") as fp:
         "${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}",
         headers={"X-API-Key": "<YOUR_API_KEY>"},
         data={
-            "user_id": 7,
+          "login": "user@example.com",
             "password": "<YOUR_PASSWORD>",
         },
         files={"source_file": fp},
@@ -311,11 +311,11 @@ with open("emails.xlsx", "rb") as fp:
 
 print(response.json())`,
     Java: `MultipartBodyPublisher mp = new MultipartBodyPublisher()
-    .addPart("user_id", "7")
+    .addPart("login", "user@example.com")
     .addPart("password", "<YOUR_PASSWORD>")
     .addFilePart("source_file", Path.of("emails.xlsx"));`,
     'C#': `using var form = new MultipartFormDataContent();
-form.Add(new StringContent("7"), "user_id");
+  form.Add(new StringContent("user@example.com"), "login");
 form.Add(new StringContent("<YOUR_PASSWORD>"), "password");
 form.Add(new StreamContent(File.OpenRead("emails.xlsx")), "source_file", "emails.xlsx");
 
@@ -329,7 +329,7 @@ var response = await client.SendAsync(req);`,
 const mailTaskControlSample = `# Status
 POST ${BASE_URL}${API_PREFIX}${MAIL_STATUS_PATH}
 {
-  "user_id": 7,
+  "login": "user@example.com",
   "password": "<YOUR_PASSWORD>",
   "request_id": "<REQUEST_ID>"
 }
@@ -337,16 +337,14 @@ POST ${BASE_URL}${API_PREFIX}${MAIL_STATUS_PATH}
 # Control
 POST ${BASE_URL}${API_PREFIX}${MAIL_CONTROL_PATH}
 {
-  "user_id": 7,
+  "login": "user@example.com",
   "password": "<YOUR_PASSWORD>",
   "request_id": "<REQUEST_ID>",
   "action": "pause" // start, pause, resume, stop, cancel
 }`;
 
 const compactApiResponseExample = `{
-  "request_id": "f526f9c1-1037-4519-ba2f-b87febcf8931",
   "count": 1,
-  "wallet_balance": "XXXX.0000",
   "results": [
     {
       "email": "user@example.com",
@@ -357,23 +355,10 @@ const compactApiResponseExample = `{
       "catch_all": false,
       "risk_factors": "None Detected",
       "raw_status_details": "do_not_mail (disposable)",
-      "is_free_domain": true,
-      "result_profile": "Results Profile for: user@example.com\\n----------------------------------------\\nValid Inbox:    False\\nValid Syntax:   True\\nDisposable:     True\\nRole Based:     False\\nCatch All:      False\\nRisk Factors:   None Detected\\n----------------------------------------\\nRaw Status Details:  do_not_mail (disposable)\\nIs Free Domain?:     True"
+      "is_free_domain": true
     }
   ]
 }`;
-
-const resultProfileExample = `Results Profile for: user@example.com
-----------------------------------------
-Valid Inbox:    False
-Valid Syntax:   True
-Disposable:     True
-Role Based:     False
-Catch All:      False
-Risk Factors:   None Detected
-----------------------------------------
-Raw Status Details:  do_not_mail (disposable)
-Is Free Domain?:     True`;
 
 const sections = [
   {
@@ -415,9 +400,9 @@ const sections = [
     title: 'Mail Validation',
     description: 'Validate single emails, bulk lists, and file uploads. Long-running jobs support status and control operations.',
     endpoints: [
-      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key + user_id + password', description: 'Validate single, bulk, or file inputs.' },
-      { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key + user_id + password', description: 'Get live progress, elapsed time, ETA, and final status.' },
-      { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key + user_id + password', description: 'Control a running job with start/pause/resume/stop/cancel.' },
+      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key + login/email + password', description: 'Validate single, bulk, or file inputs.' },
+      { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key + login/email + password', description: 'Get live progress, elapsed time, ETA, and final status.' },
+      { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key + login/email + password', description: 'Control a running job with start/pause/resume/stop/cancel.' },
     ],
   },
   {
@@ -647,7 +632,7 @@ export default function ApiDocsOverview() {
             <section style={cardStyle}>
               <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#1A0E4E' }}>Mail Validation Examples (Single, Bulk, File)</h3>
               <p style={{ marginTop: 0, color: '#6B6B8A', lineHeight: 1.6 }}>
-                Use these request syntaxes for Bhisha mail validation API. user_id must be a numeric Bhisha user ID and must belong to the same account as the API key.
+                Use these request syntaxes for Bhisha mail validation API. Authenticate with API key and login or email plus password.
               </p>
 
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
@@ -719,11 +704,12 @@ export default function ApiDocsOverview() {
 
               <div style={{ marginTop: '12px', border: '1px solid #EDE8FB', borderRadius: '12px', overflow: 'hidden' }}>
                 <div style={{ background: '#F5F3FF', borderBottom: '1px solid #EDE8FB', padding: '10px 12px', fontWeight: 700, color: '#1A0E4E' }}>
-                  Expected Result Profile Format
+                  Response Format Notes
                 </div>
-                <pre style={{ margin: 0, background: '#020617', color: '#e2e8f0', padding: '12px', overflowX: 'auto', fontSize: '12px', lineHeight: 1.5 }}>
-                  <code>{resultProfileExample}</code>
-                </pre>
+                <div style={{ padding: '12px', color: '#4B4B6B', background: '#ffffff', fontSize: '13px', lineHeight: 1.6 }}>
+                  Each response item in <strong>results</strong> represents one email with explicit JSON fields.
+                  This supports one-by-one processing cleanly in UI and backend integrations.
+                </div>
               </div>
             </section>
           </main>

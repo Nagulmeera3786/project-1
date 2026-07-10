@@ -4,11 +4,11 @@ import { FaEnvelope, FaPhoneAlt, FaWhatsapp, FaGlobe, FaClock } from "react-icon
 const contactCards = [
   {
     title: "Email Support",
-    detail: "info@smshandover.com",
+    detail: "info@bhisha.com",
     note: "Best for account, billing, and technical issues.",
     icon: <FaEnvelope />,
     actionLabel: "Send Email",
-    action: () => window.open("mailto:info@smshandover.com", "_self"),
+    action: () => window.open("mailto:info@bhisha.com", "_self"),
   },
   {
     title: "Phone Support",

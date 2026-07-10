@@ -223,8 +223,11 @@ function App() {
         <nav className="bhisha-top-nav">
           <div className="bhisha-top-nav-inner">
             <Link to="/" className="bhisha-brand" onClick={closeMenu}>
-              <span className="bhisha-brand-mark">B</span>
-              <span className="bhisha-brand-text">Bhisha</span>
+              <img
+                src="/bhisha-logo.svg"
+                alt="Bhisha"
+                className="bhisha-brand-logo"
+              />
             </Link>
 
             <div className="bhisha-nav-menus">

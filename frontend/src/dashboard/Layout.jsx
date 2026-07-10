@@ -18,12 +18,11 @@ const Layout = ({ page = "dashboard" }) => {
       <div className="layout-header">
         {/* Brand / Logo area — LEFT */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }} title="Bhisha">
-          <div style={{
-            fontSize: '17px', fontWeight: '700',
-            color: '#ffffff', letterSpacing: '0.3px',
-          }}>
-            Bhisha
-          </div>
+          <img
+            src="/bhisha-logo.svg"
+            alt="Bhisha"
+            style={{ width: '150px', height: 'auto', display: 'block' }}
+          />
         </div>
         {/* TOP RIGHT MENU — RIGHT (Notifications, API Docs, Profile) */}
         <TopRightMenu />
