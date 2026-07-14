@@ -228,6 +228,10 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Upload limits for large bulk operations (SMS file uploads, etc.).
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(_env_text('FILE_UPLOAD_MAX_MEMORY_SIZE', str(250 * 1024 * 1024)))
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(_env_text('DATA_UPLOAD_MAX_MEMORY_SIZE', str(250 * 1024 * 1024)))
+
 # REST framework / JWT
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -455,6 +459,8 @@ SMS_DEFAULT_SENDER_IDS = [
 SMS_DLT_TEMPLATE_ID = _env_text('SMS_DLT_TEMPLATE_ID', '')
 SMS_DLT_ENTITY_ID = _env_text('SMS_DLT_ENTITY_ID', '')
 SMS_DLT_TELEMARKETER_ID = _env_text('SMS_DLT_TELEMARKETER_ID', '')
+SMS_SEND_MAX_FILE_SIZE_MB = int(_env_text('SMS_SEND_MAX_FILE_SIZE_MB', 250))
+SMS_MAX_SEGMENTS = int(_env_text('SMS_MAX_SEGMENTS', 10))
 
 # Verifalia email validation
 VERIFALIA_API_BASE_URL = _env_text('VERIFALIA_API_BASE_URL', 'https://api.verifalia.com/v2.6')

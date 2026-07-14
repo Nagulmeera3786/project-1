@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import Signup from './components/Signup';
 import VerifyOtp from './components/VerifyOtp';
-import EmployeeDualOTP from './components/EmployeeDualOTP';
 import Login from './components/Login';
 import ForgotPassword from './components/ForgotPassword';
 import ResetPassword from './components/ResetPassword';
@@ -134,10 +133,8 @@ function App() {
           setIsSupportUser(Boolean(response.data?.can_view_support_data || response.data?.is_employee));
         }
       } catch {
-        if (mounted) {
-          setIsAdmin(false);
-          setIsSupportUser(false);
-        }
+        // Keep existing access flags on transient profile check failures
+        // to avoid unexpected route redirects while interacting with forms.
       } finally {
         if (mounted) {
           setProfileLoading(false);
@@ -154,17 +151,11 @@ function App() {
       }
     };
 
-    const handleWindowFocus = async () => {
-      checkAuth();
-    };
-
     window.addEventListener('storage', handleStorageChange);
-    window.addEventListener('focus', handleWindowFocus);
 
     return () => {
       mounted = false;
       window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('focus', handleWindowFocus);
     };
   }, []);
 
@@ -288,10 +279,6 @@ function App() {
         <Route
           path="/verify-otp"
           element={wrapModule('Verify OTP', isLoggedIn ? <Navigate to="/dashboard" replace /> : <VerifyOtp />)}
-        />
-        <Route
-          path="/employee/verify-dual-otp"
-          element={wrapModule('Employee Dual OTP', isLoggedIn ? <Navigate to="/dashboard" replace /> : <EmployeeDualOTP />)}
         />
         <Route
           path="/login"

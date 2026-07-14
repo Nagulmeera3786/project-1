@@ -16,6 +16,7 @@ from .models import (
     EmailValidationHistory,
     Employee,
 )
+from .utils import calculate_sms_segments
 
 User = get_user_model()
 
@@ -110,7 +111,7 @@ class SMSSendSerializer(serializers.Serializer):
     smpp_profile = serializers.ChoiceField(choices=['standard', 'dlt'], default='standard', required=False)
     display_sender_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
     sender_id = serializers.CharField(max_length=50, required=False, allow_blank=True, write_only=True)
-    message_content = serializers.CharField(max_length=160)
+    message_content = serializers.CharField()
     sms_type = serializers.ChoiceField(
         choices=[choice[0] for choice in SMSMessage.SMS_TYPE_CHOICES],
         default='transactional',
@@ -182,8 +183,13 @@ class SMSSendSerializer(serializers.Serializer):
         if not message_content:
             raise serializers.ValidationError({'message_content': 'Message content is required'})
 
-        if len(message_content) > 160:
-            raise serializers.ValidationError({'message_content': 'SMS content must be 160 characters or less'})
+        max_sms_segments = int(getattr(settings, 'SMS_MAX_SEGMENTS', 10) or 10)
+        try:
+            sms_meta = calculate_sms_segments(message_content, max_segments=max_sms_segments)
+        except ValueError as exc:
+            raise serializers.ValidationError({'message_content': str(exc)})
+
+        attrs['sms_segment_meta'] = sms_meta
 
         if send_mode == 'single':
             if not attrs.get('recipient_number'):
@@ -193,8 +199,10 @@ class SMSSendSerializer(serializers.Serializer):
             if not source_file:
                 raise serializers.ValidationError({'source_file': 'Please upload a file'})
 
-            if source_file.size > 50 * 1024 * 1024:
-                raise serializers.ValidationError({'source_file': 'File size must be under 50MB'})
+            max_file_size_mb = int(getattr(settings, 'SMS_SEND_MAX_FILE_SIZE_MB', 250) or 250)
+            max_file_size_bytes = max_file_size_mb * 1024 * 1024
+            if source_file.size > max_file_size_bytes:
+                raise serializers.ValidationError({'source_file': f'File size must be under {max_file_size_mb}MB'})
 
             lower_name = (source_file.name or '').lower()
             if send_mode == 'file_numbers' and not (

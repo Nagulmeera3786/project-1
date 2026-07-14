@@ -47,7 +47,7 @@ from .serializers import (
     EmployeeLoginSerializer,
     EmployeeSerializer,
 )
-from .utils import generate_otp, send_otp_via_email, otp_is_valid
+from .utils import generate_otp, send_otp_via_email, otp_is_valid, calculate_sms_segments
 from .serializers import EmployeeSignupSerializer, EmployeeDualOTPVerifySerializer, EmployeeLoginSerializer
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -3021,7 +3021,13 @@ class SMSSendView(generics.CreateAPIView):
                     continue
 
                 rendered_message = _render_personalized_template(message_content, row_values)
-                if not rendered_message or len(rendered_message) > 160:
+                if not rendered_message:
+                    skipped_rows += 1
+                    continue
+
+                try:
+                    calculate_sms_segments(rendered_message, max_segments=int(getattr(settings, 'SMS_MAX_SEGMENTS', 10) or 10))
+                except ValueError:
                     skipped_rows += 1
                     continue
 
@@ -3044,7 +3050,7 @@ class SMSSendView(generics.CreateAPIView):
                         'detail': (
                             'No valid recipients found in uploaded personalized file. '
                             'Check that at least one column contains 10+ digit phone numbers '
-                            'and rendered message length stays within 160 characters.'
+                            'and rendered message length stays within configured SMS segment limits.'
                         ),
                         'skipped_rows': skipped_rows,
                     },
@@ -3796,8 +3802,10 @@ class FreeTrialSendSMSView(generics.GenericAPIView):
         message_content = str(request.data.get('message_content') or '').strip()
         if not message_content:
             return Response({'detail': 'Message content is required'}, status=status.HTTP_400_BAD_REQUEST)
-        if len(message_content) > 160:
-            return Response({'detail': 'SMS content must be 160 characters or less'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            calculate_sms_segments(message_content, max_segments=int(getattr(settings, 'SMS_MAX_SEGMENTS', 10) or 10))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         provider_config = _get_admin_managed_sms_provider_config()
         if not provider_config:

@@ -313,10 +313,7 @@ API.interceptors.response.use(
     if ((responseStatus === 401 || isTokenInvalid) && !isPublicRequest && !originalRequest._retry) {
       const refresh = localStorage.getItem('refresh');
       if (!refresh) {
-        localStorage.removeItem('access');
-        localStorage.removeItem('refresh');
-        localStorage.removeItem('authToken');
-        return Promise.reject(error);
+        return Promise.reject(sanitizeErrorForUi(error));
       }
 
       if (isRefreshing) {
@@ -350,20 +347,12 @@ API.interceptors.response.use(
         return API(originalRequest);
       } catch (refreshError) {
         flushRefreshQueue(refreshError, null);
-        localStorage.removeItem('access');
-        localStorage.removeItem('refresh');
-        localStorage.removeItem('authToken');
         return Promise.reject(sanitizeErrorForUi(refreshError));
       } finally {
         isRefreshing = false;
       }
     }
 
-    if (isTokenInvalid) {
-      localStorage.removeItem('access');
-      localStorage.removeItem('refresh');
-      localStorage.removeItem('authToken');
-    }
     return Promise.reject(sanitizeErrorForUi(error));
   }
 );

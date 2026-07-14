@@ -85,9 +85,10 @@ const LeftSidebar = () => {
   ];
 
   const baseMenuItems = isAdmin ? adminBaseMenuItems : (isSupportUser ? supportBaseMenuItems : userBaseMenuItems);
+  const sendSmsRoute = isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/free-trial');
 
   const broadcastSubMenuItems = [
-    { icon: <FaEnvelope />, label: 'Send SMS', action: () => navigate('/sms/send') },
+    { icon: <FaEnvelope />, label: 'Send SMS', action: () => navigate(sendSmsRoute) },
     { icon: <FaEnvelope />, label: 'Email Validation', action: () => navigate('/broadcast/email-validation') },
     { icon: <FaWhatsapp />, label: 'Send WhatsApp', action: null },
     { icon: <FaBroadcastTower />, label: 'Send RCS', action: null },

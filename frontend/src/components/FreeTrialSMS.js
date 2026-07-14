@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { FaArrowLeft, FaCheckCircle, FaLock, FaPaperPlane } from 'react-icons/fa';
 import API from '../api';
 import { getProfessionalErrorMessage } from '../errorHelpers';
+import { calculateSmsMeta } from '../smsLength';
+
+const MAX_SMS_SEGMENTS = 10;
 
 export default function FreeTrialSMS() {
   const navigate = useNavigate();
@@ -16,6 +19,7 @@ export default function FreeTrialSMS() {
   const [loading, setLoading] = useState(true);
 
   const freeTrialComplete = (usage.available_messages || 0) <= 0;
+  const smsMeta = calculateSmsMeta(messageContent, MAX_SMS_SEGMENTS);
 
   useEffect(() => {
     initialize();
@@ -64,6 +68,11 @@ export default function FreeTrialSMS() {
 
     if (!messageContent.trim()) {
       setError('Message content is required');
+      return;
+    }
+
+    if (!smsMeta.isWithinLimit) {
+      setError(`Message is too long: ${smsMeta.segments} SMS segments detected. Maximum allowed is ${MAX_SMS_SEGMENTS} segments.`);
       return;
     }
 
@@ -149,12 +158,15 @@ export default function FreeTrialSMS() {
           <textarea
             rows={5}
             value={messageContent}
-            onChange={e => setMessageContent(e.target.value.slice(0, 160))}
+            onChange={e => setMessageContent(e.target.value)}
             disabled={freeTrialComplete || !signupNumber}
             placeholder="Type your message"
             style={{ width: '100%', padding: '12px', border: '1px solid #d1d5db', borderRadius: '8px', resize: 'vertical', boxSizing: 'border-box' }}
           />
-          <div style={{ marginTop: '6px', fontSize: '12px', color: '#6b7280', textAlign: 'right' }}>{messageContent.length}/160</div>
+          <div style={{ marginTop: '6px', fontSize: '12px', color: smsMeta.isWithinLimit ? '#6b7280' : '#c62828', textAlign: 'right' }}>
+            {smsMeta.encoding} | Units: {smsMeta.lengthUnits} | Segments: {smsMeta.segments}/{MAX_SMS_SEGMENTS}
+            {smsMeta.segments > 0 ? ` | Per-segment limit: ${smsMeta.perSegmentLimit}` : ''}
+          </div>
         </div>
 
         {!signupNumber && (

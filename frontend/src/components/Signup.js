@@ -5,7 +5,6 @@ import { parseApiError } from '../errorHelpers';
 import { COUNTRY_CODES } from './countryCodes';
 
 export default function Signup() {
-  const [signupMode, setSignupMode] = useState('user');
   const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', confirmPass: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -62,16 +61,6 @@ export default function Signup() {
     }, 45000);
   };
 
-  const isRecoverableEmployeeSignupTimeout = err => {
-    if (err?.response) {
-      return false;
-    }
-
-    const errorCode = String(err?.code || '').toUpperCase();
-    const errorMessage = String(err?.message || '').toLowerCase();
-    return errorCode === 'ECONNABORTED' || errorMessage.includes('timeout');
-  };
-
   const handleSubmit = async e => {
     e.preventDefault();
     setError('');
@@ -107,47 +96,24 @@ export default function Signup() {
     setLoading(true);
 
     try {
-      if (signupMode === 'employee') {
-        await API.post('employee/signup/', {
-          first_name: form.name,
-          email: form.email,
-          phone_number: fullPhoneNumber,
-          password: form.password,
-          department: 'General',
-        }, {
-          timeout: 90000,
-        });
-        navigate(`/employee/verify-dual-otp?email=${encodeURIComponent(form.email)}`, { state: { email: form.email } });
-      } else {
-        const response = await API.post('signup/', {
-          first_name: form.name,
-          username: form.email,
-          email: form.email,
-          phone_number: fullPhoneNumber,
-          password: form.password,
-        });
+      const response = await API.post('signup/', {
+        first_name: form.name,
+        username: form.email,
+        email: form.email,
+        phone_number: fullPhoneNumber,
+        password: form.password,
+      });
 
-        if (response.data?.requires_otp === false && response.data?.access) {
-          localStorage.setItem('access', response.data.access);
-          localStorage.setItem('refresh', response.data.refresh);
-          localStorage.setItem('authToken', response.data.access);
-          window.location.href = '/dashboard';
-        } else {
-          // Continue to OTP verification even when provider reports delayed delivery.
-          navigate(`/verify-otp?email=${encodeURIComponent(form.email)}`, { state: { email: form.email } });
-        }
+      if (response.data?.requires_otp === false && response.data?.access) {
+        localStorage.setItem('access', response.data.access);
+        localStorage.setItem('refresh', response.data.refresh);
+        localStorage.setItem('authToken', response.data.access);
+        window.location.href = '/dashboard';
+      } else {
+        // Continue to OTP verification even when provider reports delayed delivery.
+        navigate(`/verify-otp?email=${encodeURIComponent(form.email)}`, { state: { email: form.email } });
       }
     } catch (err) {
-      if (signupMode === 'employee' && isRecoverableEmployeeSignupTimeout(err)) {
-        navigate(`/employee/verify-dual-otp?email=${encodeURIComponent(form.email)}`, {
-          state: {
-            email: form.email,
-            message: 'OTP delivery is taking longer than expected, but if you received the codes you can continue here.',
-          },
-        });
-        return;
-      }
-
       const parsed = parseApiError(err, 'Signup failed. Please try again.');
       if (parsed.isBuffering) {
         startBufferingFlow();
@@ -183,30 +149,6 @@ export default function Signup() {
         boxShadow: '0 24px 64px rgba(26,14,78,0.35)',
       }}>
         {/* Brand */}
-                <div style={{ marginBottom: '14px', display: 'flex', gap: '8px' }}>
-                  {[
-                    { key: 'user', label: 'User Signup' },
-                    { key: 'employee', label: 'Employee Signup' },
-                  ].map((item) => (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => setSignupMode(item.key)}
-                      style={{
-                        flex: 1,
-                        padding: '9px 10px',
-                        borderRadius: '8px',
-                        border: signupMode === item.key ? '1px solid #7C5DC7' : '1px solid #DDD4F8',
-                        background: signupMode === item.key ? '#F5F2FF' : '#fff',
-                        color: signupMode === item.key ? '#4C3A92' : '#6B6B8A',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
 
         <div style={{ textAlign: 'center', marginBottom: '24px' }}>
           <div style={{
@@ -346,7 +288,7 @@ export default function Signup() {
                 type="tel"
                 placeholder="Mobile number"
                 value={form.phone}
-                onChange={e => setForm({ ...form, phone: e.target.value.replace(/\D/g, '').slice(0, 12) })}
+                onChange={e => setForm({ ...form, phone: e.target.value.replace(/\D/g, '').slice(0, 15) })}
                 disabled={loading}
                 style={inputStyle}
                 onFocus={e => e.target.style.borderColor = '#7C5DC7'}
@@ -396,7 +338,7 @@ export default function Signup() {
               ? 'Creating account...'
               : (showBufferingImage
                 ? 'Please wait...'
-                : (signupMode === 'employee' ? 'Create Employee Account' : 'Create Account'))}
+                : 'Create Account')}
           </button>
         </form>
 

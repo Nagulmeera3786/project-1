@@ -1,8 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../api';
 import { getProfessionalErrorMessage } from '../errorHelpers';
+import { calculateSmsMeta } from '../smsLength';
 import { FaPaperPlane, FaArrowLeft } from 'react-icons/fa';
+
+const MAX_SMS_UPLOAD_MB = 250;
+const MAX_SMS_SEGMENTS = 10;
 
 export default function SMSSend() {
   const [profileLoading, setProfileLoading] = useState(true);
@@ -23,7 +27,12 @@ export default function SMSSend() {
   const [recipientUserId, setRecipientUserId] = useState('');
   const [sendMode, setSendMode] = useState('single');
   const [sourceFile, setSourceFile] = useState(null);
+  const [selectedFileName, setSelectedFileName] = useState('');
+  const [selectedFileMeta, setSelectedFileMeta] = useState(null);
+  const [showUploadStatusBar, setShowUploadStatusBar] = useState(true);
   const [fileError, setFileError] = useState('');
+  const [uploadFailureReason, setUploadFailureReason] = useState('');
+  const sourceFileInputRef = useRef(null);
 
   const [deliveryMode, setDeliveryMode] = useState('instant');
   const [timezoneName, setTimezoneName] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
@@ -66,6 +75,9 @@ export default function SMSSend() {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState('');
   const [error, setError] = useState('');
+  const [uploadProgressPct, setUploadProgressPct] = useState(0);
+  const [sendingProgressPct, setSendingProgressPct] = useState(0);
+  const [progressState, setProgressState] = useState('idle');
   const navigate = useNavigate();
   const isSmppTransport = transport === 'smpp';
 
@@ -229,6 +241,10 @@ export default function SMSSend() {
     ? `${timezoneName} (${selectedTimezone.offset_compact || '+0.00'})`
     : timezoneName;
   const showPersonalizedGuide = sendMode === 'personalized_file' && !messageContent.trim();
+  const smsMeta = useMemo(
+    () => calculateSmsMeta(messageContent, MAX_SMS_SEGMENTS),
+    [messageContent]
+  );
   const effectiveSenderId = useMemo(
     () => (isSmppTransport ? manualSenderId : (manualSenderId || selectedSenderId || '')).trim(),
     [isSmppTransport, manualSenderId, selectedSenderId]
@@ -263,6 +279,48 @@ export default function SMSSend() {
       setDeliveryMode('instant');
     }
   }, [isSmppTransport, deliveryMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const cached = window.sessionStorage.getItem('sms_send_selected_file_meta');
+    if (!cached) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(cached);
+      if (parsed?.name) {
+        setSelectedFileName(String(parsed.name));
+        setSelectedFileMeta(parsed);
+      }
+    } catch {
+      window.sessionStorage.removeItem('sms_send_selected_file_meta');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const hasPendingUploadSelection = Boolean(selectedFileName);
+    if (!hasPendingUploadSelection) {
+      return undefined;
+    }
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [selectedFileName]);
 
   const fetchTimezoneOptions = async () => {
     setTimezonesLoading(true);
@@ -390,10 +448,10 @@ export default function SMSSend() {
 
   const getModeRequirements = () => {
     if (sendMode === 'file_numbers') {
-      return 'Upload .txt/.xls/.xlsx file (max 50MB). File should contain mobile numbers.';
+      return `Upload .txt/.xls/.xlsx file (max ${MAX_SMS_UPLOAD_MB}MB). File should contain mobile numbers.`;
     }
     if (sendMode === 'personalized_file') {
-      return 'Upload .xls/.xlsx file (max 50MB). Use #1#, #2#, #3# in message template for Excel columns.';
+      return `Upload .xls/.xlsx file (max ${MAX_SMS_UPLOAD_MB}MB). Use #1#, #2#, #3# in message template for Excel columns.`;
     }
     if (sendMode === 'group') {
       return 'Select a phonebook group. SMS will be sent to all members in the selected group.';
@@ -404,7 +462,13 @@ export default function SMSSend() {
   const handleModeChange = (mode) => {
     setSendMode(mode);
     setSourceFile(null);
+    setSelectedFileName('');
+    setSelectedFileMeta(null);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.removeItem('sms_send_selected_file_meta');
+    }
     setFileError('');
+    setUploadFailureReason('');
     setError('');
   };
 
@@ -429,31 +493,62 @@ export default function SMSSend() {
   };
 
   const handleFileChange = (event) => {
+    if (event?.preventDefault) {
+      event.preventDefault();
+    }
+    if (event?.stopPropagation) {
+      event.stopPropagation();
+    }
+
     const file = event.target.files?.[0];
     setFileError('');
+    setUploadFailureReason('');
     setSourceFile(null);
+    setSelectedFileName('');
+    setSelectedFileMeta(null);
 
     if (!file) {
       return;
     }
 
-    if (file.size > 50 * 1024 * 1024) {
-      setFileError('File size must be under 50MB');
+    if (file.size > MAX_SMS_UPLOAD_MB * 1024 * 1024) {
+      setFileError(`File size must be under ${MAX_SMS_UPLOAD_MB}MB`);
       return;
     }
 
-    const lower = file.name.toLowerCase();
+    const lower = (file.name || '').toLowerCase();
     if (sendMode === 'file_numbers' && !(lower.endsWith('.txt') || lower.endsWith('.xls') || lower.endsWith('.xlsx'))) {
-      setFileError('Allowed file formats: .txt, .xls, .xlsx');
+      setFileError('Upload Mobile Numbers File accepts only .txt, .xls, or .xlsx files.');
       return;
     }
 
     if (sendMode === 'personalized_file' && !(lower.endsWith('.xls') || lower.endsWith('.xlsx'))) {
-      setFileError('Allowed file formats: .xls, .xlsx');
+      setFileError('Upload Personalized SMS Excel accepts only .xls or .xlsx files.');
       return;
     }
 
     setSourceFile(file);
+    setSelectedFileName(file.name || '');
+    const nextMeta = {
+      name: file.name || '',
+      size: Number(file.size || 0),
+      type: file.type || 'Unknown',
+      selectedAt: new Date().toISOString(),
+    };
+    setSelectedFileMeta(nextMeta);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem('sms_send_selected_file_meta', JSON.stringify(nextMeta));
+    }
+  };
+
+  const handleChooseFileClick = (event) => {
+    if (event?.preventDefault) {
+      event.preventDefault();
+    }
+    if (event?.stopPropagation) {
+      event.stopPropagation();
+    }
+    sourceFileInputRef.current?.click();
   };
 
   const handleCreateGroup = async () => {
@@ -527,7 +622,7 @@ export default function SMSSend() {
     }
 
     const appended = messageContent ? `${messageContent} ${selected.short_url}` : selected.short_url;
-    setMessageContent(appended.slice(0, 160));
+    setMessageContent(appended);
   };
 
   const handleDeleteShortUrl = async (urlId) => {
@@ -543,10 +638,18 @@ export default function SMSSend() {
   };
 
   const handleSendSMS = async (e) => {
-    e.preventDefault();
+    if (e?.preventDefault) {
+      e.preventDefault();
+    }
     setError('');
     setSuccess('');
+    setUploadFailureReason('');
     setLoading(true);
+    setSendingProgressPct(0);
+
+    const hasFileUpload = sendMode === 'file_numbers' || sendMode === 'personalized_file';
+    setUploadProgressPct(hasFileUpload ? 0 : 100);
+    setProgressState(hasFileUpload ? 'uploading' : 'sending');
 
     if (!effectiveSenderId) {
       setError(isSmppTransport ? 'Please enter SMPP sender ID' : 'Please select a sender ID or enter one manually');
@@ -560,8 +663,8 @@ export default function SMSSend() {
       return;
     }
 
-    if (messageContent.length > 160) {
-      setError('SMS content must be 160 characters or less');
+    if (!smsMeta.isWithinLimit) {
+      setError(`Message is too long: ${smsMeta.segments} SMS segments detected. Maximum allowed is ${MAX_SMS_SEGMENTS} segments.`);
       setLoading(false);
       return;
     }
@@ -678,7 +781,24 @@ export default function SMSSend() {
     try {
       const response = await API.post('sms/send/', payload, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: sendMode === 'single' ? 30000 : 300000,
+        timeout: sendMode === 'single' ? 30000 : 1800000,
+        onUploadProgress: (progressEvent) => {
+          if (!hasFileUpload) {
+            return;
+          }
+
+          const totalBytes = Number(progressEvent.total || 0);
+          const loadedBytes = Number(progressEvent.loaded || 0);
+          if (totalBytes <= 0) {
+            return;
+          }
+
+          const percent = Math.min(100, Math.round((loadedBytes / totalBytes) * 100));
+          setUploadProgressPct(percent);
+          if (percent >= 100) {
+            setProgressState('sending');
+          }
+        },
       });
 
       const responseData = response.data || {};
@@ -698,6 +818,13 @@ export default function SMSSend() {
       }
 
       if (responseData?.total_targets) {
+        const totalTargets = Number(responseData.total_targets || 0);
+        const sentCount = Number(responseData.sent_count || 0);
+        const sentPercent = totalTargets > 0 ? Math.min(100, Math.round((sentCount / totalTargets) * 100)) : 0;
+        setSendingProgressPct(sentPercent);
+        setUploadProgressPct(100);
+        setProgressState('completed');
+
         if (isSmppDlt) {
           setSuccess(dltMessageIds.length > 0 ? dltMessageIds.join(', ') : 'N/A');
         } else {
@@ -725,12 +852,19 @@ export default function SMSSend() {
           setError(`Failure reason(s): ${errorText}`);
         }
       } else if (responseData?.delivery_action === 'failed' || responseData?.status === 'failed') {
+        setProgressState('failed');
         const reason = responseData.failure_reason || responseData.detail || 'Unknown reason from SMS provider';
         setError(`Failed to send SMS: ${reason}`);
         return;
       } else if (responseData?.delivery_action === 'scheduled') {
+        setSendingProgressPct(100);
+        setUploadProgressPct(100);
+        setProgressState('completed');
         setSuccess('SMS scheduled successfully');
       } else {
+        setSendingProgressPct(100);
+        setUploadProgressPct(100);
+        setProgressState('completed');
         if (isSmppDlt) {
           setSuccess(dltMessageIds.length > 0 ? dltMessageIds.join(', ') : 'N/A');
         } else {
@@ -757,10 +891,34 @@ export default function SMSSend() {
       }
       if (sendMode === 'file_numbers' || sendMode === 'personalized_file') {
         setSourceFile(null);
+        setSelectedFileName('');
+        setSelectedFileMeta(null);
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.removeItem('sms_send_selected_file_meta');
+        }
       }
     } catch (err) {
+      setProgressState('failed');
+      const responseData = err.response?.data;
+      const uploadModeActive = sendMode === 'file_numbers' || sendMode === 'personalized_file';
+      const detailFromApi = responseData?.detail || '';
+      const skippedRows = Number(responseData?.skipped_rows || 0);
+
+      if (uploadModeActive) {
+        if (detailFromApi) {
+          const extra = skippedRows > 0 ? ` Skipped rows: ${skippedRows}.` : '';
+          setUploadFailureReason(`Upload failed: ${detailFromApi}${extra}`);
+        } else if (err.response?.status === 413) {
+          setUploadFailureReason(`Upload failed: File is too large for server limits. Try a smaller file (current UI limit ${MAX_SMS_UPLOAD_MB}MB).`);
+        } else if (err.code === 'ECONNABORTED' || String(err.message || '').toLowerCase().includes('timeout')) {
+          setUploadFailureReason('Upload failed: Request timed out while uploading/processing the file. Please try again with a smaller file or fewer rows.');
+        } else if (!err.response) {
+          setUploadFailureReason('Upload failed: Network error while uploading the file. Check connection and backend status, then retry.');
+        }
+      }
+
       if (!err.response && (err.code === 'ECONNABORTED' || String(err.message || '').toLowerCase().includes('timeout'))) {
-        setError('Request timed out while processing bulk SMS. Try smaller file batches (for example 100-200 rows) or retry.');
+        setError('Request timed out while processing bulk SMS. Please retry; large files may take longer to upload and dispatch.');
       } else if (!err.response) {
         setError('Network error while sending SMS. Check backend server status and internet connectivity, then retry.');
       } else {
@@ -774,6 +932,38 @@ export default function SMSSend() {
   if (profileLoading) {
     return <div style={{ padding: '24px' }}>Loading SMS page...</div>;
   }
+
+  const formatFileSize = (bytes) => {
+    const value = Number(bytes || 0);
+    if (value < 1024) {
+      return `${value} B`;
+    }
+    if (value < 1024 * 1024) {
+      return `${(value / 1024).toFixed(1)} KB`;
+    }
+    return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  const isUploadMode = sendMode === 'file_numbers' || sendMode === 'personalized_file';
+
+  const getUploadStatusText = () => {
+    if (progressState === 'uploading') {
+      return 'Uploading file...';
+    }
+    if (progressState === 'sending') {
+      return 'Upload complete. Sending SMS...';
+    }
+    if (progressState === 'completed') {
+      return 'Upload and processing completed.';
+    }
+    if (progressState === 'failed') {
+      return 'Upload or processing failed. Check error and retry.';
+    }
+    if (selectedFileName) {
+      return 'File selected. Click Send SMS to start upload.';
+    }
+    return 'No file selected yet.';
+  };
 
   if (!isAdmin) {
     return (
@@ -898,7 +1088,48 @@ export default function SMSSend() {
         </div>
       )}
 
-      <form onSubmit={handleSendSMS} style={{ backgroundColor: 'white', padding: '30px', borderRadius: '10px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+      {progressState !== 'idle' && (
+        <div
+          style={{
+            padding: '14px',
+            marginBottom: '20px',
+            backgroundColor: '#f8fafc',
+            borderRadius: '8px',
+            border: '1px solid #dbe4f0',
+          }}
+        >
+          <div style={{ fontWeight: 'bold', color: '#1A0E4E', marginBottom: '8px' }}>
+            SMS Send Status
+          </div>
+
+          <div style={{ fontSize: '13px', color: '#344054', marginBottom: '6px' }}>
+            Upload progress: {uploadProgressPct}%
+          </div>
+          <div style={{ width: '100%', height: '8px', borderRadius: '999px', backgroundColor: '#e8eef7', overflow: 'hidden', marginBottom: '12px' }}>
+            <div style={{ width: `${uploadProgressPct}%`, height: '100%', background: 'linear-gradient(90deg, #5B3FA8, #7C5DC7)' }} />
+          </div>
+
+          <div style={{ fontSize: '13px', color: '#344054', marginBottom: '6px' }}>
+            SMS send percentage: {sendingProgressPct}%
+          </div>
+          {loading && progressState === 'sending' ? (
+            <progress style={{ width: '100%', height: '10px' }} />
+          ) : (
+            <div style={{ width: '100%', height: '8px', borderRadius: '999px', backgroundColor: '#e8eef7', overflow: 'hidden' }}>
+              <div style={{ width: `${sendingProgressPct}%`, height: '100%', background: 'linear-gradient(90deg, #0ea5e9, #0284c7)' }} />
+            </div>
+          )}
+
+          <div style={{ marginTop: '10px', fontSize: '12px', color: '#475467' }}>
+            {progressState === 'uploading' && 'Uploading file...'}
+            {progressState === 'sending' && 'File uploaded. Sending SMS to recipients...'}
+            {progressState === 'completed' && 'SMS processing completed.'}
+            {progressState === 'failed' && 'SMS processing failed. Please check the error and retry.'}
+          </div>
+        </div>
+      )}
+
+      <div style={{ backgroundColor: 'white', padding: '30px', borderRadius: '10px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
         {/* Sender ID Selection */}
         <div style={{ marginBottom: '20px' }}>
           <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
@@ -1184,14 +1415,67 @@ export default function SMSSend() {
                     Upload File *
                   </label>
                   <input
+                    ref={sourceFileInputRef}
                     type="file"
                     onChange={handleFileChange}
                     accept={sendMode === 'file_numbers' ? '.txt,.xls,.xlsx' : '.xls,.xlsx'}
-                    style={{ width: '100%' }}
+                    style={{ display: 'none' }}
                   />
+                  <button
+                    type="button"
+                    onClick={handleChooseFileClick}
+                    style={{ padding: '8px 12px', border: '1px solid #d0d5dd', borderRadius: '6px', backgroundColor: '#fff', color: '#344054', cursor: 'pointer' }}
+                  >
+                    Choose File
+                  </button>
                   <small style={{ color: fileError ? '#d32f2f' : '#666' }}>
-                    {fileError || 'Maximum file size: 50MB'}
+                    {fileError || `Maximum file size: ${MAX_SMS_UPLOAD_MB}MB`}
                   </small>
+                  {selectedFileName && !fileError && (
+                    <small style={{ display: 'block', marginTop: '6px', color: '#2e7d32' }}>
+                      Selected file: {selectedFileName}
+                    </small>
+                  )}
+                  {selectedFileMeta && (
+                    <small style={{ display: 'block', marginTop: '4px', color: '#475467' }}>
+                      File details: {formatFileSize(selectedFileMeta.size)} | {selectedFileMeta.type || 'Unknown' }
+                    </small>
+                  )}
+                  {/*{selectedFileName && !fileError && (
+                    <small style={{ display: 'block', marginTop: '4px', color: '#0d47a1' }}>
+                      File selected successfully. Click "Send SMS" to upload and process this file.
+                    </small>
+                  )}*/}
+                  {uploadFailureReason && (
+                    <div style={{ marginTop: '8px', padding: '10px', border: '1px solid #ef9a9a', borderRadius: '6px', backgroundColor: '#ffebee', color: '#c62828', fontSize: '12px', lineHeight: 1.5 }}>
+                      {uploadFailureReason}
+                    </div>
+                  )}
+
+                  {/*<div style={{ marginTop: '10px', padding: '10px', border: '1px solid #e4e7ec', borderRadius: '6px', backgroundColor: '#fcfcfd' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#344054', marginBottom: showUploadStatusBar ? '8px' : 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={showUploadStatusBar}
+                        onChange={(e) => setShowUploadStatusBar(Boolean(e.target.checked))}
+                      />
+                      Show Upload Status Bar
+                    </label>
+
+                    {showUploadStatusBar && isUploadMode && (
+                      <>
+                        <div style={{ fontSize: '12px', color: '#475467', marginBottom: '6px' }}>
+                          Upload status: {uploadProgressPct}%
+                        </div>
+                        <div style={{ width: '100%', height: '8px', borderRadius: '999px', backgroundColor: '#e8eef7', overflow: 'hidden' }}>
+                          <div style={{ width: `${uploadProgressPct}%`, height: '100%', background: 'linear-gradient(90deg, #5B3FA8, #7C5DC7)' }} />
+                        </div>
+                        <div style={{ marginTop: '6px', fontSize: '12px', color: '#667085' }}>
+                          {getUploadStatusText()}
+                        </div>
+                      </>
+                    )}
+                  </div>*/}
                 </div>
               )}
             </div>
@@ -1260,8 +1544,7 @@ export default function SMSSend() {
           <textarea
             value={messageContent}
             onChange={(e) => setMessageContent(e.target.value)}
-            placeholder={sendMode === 'personalized_file' ? 'Type your personalized SMS template here' : 'Enter your message (max 160 characters)'}
-            maxLength={160}
+            placeholder={sendMode === 'personalized_file' ? 'Type your personalized SMS template here' : 'Enter your message'}
             required
             style={{
               width: '100%',
@@ -1274,9 +1557,12 @@ export default function SMSSend() {
               resize: 'none',
             }}
           />
-          <small style={{ color: messageContent.length > 160 ? '#d32f2f' : '#999' }}>
-            {messageContent.length}/160 characters
+          <small style={{ color: !smsMeta.isWithinLimit ? '#d32f2f' : '#999' }}>
+            Character_count: {smsMeta.lengthUnits} | no.of_messages: {smsMeta.segments}/{MAX_SMS_SEGMENTS}
+            {smsMeta.segments > 0 ? ` | Per-segment limit: ${smsMeta.perSegmentLimit}` : ''}
+            {!smsMeta.isWithinLimit ? ' | Exceeds allowed SMS segments' : ''}
           </small>
+          
           {showPersonalizedGuide && (
             <div style={{ marginTop: '10px', backgroundColor: '#f7fbff', border: '1px solid #cfe8ff', borderRadius: '6px', padding: '10px' }}>
               <div style={{ fontWeight: 'bold', color: '#0d47a1', marginBottom: '6px' }}>
@@ -1286,7 +1572,7 @@ export default function SMSSend() {
                 Use commands like <strong>#1#</strong>, <strong>#2#</strong>, <strong>#3#</strong> to read columns from each Excel row.
               </small>
               <small style={{ display: 'block', color: '#1f2937', marginBottom: '4px' }}>
-                <strong>Example Excel row:</strong> 919876543210 | Rahul | 1250 | 12-03-2026
+                <strong>Example Excel row:</strong> 91XXXXXXXXXX | Rahul | 1250 | 12-03-2026
               </small>
               <small style={{ display: 'block', color: '#1f2937', marginBottom: '4px' }}>
                 <strong>Message template:</strong> Hi #2#, amount ₹#3# received on #4#.
@@ -1544,7 +1830,8 @@ export default function SMSSend() {
         </div>
 
         <button
-          type="submit"
+          type="button"
+          onClick={handleSendSMS}
           disabled={loading}
           style={{
             width: '100%',
@@ -1561,7 +1848,7 @@ export default function SMSSend() {
         >
           {loading ? 'Processing...' : deliveryMode === 'scheduled' ? 'Schedule SMS' : isSmppTransport ? 'Send via SMPP' : 'Send SMS'}
         </button>
-      </form>
+      </div>
     </div>
   );
 }
