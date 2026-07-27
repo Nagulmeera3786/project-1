@@ -639,18 +639,47 @@ def _get_email_validation_worker_count():
 
 def _get_smtp_retry_attempts():
     try:
-        configured = int(getattr(settings, 'EMAIL_VALIDATION_SMTP_RETRY_ATTEMPTS', 2) or 2)
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_SMTP_RETRY_ATTEMPTS', 1) or 1)
     except (TypeError, ValueError):
-        configured = 2
-    return max(1, min(configured, 4))
+        configured = 1
+    return max(1, min(configured, 3))
 
 
 def _get_smtp_retry_backoff_seconds():
     try:
-        configured = float(getattr(settings, 'EMAIL_VALIDATION_SMTP_RETRY_BACKOFF_SECONDS', 0.8) or 0.8)
+        configured = float(getattr(settings, 'EMAIL_VALIDATION_SMTP_RETRY_BACKOFF_SECONDS', 0.35) or 0.35)
     except (TypeError, ValueError):
-        configured = 0.8
+        configured = 0.35
     return max(0.2, min(configured, 5.0))
+
+
+def _get_smtp_timeout_seconds():
+    try:
+        configured = float(getattr(settings, 'EMAIL_VALIDATION_SMTP_TIMEOUT_SECONDS', 4.0) or 4.0)
+    except (TypeError, ValueError):
+        configured = 4.0
+    return max(2.0, min(configured, 12.0))
+
+
+def _get_smtp_max_mx_hosts():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_SMTP_MAX_MX_HOSTS', 2) or 2)
+    except (TypeError, ValueError):
+        configured = 2
+    return max(1, min(configured, 5))
+
+
+def _get_smtp_sender_probe_limit():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_SMTP_SENDER_PROBE_LIMIT', 1) or 1)
+    except (TypeError, ValueError):
+        configured = 1
+    return max(1, min(configured, 5))
+
+
+def _get_smtp_enable_catch_all_probe():
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_SMTP_ENABLE_CATCH_ALL_PROBE', 'false') or '').strip().lower()
+    return configured in {'1', 'true', 'yes', 'on'}
 
 
 def _get_smtp_mail_from_pool():
@@ -881,7 +910,7 @@ def _resolve_mx_host(domain):
 _EMAIL_REGEX = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
 
 
-def _build_validation_result(email, *, valid_syntax, valid_mailbox, catch_all=False, did_you_mean='', disposable=False, role_based=False, spam=False, risky=False, risk='low', provider_message_id='', status='Validation completed.', status_code='Success', classification='Deliverable', failure_reason=''):
+def _build_validation_result(email, *, valid_syntax, valid_mailbox, catch_all=False, did_you_mean='', disposable=False, role_based=False, spam=False, risky=False, risk='low', provider_message_id='', status='Validation completed.', status_code='Success', classification='Deliverable', failure_reason='', provider=''):
     normalized_email = str(email or '').strip().lower()
     domain = normalized_email.split('@', 1)[1] if '@' in normalized_email else ''
     domain_related = bool(domain and domain not in _COMMON_FREE_EMAIL_DOMAINS)
@@ -907,6 +936,7 @@ def _build_validation_result(email, *, valid_syntax, valid_mailbox, catch_all=Fa
 
     return {
         'email': normalized_email,
+        'provider': str(provider or '').strip().lower() or 'own_system',
         'domain': domain,
         'domainRelatedMail': domain_related,
         'validMailbox': bool(valid_mailbox),
@@ -964,6 +994,7 @@ def _validate_email_with_own_system_diagnostics(email):
             status_code='INVALID_FORMAT',
             classification='Invalid',
             failure_reason='Invalid Email Format',
+            provider='own_system',
         )
         diagnostics['final_status_code'] = 'INVALID_FORMAT'
         diagnostics['final_status'] = 'Invalid Email Format'
@@ -1000,12 +1031,14 @@ def _validate_email_with_own_system_diagnostics(email):
             status_code='INVALID_SYNTAX_DOMAIN_TYPO',
             classification='Invalid',
             failure_reason=f'Likely domain typo: {domain} -> {typo_suggestion}',
+            provider='own_system',
         )
         diagnostics['final_status_code'] = 'INVALID_SYNTAX_DOMAIN_TYPO'
         diagnostics['final_status'] = 'Invalid domain spelling (popular provider typo detected)'
         return result, diagnostics
 
     mx_hosts, mx_error = _resolve_mx_hosts_with_error(domain)
+    mx_hosts = list(mx_hosts)[:_get_smtp_max_mx_hosts()]
     diagnostics['mx_hosts'] = list(mx_hosts)
     diagnostics['mx_lookup_error'] = mx_error
     domain_resolves = _domain_resolves(domain)
@@ -1038,6 +1071,7 @@ def _validate_email_with_own_system_diagnostics(email):
             status_code=status_code,
             classification='Invalid',
             failure_reason=failure_reason,
+            provider='own_system',
         )
         history_signal = _get_historical_verification_signal(normalized)
         diagnostics['historical_signal'] = history_signal
@@ -1057,7 +1091,10 @@ def _validate_email_with_own_system_diagnostics(email):
     last_failure_reason = ''
     smtp_retry_attempts = _get_smtp_retry_attempts()
     smtp_retry_backoff = _get_smtp_retry_backoff_seconds()
-    mail_from_pool = _get_smtp_mail_from_pool()
+    smtp_timeout_seconds = _get_smtp_timeout_seconds()
+    sender_probe_limit = _get_smtp_sender_probe_limit()
+    catch_all_probe_enabled = _get_smtp_enable_catch_all_probe()
+    mail_from_pool = _get_smtp_mail_from_pool()[:sender_probe_limit]
     retryable_codes = {421, 450, 451, 452}
     greylist_markers = ('greylist', 'greylisting', 'try again later', 'temporarily deferred')
 
@@ -1070,7 +1107,6 @@ def _validate_email_with_own_system_diagnostics(email):
             'error': '',
         }
 
-        successful = False
         for retry_index in range(smtp_retry_attempts):
             for mail_from in mail_from_pool:
                 retry_event = {
@@ -1087,7 +1123,7 @@ def _validate_email_with_own_system_diagnostics(email):
                 attempt['smtp_retries'].append(retry_event)
 
                 try:
-                    with smtplib.SMTP(timeout=8) as server:
+                    with smtplib.SMTP(timeout=smtp_timeout_seconds) as server:
                         server.connect(mx_host, 25)
                         retry_event['connected'] = True
                         attempt['connected'] = True
@@ -1106,12 +1142,14 @@ def _validate_email_with_own_system_diagnostics(email):
                         retry_event['rcpt_message'] = message_text
 
                         if code == 250:
-                            probe_local_part = f'bhisha_probe_{secrets.token_hex(6)}'
-                            probe_email = f'{probe_local_part}@{domain}'
-                            probe_code, probe_message = server.rcpt(probe_email)
-                            catch_all = int(probe_code or 0) == 250
-                            retry_event['catch_all_probe_code'] = int(probe_code or 0)
-                            retry_event['catch_all_probe_message'] = str(probe_message or '').strip()
+                            catch_all = False
+                            if catch_all_probe_enabled:
+                                probe_local_part = f'bhisha_probe_{secrets.token_hex(6)}'
+                                probe_email = f'{probe_local_part}@{domain}'
+                                probe_code, probe_message = server.rcpt(probe_email)
+                                catch_all = int(probe_code or 0) == 250
+                                retry_event['catch_all_probe_code'] = int(probe_code or 0)
+                                retry_event['catch_all_probe_message'] = str(probe_message or '').strip()
                             diagnostics['attempts'].append(attempt)
 
                             history_signal = _get_historical_verification_signal(normalized)
@@ -1140,6 +1178,7 @@ def _validate_email_with_own_system_diagnostics(email):
                                 status_code='CATCH_ALL_DOMAIN' if catch_all else 'SMTP_ACCEPTED',
                                 classification='Risky' if catch_all else 'Deliverable',
                                 failure_reason='Catch-all domain accepted test recipient' if catch_all else '',
+                                provider='own_system',
                             )
                             diagnostics['final_status_code'] = result.get('statusCode', '')
                             diagnostics['final_status'] = result.get('status', '')
@@ -1169,6 +1208,7 @@ def _validate_email_with_own_system_diagnostics(email):
                                 status_code='HARD_BOUNCE_MAILBOX_NOT_FOUND',
                                 classification='Invalid',
                                 failure_reason=f'Hard bounce from {mx_host}: {message_text}',
+                                provider='own_system',
                             )
                             diagnostics['final_status_code'] = result.get('statusCode', '')
                             diagnostics['final_status'] = result.get('status', '')
@@ -1204,6 +1244,7 @@ def _validate_email_with_own_system_diagnostics(email):
                                     status_code='GREYLISTED',
                                     classification='Risky',
                                     failure_reason=f'Greylisting response from {mx_host}: {message_text}',
+                                    provider='own_system',
                                 )
                                 diagnostics['final_status_code'] = result.get('statusCode', '')
                                 diagnostics['final_status'] = result.get('status', '')
@@ -1236,6 +1277,7 @@ def _validate_email_with_own_system_diagnostics(email):
                                 status_code='SMTP_TEMPORARY_FAILURE',
                                 classification='Risky',
                                 failure_reason=f'Temporary SMTP response from {mx_host}: {message_text}',
+                                provider='own_system',
                             )
                             diagnostics['final_status_code'] = result.get('statusCode', '')
                             diagnostics['final_status'] = result.get('status', '')
@@ -1246,9 +1288,6 @@ def _validate_email_with_own_system_diagnostics(email):
                     retry_event['error'] = str(exc)
                     last_failure_reason = f'SMTP error on {mx_host}: {exc}'
                     continue
-
-            if successful:
-                break
 
         diagnostics['attempts'].append(attempt)
 
@@ -1262,6 +1301,7 @@ def _validate_email_with_own_system_diagnostics(email):
         status_code='SMTP_CONNECTION_FAILED',
         classification='Risky',
         failure_reason=last_failure_reason or 'SMTP validation failed',
+        provider='own_system',
     )
     history_signal = _get_historical_verification_signal(normalized)
     diagnostics['historical_signal'] = history_signal
@@ -1298,6 +1338,7 @@ def _validate_email_with_zerobounce(email):
             status_code='PROVIDER_NOT_CONFIGURED',
             classification='Invalid',
             failure_reason='Validation provider is not configured.',
+            provider='zerobounce',
         )
 
     if not re.fullmatch(_EMAIL_REGEX, normalized):
@@ -1311,6 +1352,7 @@ def _validate_email_with_zerobounce(email):
             status_code='INVALID_FORMAT',
             classification='Invalid',
             failure_reason='Invalid Email Format',
+            provider='zerobounce',
         )
 
     try:
@@ -1332,6 +1374,7 @@ def _validate_email_with_zerobounce(email):
             status_code='PROVIDER_ERROR',
             classification='Risky',
             failure_reason=f'Validation request failed: {type(exc).__name__}',
+            provider='zerobounce',
         )
 
     status_value = str(payload.get('status') or '').strip().lower()
@@ -1382,10 +1425,11 @@ def _validate_email_with_zerobounce(email):
         status_code=str(payload.get('error') or payload.get('status') or 'Success').upper(),
         classification=classification,
         failure_reason='' if classification == 'Deliverable' else status_text,
+        provider='zerobounce',
     )
 
 
-def _validate_email_list_with_parallel_workers(unique_emails, validator_fn):
+def _validate_email_list_with_parallel_workers(unique_emails, validator_fn, provider_mode='own_system'):
     workers = _get_email_validation_worker_count()
     result_map = {}
 
@@ -1399,7 +1443,7 @@ def _validate_email_list_with_parallel_workers(unique_emails, validator_fn):
             try:
                 result_map[candidate] = future.result()
             except Exception as exc:
-                result_map[candidate] = _build_email_validation_error_result(candidate, str(exc))
+                result_map[candidate] = _build_email_validation_error_result(candidate, str(exc), provider_mode=provider_mode)
 
     return [result_map[candidate] for candidate in unique_emails if candidate in result_map]
 
@@ -1408,9 +1452,9 @@ def _validate_email_list(unique_emails, provider_mode=None):
     mode = str(provider_mode or _get_email_validation_provider_mode() or 'own_system').strip().lower()
 
     if mode == 'zerobounce':
-        return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_zerobounce)
+        return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_zerobounce, provider_mode='zerobounce')
 
-    return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_own_system)
+    return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_own_system, provider_mode='own_system')
 
 
 def _score_verifalia_entry(entry):
@@ -1830,6 +1874,7 @@ def _to_client_validation_result(item):
 
     normalized_item = {
         **item,
+        'provider': str(item.get('provider') or 'own_system').strip().lower(),
         'email': entered_email,
         'validMailbox': valid_mailbox,
         'validSyntax': valid_syntax,
@@ -1843,10 +1888,20 @@ def _to_client_validation_result(item):
         'statusCode': status_code,
     }
 
+    provider_mode = str(normalized_item.get('provider') or 'own_system').strip().lower()
+    provider_mode_label = _normalize_provider_mode_label(provider_mode)
+    if provider_mode == 'own_system':
+        provider_result_status = 'Valid' if (valid_mailbox and valid_syntax and not disposable and not role_based) else 'Invalid'
+    else:
+        provider_result_status = f'{classification}: {status_text}'
+
     bhisha_result = _build_bhisha_api_validation_result(normalized_item)
 
     return {
         'email': entered_email,
+        'provider_mode': provider_mode,
+        'provider_mode_label': provider_mode_label,
+        'provider_result_status': provider_result_status,
         'validMailbox': valid_mailbox,
         'validSyntax': valid_syntax,
         'catchAll': catch_all,
@@ -2176,7 +2231,7 @@ def _build_validation_result_from_verifalia(email, entry, payload, provider_mess
     }
 
 
-def _build_email_validation_error_result(candidate, status_text, classification='Unknown', quality='unknown', status_code='Error', risk='unknown'):
+def _build_email_validation_error_result(candidate, status_text, classification='Unknown', quality='unknown', status_code='Error', risk='unknown', provider_mode='own_system'):
     normalized_flags = {
         'email': candidate,
         'domain': candidate.split('@', 1)[1].lower() if '@' in candidate else '',
@@ -2197,6 +2252,7 @@ def _build_email_validation_error_result(candidate, status_text, classification=
     })
     return {
         **normalized_flags,
+        'provider': str(provider_mode or 'own_system').strip().lower(),
         'summary': report['summary'],
         'report': report['report'],
         'status': report['status'],
@@ -2823,6 +2879,13 @@ def _build_bhisha_raw_status_details(item):
     return 'safe_to_mail'
 
 
+def _normalize_provider_mode_label(provider_mode):
+    normalized = str(provider_mode or '').strip().lower()
+    if normalized == 'zerobounce':
+        return 'ZeroBounce API'
+    return 'Own System (SMTP + DNS)'
+
+
 def _build_bhisha_api_validation_result(item):
     valid_syntax = bool(item.get('validSyntax'))
     valid_inbox = bool(
@@ -2845,6 +2908,8 @@ def _build_bhisha_api_validation_result(item):
 
     result = {
         'email': str(item.get('email') or '').strip().lower(),
+        'provider_mode': str(item.get('provider_mode') or item.get('provider') or 'own_system').strip().lower(),
+        'provider_mode_label': _normalize_provider_mode_label(item.get('provider_mode') or item.get('provider') or 'own_system'),
         'valid_inbox': valid_inbox,
         'valid_syntax': valid_syntax,
         'domain_related_mail': domain_related_mail,
@@ -2919,6 +2984,12 @@ def _build_concise_api_validation_response(result_items):
         if isinstance(bhisha_result, dict):
             normalized_results.append({
                 'email': str(bhisha_result.get('email') or '').strip().lower(),
+                'provider_mode': str(item.get('provider_mode') or bhisha_result.get('provider_mode') or '').strip().lower(),
+                'provider_mode_label': str(item.get('provider_mode_label') or bhisha_result.get('provider_mode_label') or '').strip(),
+                'provider_result_status': str(item.get('provider_result_status') or '').strip(),
+                'classification': str(item.get('classification') or '').strip(),
+                'status': str(item.get('status') or '').strip(),
+                'status_code': str(item.get('statusCode') or item.get('status_code') or '').strip(),
                 'valid_inbox': bool(bhisha_result.get('valid_inbox')),
                 'valid_syntax': bool(bhisha_result.get('valid_syntax')),
                 'domain_related_mail': bool(bhisha_result.get('domain_related_mail')),
@@ -2936,26 +3007,128 @@ def _build_concise_api_validation_response(result_items):
     }
 
 
+def _build_email_validation_dlr_report(*, provider_mode, results, history=None):
+    normalized_mode = str(provider_mode or 'own_system').strip().lower()
+    if normalized_mode not in {'own_system', 'zerobounce'}:
+        normalized_mode = 'own_system'
+
+    history_status = str(getattr(history, 'status', '') or '').strip().lower() if history else 'completed'
+    completed = history_status == EmailValidationHistory.STATUS_COMPLETED if history else True
+    failure_reason = ''
+    if history and history_status == EmailValidationHistory.STATUS_FAILED:
+        summary = _get_history_summary(history)
+        failure_reason = str(summary.get('failure_reason') or summary.get('error') or '').strip()
+
+    report = {
+        'request_id': getattr(history, 'request_id', '') if history else '',
+        'status': history_status or 'completed',
+        'completed': completed,
+        'delivery_time': getattr(history, 'completed_at', None) if history else None,
+        'failure_reason': failure_reason,
+        'provider_mode': normalized_mode,
+        'provider_mode_label': _normalize_provider_mode_label(normalized_mode),
+    }
+
+    rows = results if isinstance(results, list) else []
+    if normalized_mode == 'own_system':
+        valid_count = 0
+        invalid_count = 0
+        for item in rows:
+            status_text = str(item.get('provider_result_status') or '').strip().lower()
+            if status_text == 'valid':
+                valid_count += 1
+            else:
+                invalid_count += 1
+
+        report['summary'] = {
+            'valid': valid_count,
+            'invalid': invalid_count,
+            'total': len(rows),
+        }
+        report['results'] = [
+            {
+                'email': str(item.get('email') or '').strip().lower(),
+                'status': str(item.get('provider_result_status') or 'Invalid').strip() or 'Invalid',
+            }
+            for item in rows
+        ]
+        return report
+
+    classification_breakdown = {'Deliverable': 0, 'Risky': 0, 'Invalid': 0, 'Unknown': 0}
+    response_rows = []
+    for item in rows:
+        classification = str(item.get('classification') or 'Unknown').strip() or 'Unknown'
+        if classification not in classification_breakdown:
+            classification_breakdown['Unknown'] += 1
+        else:
+            classification_breakdown[classification] += 1
+
+        response_rows.append(
+            {
+                'email': str(item.get('email') or '').strip().lower(),
+                'status': str(item.get('status') or '').strip(),
+                'status_code': str(item.get('statusCode') or item.get('status_code') or '').strip(),
+                'classification': classification,
+            }
+        )
+
+    report['summary'] = {
+        'deliverable': classification_breakdown['Deliverable'],
+        'risky': classification_breakdown['Risky'],
+        'invalid': classification_breakdown['Invalid'],
+        'unknown': classification_breakdown['Unknown'],
+        'total': len(rows),
+    }
+    report['results'] = response_rows
+    return report
+
+
 def _build_concise_api_status_response(history):
     processing_state = _get_history_processing_state(history)
+    summary = _get_history_summary(history)
+    provider_mode = str(summary.get('provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
 
     if processing_state in {'completed'}:
-        summary = _get_history_summary(history)
         stored_results = summary.get('results') if isinstance(summary.get('results'), list) else []
-        return _build_concise_api_validation_response(stored_results)
+        response_payload = _build_concise_api_validation_response(stored_results)
+        response_payload['provider_mode'] = provider_mode
+        response_payload['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
+        response_payload['summary'] = {
+            'safe_to_send_yes': int(summary.get('safe_count') or 0),
+            'safe_to_send_no': int(summary.get('unsafe_count') or 0),
+        }
+        response_payload['dlr_report'] = _build_email_validation_dlr_report(
+            provider_mode=provider_mode,
+            results=stored_results,
+            history=history,
+        )
+        return response_payload
 
     if processing_state in {'failed', 'cancelled', 'stopped'}:
-        summary = _get_history_summary(history)
         failure_reason = str(summary.get('failure_reason') or summary.get('error') or processing_state).strip()
         return {
             'request_id': history.request_id,
             'status': processing_state,
+            'provider_mode': provider_mode,
+            'provider_mode_label': _normalize_provider_mode_label(provider_mode),
             'detail': failure_reason,
+            'dlr_report': _build_email_validation_dlr_report(
+                provider_mode=provider_mode,
+                results=summary.get('results') if isinstance(summary.get('results'), list) else [],
+                history=history,
+            ),
         }
 
     return {
         'request_id': history.request_id,
         'status': processing_state,
+        'provider_mode': provider_mode,
+        'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+        'dlr_report': _build_email_validation_dlr_report(
+            provider_mode=provider_mode,
+            results=summary.get('results') if isinstance(summary.get('results'), list) else [],
+            history=history,
+        ),
     }
 
 
@@ -3057,8 +3230,11 @@ def _update_history_progress(history, processed_count, total_count, started_at, 
     safe_count = sum(1 for item in results if _is_safe_client_validation_result(item))
     unsafe_count = len(results) - safe_count
     summary = _get_history_summary(history)
+    provider_mode = str(summary.get('provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
     summary.update(
         {
+            'provider_mode': provider_mode,
+            'provider_mode_label': _normalize_provider_mode_label(provider_mode),
             'safe_count': safe_count,
             'unsafe_count': unsafe_count,
             'provider_message_id': provider_message_ids[0] if provider_message_ids else '',
@@ -3130,7 +3306,9 @@ def _process_email_validation_history_job(history_id):
         history.save(update_fields=['results_summary'])
 
         batch_size = _get_email_validation_batch_size()
-        provider_mode = _get_email_validation_provider_mode()
+        provider_mode = str(summary.get('provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
+        if provider_mode not in {'own_system', 'zerobounce'}:
+            provider_mode = 'own_system'
         collected_results = []
         provider_request_ids = []
         processed_count = 0
@@ -3168,6 +3346,7 @@ def _process_email_validation_history_job(history_id):
                             quality='invalid',
                             status_code='Success',
                             risk='none',
+                            provider_mode=provider_mode,
                         )
                     )
                 else:
@@ -3179,7 +3358,7 @@ def _process_email_validation_history_job(history_id):
             result_map = {str(item.get('email') or '').strip().lower(): item for item in batch_results}
             for candidate in current_batch:
                 normalized = str(candidate or '').strip().lower()
-                item = result_map.get(normalized) or _build_email_validation_error_result(normalized, 'Validation result unavailable.')
+                item = result_map.get(normalized) or _build_email_validation_error_result(normalized, 'Validation result unavailable.', provider_mode=provider_mode)
                 client_item = _to_client_validation_result(item)
                 collected_results.append(client_item)
                 provider_id = str(client_item.get('providerMessageId') or '').strip()
@@ -3201,6 +3380,8 @@ def _process_email_validation_history_job(history_id):
         summary = _get_history_summary(history)
         summary.update(
             {
+                'provider_mode': provider_mode,
+                'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                 'safe_count': safe_count,
                 'unsafe_count': unsafe_count,
                 'provider_message_id': provider_request_ids[0] if provider_request_ids else '',
@@ -5286,6 +5467,8 @@ class EmailValidationView(generics.GenericAPIView):
                 email_count=len(unique_emails),
                 emails_requested=unique_emails,
                 results_summary={
+                    'provider_mode': provider_mode,
+                    'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                     'safe_count': 0,
                     'unsafe_count': 0,
                     'provider_message_id': '',
@@ -5322,13 +5505,11 @@ class EmailValidationView(generics.GenericAPIView):
                     'results': [],
                     'simple_results': [],
                     'history': history_payload,
-                    'dlr_report': {
-                        'request_id': history.request_id,
-                        'status': history.status,
-                        'completed': False,
-                        'delivery_time': None,
-                        'failure_reason': '',
-                    },
+                    'dlr_report': _build_email_validation_dlr_report(
+                        provider_mode=provider_mode,
+                        results=[],
+                        history=history,
+                    ),
                 },
                 status=status.HTTP_202_ACCEPTED,
             )
@@ -5350,6 +5531,8 @@ class EmailValidationView(generics.GenericAPIView):
             email_count=len(unique_emails),
             emails_requested=unique_emails,
             results_summary={
+                'provider_mode': provider_mode,
+                'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                 'safe_count': safe_count,
                 'unsafe_count': unsafe_count,
                 'provider_message_id': provider_request_ids[0] if provider_request_ids else '',
@@ -5379,13 +5562,11 @@ class EmailValidationView(generics.GenericAPIView):
                 'simple_results': simple_results,
                 'results': client_results,
                 'history': history_payload,
-                'dlr_report': {
-                    'request_id': history.request_id,
-                    'status': history.status,
-                    'completed': history.status == EmailValidationHistory.STATUS_COMPLETED,
-                    'delivery_time': history.completed_at,
-                    'failure_reason': '',
-                },
+                'dlr_report': _build_email_validation_dlr_report(
+                    provider_mode=provider_mode,
+                    results=client_results,
+                    history=history,
+                ),
             },
             status=status.HTTP_200_OK,
         )
@@ -5744,6 +5925,8 @@ class APIEmailValidationView(generics.GenericAPIView):
             email_count=len(unique_emails),
             emails_requested=unique_emails,
             results_summary={
+                'provider_mode': provider_mode,
+                'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                 'safe_count': 0,
                 'unsafe_count': 0,
                 'provider_message_id': '',
@@ -5773,6 +5956,12 @@ class APIEmailValidationView(generics.GenericAPIView):
                     'request_id': history.request_id,
                     'status': 'pending',
                     'provider_mode': provider_mode,
+                    'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+                    'dlr_report': _build_email_validation_dlr_report(
+                        provider_mode=provider_mode,
+                        results=[],
+                        history=history,
+                    ),
                     'detail': 'File accepted and queued for background validation.',
                 },
                 status=status.HTTP_202_ACCEPTED,
@@ -5790,6 +5979,8 @@ class APIEmailValidationView(generics.GenericAPIView):
 
         history.status = EmailValidationHistory.STATUS_COMPLETED
         history.results_summary = {
+            'provider_mode': provider_mode,
+            'provider_mode_label': _normalize_provider_mode_label(provider_mode),
             'safe_count': safe_count,
             'unsafe_count': unsafe_count,
             'provider_message_id': provider_request_ids[0] if provider_request_ids else '',
@@ -5801,6 +5992,17 @@ class APIEmailValidationView(generics.GenericAPIView):
 
         concise_response = _build_concise_api_validation_response(client_results)
         concise_response['provider_mode'] = provider_mode
+        concise_response['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
+        concise_response['summary'] = {
+            'safe_to_send_yes': safe_count,
+            'safe_to_send_no': unsafe_count,
+        }
+        concise_response['dashboard_results'] = client_results
+        concise_response['dlr_report'] = _build_email_validation_dlr_report(
+            provider_mode=provider_mode,
+            results=client_results,
+            history=history,
+        )
         return Response(concise_response, status=status.HTTP_200_OK)
 
 
@@ -5839,6 +6041,15 @@ class EmailValidationStatusView(generics.GenericAPIView):
         payload = EmailValidationHistorySerializer(history).data
         payload['worker_active'] = _is_worker_active(history.id)
         payload['processing_state'] = _get_history_processing_state(history)
+        summary = _get_history_summary(history)
+        provider_mode = str(summary.get('provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
+        payload['provider_mode'] = provider_mode
+        payload['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
+        payload['dlr_report'] = _build_email_validation_dlr_report(
+            provider_mode=provider_mode,
+            results=summary.get('results') if isinstance(summary.get('results'), list) else [],
+            history=history,
+        )
         return Response(payload)
 
 
@@ -5876,6 +6087,15 @@ class EmailValidationControlView(generics.GenericAPIView):
         payload = EmailValidationHistorySerializer(history).data
         payload['worker_active'] = _is_worker_active(history.id)
         payload['processing_state'] = _get_history_processing_state(history)
+        summary = _get_history_summary(history)
+        provider_mode = str(summary.get('provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
+        payload['provider_mode'] = provider_mode
+        payload['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
+        payload['dlr_report'] = _build_email_validation_dlr_report(
+            provider_mode=provider_mode,
+            results=summary.get('results') if isinstance(summary.get('results'), list) else [],
+            history=history,
+        )
         payload['last_action'] = action
         return Response(payload)
 
@@ -6052,6 +6272,15 @@ class APIEmailValidationControlView(generics.GenericAPIView):
         payload = EmailValidationHistorySerializer(history).data
         payload['worker_active'] = _is_worker_active(history.id)
         payload['processing_state'] = _get_history_processing_state(history)
+        summary = _get_history_summary(history)
+        provider_mode = str(summary.get('provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
+        payload['provider_mode'] = provider_mode
+        payload['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
+        payload['dlr_report'] = _build_email_validation_dlr_report(
+            provider_mode=provider_mode,
+            results=summary.get('results') if isinstance(summary.get('results'), list) else [],
+            history=history,
+        )
         payload['last_action'] = action
         return Response(payload)
 

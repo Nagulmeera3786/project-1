@@ -97,6 +97,7 @@ export default function EmailValidation() {
   const [latestRequestId, setLatestRequestId] = useState('');
   const [results, setResults] = useState([]);
   const [summary, setSummary] = useState({ safe_to_send_yes: 0, safe_to_send_no: 0 });
+  const [dlrReport, setDlrReport] = useState(null);
   const [deliverableEmailsText, setDeliverableEmailsText] = useState('');
   const [showComposePanel, setShowComposePanel] = useState(false);
   const [sendingDeliverableEmails, setSendingDeliverableEmails] = useState(false);
@@ -277,6 +278,65 @@ export default function EmailValidation() {
     };
   }, [loading, progressStage]);
 
+  const buildFallbackDlrReport = ({ providerMode, requestId, status, completedAt, failureReason, rows }) => {
+    const normalizedMode = String(providerMode || validationProviderMode || 'own_system').toLowerCase();
+    const resultRows = Array.isArray(rows) ? rows : [];
+
+    if (normalizedMode === 'own_system') {
+      let valid = 0;
+      let invalid = 0;
+      resultRows.forEach((row) => {
+        const state = String(row?.provider_result_status || '').trim().toLowerCase();
+        if (state === 'valid') {
+          valid += 1;
+        } else {
+          invalid += 1;
+        }
+      });
+
+      return {
+        request_id: requestId || '',
+        status: status || 'completed',
+        completed: String(status || '').toLowerCase() === 'completed',
+        delivery_time: completedAt || null,
+        failure_reason: failureReason || '',
+        provider_mode: 'own_system',
+        provider_mode_label: 'Own System (SMTP + DNS)',
+        summary: { valid, invalid, total: resultRows.length },
+        results: resultRows.map((row) => ({
+          email: String(row?.email || '').trim().toLowerCase(),
+          status: String(row?.provider_result_status || 'Invalid').trim() || 'Invalid',
+        })),
+      };
+    }
+
+    const totals = { deliverable: 0, risky: 0, invalid: 0, unknown: 0 };
+    resultRows.forEach((row) => {
+      const classification = String(row?.classification || 'unknown').toLowerCase();
+      if (classification === 'deliverable') totals.deliverable += 1;
+      else if (classification === 'risky') totals.risky += 1;
+      else if (classification === 'invalid') totals.invalid += 1;
+      else totals.unknown += 1;
+    });
+
+    return {
+      request_id: requestId || '',
+      status: status || 'completed',
+      completed: String(status || '').toLowerCase() === 'completed',
+      delivery_time: completedAt || null,
+      failure_reason: failureReason || '',
+      provider_mode: 'zerobounce',
+      provider_mode_label: 'ZeroBounce API',
+      summary: { ...totals, total: resultRows.length },
+      results: resultRows.map((row) => ({
+        email: String(row?.email || '').trim().toLowerCase(),
+        status: String(row?.status || '').trim(),
+        status_code: String(row?.statusCode || '').trim(),
+        classification: String(row?.classification || 'Unknown').trim(),
+      })),
+    };
+  };
+
   const applyValidationPayload = (data = {}) => {
     const history = data?.history || {};
     const historySummary = history?.results_summary || {};
@@ -303,6 +363,20 @@ export default function EmailValidation() {
       || 'own_system'
     ).toLowerCase();
     setValidationProviderMode(modeFromPayload);
+
+    const payloadDlr = data?.dlr_report;
+    if (payloadDlr && typeof payloadDlr === 'object') {
+      setDlrReport(payloadDlr);
+    } else {
+      setDlrReport(buildFallbackDlrReport({
+        providerMode: modeFromPayload,
+        requestId: data?.request_id || history?.request_id || '',
+        status: String(history?.status || data?.status || 'completed').toLowerCase(),
+        completedAt: history?.completed_at || null,
+        failureReason: historySummary?.failure_reason || historySummary?.error || '',
+        rows: effectiveResults,
+      }));
+    }
   };
 
   const hydrateFromHistoryRow = (current = {}) => {
@@ -313,6 +387,20 @@ export default function EmailValidation() {
     const elapsedSeconds = Number(rs?.elapsed_seconds || 0);
     const etaSeconds = Number(rs?.eta_seconds || 0);
     const processingState = String(current?.processing_state || rs?.processing_state || current?.status || 'pending').toLowerCase();
+    const modeFromRow = String(current?.provider_mode || rs?.provider_mode || validationProviderMode || 'own_system').toLowerCase();
+
+    if (current?.dlr_report && typeof current.dlr_report === 'object') {
+      setDlrReport(current.dlr_report);
+    } else {
+      setDlrReport(buildFallbackDlrReport({
+        providerMode: modeFromRow,
+        requestId: current?.request_id || '',
+        status: processingState,
+        completedAt: current?.completed_at || null,
+        failureReason: rs?.failure_reason || rs?.error || '',
+        rows: Array.isArray(rs?.results) ? rs.results : [],
+      }));
+    }
 
     setActiveRequestMeta({
       requestId: current?.request_id || '',
@@ -515,6 +603,7 @@ export default function EmailValidation() {
     setInfo('');
     setResults([]);
     setSummary({ safe_to_send_yes: 0, safe_to_send_no: 0 });
+    setDlrReport(null);
     setDeliverableEmailsText('');
     setShowComposePanel(false);
     setSendSummary(null);
@@ -979,13 +1068,26 @@ export default function EmailValidation() {
     );
   };
 
-  const isOwnSystemModeActive = isAdmin && String(creditSetting.provider_mode || '').toLowerCase() === 'own_system';
+  const getRowProviderMode = (row) => {
+    return String(
+      row?.provider_mode
+      || row?.bhisha_result?.provider_mode
+      || validationProviderMode
+      || 'own_system'
+    ).toLowerCase();
+  };
 
-  const isOwnSystemValidationResultMode = String(validationProviderMode || '').toLowerCase() === 'own_system';
+  const getRowProviderLabel = (row) => {
+    const explicit = String(row?.provider_mode_label || row?.bhisha_result?.provider_mode_label || '').trim();
+    if (explicit) {
+      return explicit;
+    }
+    return getRowProviderMode(row) === 'zerobounce' ? 'ZeroBounce API' : 'Own System (SMTP + DNS)';
+  };
 
   const getOwnSystemMailStatus = (row) => {
     const bhisha = row?.bhisha_result || {};
-    const validInbox = Boolean(bhisha.valid_inbox);
+    const validInbox = Boolean(bhisha.valid_inbox ?? row?.validMailbox);
     return validInbox ? 'Valid' : 'Invalid';
   };
 
@@ -1245,6 +1347,59 @@ export default function EmailValidation() {
             </div>
           )}
 
+          {dlrReport && (
+            <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', overflow: 'hidden', marginBottom: '16px' }}>
+              <div style={{ padding: '12px 14px', fontWeight: 800, background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                DLR Report ({String(dlrReport?.provider_mode_label || 'Validation')})
+              </div>
+              <div style={{ padding: '12px 14px', display: 'grid', gap: '8px' }}>
+                <div style={{ fontSize: '12px', color: '#334155' }}>
+                  Status: <strong>{String(dlrReport?.status || '-')}</strong>
+                  {' | '}Completed: <strong>{String(Boolean(dlrReport?.completed))}</strong>
+                </div>
+
+                {String(dlrReport?.provider_mode || '').toLowerCase() === 'own_system' ? (
+                  <div style={{ fontSize: '12px', color: '#0f172a', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                    <span>Valid: <strong>{Number(dlrReport?.summary?.valid || 0)}</strong></span>
+                    <span>Invalid: <strong>{Number(dlrReport?.summary?.invalid || 0)}</strong></span>
+                    <span>Total: <strong>{Number(dlrReport?.summary?.total || 0)}</strong></span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '12px', color: '#0f172a', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                    <span>Deliverable: <strong>{Number(dlrReport?.summary?.deliverable || 0)}</strong></span>
+                    <span>Risky: <strong>{Number(dlrReport?.summary?.risky || 0)}</strong></span>
+                    <span>Invalid: <strong>{Number(dlrReport?.summary?.invalid || 0)}</strong></span>
+                    <span>Unknown: <strong>{Number(dlrReport?.summary?.unknown || 0)}</strong></span>
+                    <span>Total: <strong>{Number(dlrReport?.summary?.total || 0)}</strong></span>
+                  </div>
+                )}
+
+                {Array.isArray(dlrReport?.results) && dlrReport.results.length > 0 && (
+                  <div style={{ maxHeight: '200px', overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: '8px' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead>
+                        <tr style={{ background: '#f8fafc' }}>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>Email</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dlrReport.results.map((row, index) => (
+                          <tr key={`dlr-${row?.email || index}-${index}`}>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #f1f5f9' }}>{String(row?.email || '-')}</td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #f1f5f9' }}>
+                              {String(row?.status || row?.classification || row?.status_code || '-')}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {results.length > 0 && (
             <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', overflow: 'hidden', marginBottom: '16px' }}>
               <div style={{ padding: '12px 14px', fontWeight: 800, background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
@@ -1253,8 +1408,11 @@ export default function EmailValidation() {
               <div style={{ padding: '12px 14px', background: '#fcfcff', display: 'grid', gap: '10px' }}>
                 {results.map((row, idx) => (
                   <div key={`summary-${row.email || idx}-${idx}`} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', background: '#fff', padding: '10px' }}>
-                    {isOwnSystemValidationResultMode ? (
+                    {getRowProviderMode(row) === 'own_system' ? (
                       <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
+                        <div style={{ marginBottom: '6px', fontSize: '11px', color: '#334155', fontWeight: 700 }}>
+                          Provider: {getRowProviderLabel(row)}
+                        </div>
                         <div style={{ fontSize: '13px', color: '#111827', fontWeight: 700, marginBottom: '6px' }}>
                           Entered Mail: {String(row?.email || '').trim().toLowerCase() || '-'}
                         </div>
@@ -1277,24 +1435,36 @@ export default function EmailValidation() {
                       </div>
                     ) : (
                       <>
-                        {isOwnSystemModeActive && (
-                          <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Own System Mail Status</div>
-                            <div
-                              style={{
-                                border: `1px solid ${getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).border}`,
-                                background: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).background,
-                                color: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).color,
-                                borderRadius: '999px',
-                                padding: '4px 10px',
-                                fontSize: '12px',
-                                fontWeight: 800,
-                              }}
-                            >
-                              {getOwnSystemMailStatus(row)}
-                            </div>
+                        <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Provider</div>
+                          <div
+                            style={{
+                              border: '1px solid #cbd5e1',
+                              background: '#f8fafc',
+                              color: '#0f172a',
+                              borderRadius: '999px',
+                              padding: '4px 10px',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                            }}
+                          >
+                            {getRowProviderLabel(row)}
                           </div>
-                        )}
+                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Validation Status</div>
+                          <div
+                            style={{
+                              border: `1px solid ${getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).border}`,
+                              background: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).background,
+                              color: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).color,
+                              borderRadius: '999px',
+                              padding: '4px 10px',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                            }}
+                          >
+                            {String(row?.provider_result_status || row?.status || row?.classification || 'Result available')}
+                          </div>
+                        </div>
                         <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '12px', color: '#374151', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px' }}>
                           {formatLiveResult(row)}
                         </pre>
