@@ -683,6 +683,11 @@ def _get_smtp_enable_catch_all_probe():
     return configured in {'1', 'true', 'yes', 'on'}
 
 
+def _get_own_system_smtp_probe_enabled():
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP', 'false') or '').strip().lower()
+    return configured in {'1', 'true', 'yes', 'on'}
+
+
 def _get_smtp_mail_from_pool():
     configured_pool = getattr(settings, 'EMAIL_VALIDATION_SMTP_MAIL_FROM_POOL', None)
     if isinstance(configured_pool, (list, tuple, set)):
@@ -1087,6 +1092,35 @@ def _validate_email_with_own_system_diagnostics(email):
         }
         diagnostics['final_status_code'] = status_code
         diagnostics['final_status'] = status_text
+        return result, diagnostics
+
+    if not _get_own_system_smtp_probe_enabled():
+        history_signal = _get_historical_verification_signal(normalized)
+        diagnostics['historical_signal'] = history_signal
+        diagnostics['domain_reputation'] = _compute_domain_reputation(
+            domain,
+            status_code='DNS_MX_VALID',
+            history_signal=history_signal,
+        )
+        diagnostics['heuristics'] = {
+            'confidence_score': max(60, diagnostics['domain_reputation'].get('score', 60)),
+            'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup'],
+        }
+
+        result = _build_validation_result(
+            normalized,
+            valid_syntax=True,
+            valid_mailbox=True,
+            risky=False,
+            risk='low',
+            status='Domain and syntax validated (SMTP probe skipped)',
+            status_code='DNS_MX_VALID',
+            classification='Deliverable',
+            failure_reason='',
+            provider='own_system',
+        )
+        diagnostics['final_status_code'] = result.get('statusCode', '')
+        diagnostics['final_status'] = result.get('status', '')
         return result, diagnostics
 
     last_failure_reason = ''
@@ -1892,7 +1926,21 @@ def _to_client_validation_result(item):
     provider_mode = str(normalized_item.get('provider') or 'own_system').strip().lower()
     provider_mode_label = _normalize_provider_mode_label(provider_mode)
     if provider_mode == 'own_system':
-        provider_result_status = 'Valid' if (valid_mailbox and valid_syntax and not disposable and not role_based) else 'Invalid'
+        status_code_upper = str(status_code or '').strip().upper()
+        clear_invalid_codes = {
+            'INVALID_FORMAT',
+            'INVALID_SYNTAX_DOMAIN_TYPO',
+            'DOMAIN_NOT_FOUND',
+            'NO_MX',
+            'HARD_BOUNCE_MAILBOX_NOT_FOUND',
+        }
+        likely_valid = bool(valid_syntax and not disposable and not role_based)
+        if status_code_upper in clear_invalid_codes:
+            provider_result_status = 'Invalid'
+        elif likely_valid:
+            provider_result_status = 'Valid'
+        else:
+            provider_result_status = 'Invalid'
     else:
         provider_result_status = f'{classification}: {status_text}'
 
@@ -3032,8 +3080,6 @@ def _extract_api_result_profiles(result_items):
 
 def _build_concise_api_validation_response(result_items):
     normalized_results = []
-    valid_count = 0
-    invalid_count = 0
 
     for item in result_items or []:
         if not isinstance(item, dict):
@@ -3052,24 +3098,11 @@ def _build_concise_api_validation_response(result_items):
             inbox_ok = bool(bhisha.get('valid_inbox')) if isinstance(bhisha, dict) else False
             status_value = 'Valid' if inbox_ok else 'Invalid'
 
-        if status_value == 'Valid':
-            valid_count += 1
-        else:
-            invalid_count += 1
-
         normalized_results.append(
-            {
-                'email': email,
-                'status': status_value,
-            }
+            f'entered mail id: {email} status : {status_value.lower()}'
         )
 
     return {
-        'count': len(normalized_results),
-        'summary': {
-            'valid': valid_count,
-            'invalid': invalid_count,
-        },
         'results': normalized_results,
     }
 
@@ -3153,46 +3186,22 @@ def _build_email_validation_dlr_report(*, provider_mode, results, history=None):
 def _build_concise_api_status_response(history):
     processing_state = _get_history_processing_state(history)
     summary = _get_history_summary(history)
-    provider_mode = str(summary.get('provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
 
     if processing_state in {'completed'}:
         stored_results = summary.get('results') if isinstance(summary.get('results'), list) else []
-        response_payload = _build_concise_api_validation_response(stored_results)
-        response_payload['request_id'] = history.request_id
-        response_payload['provider_mode'] = provider_mode
-        response_payload['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
-        response_payload['dlr_report'] = _build_email_validation_dlr_report(
-            provider_mode=provider_mode,
-            results=stored_results,
-            history=history,
-        )
-        return response_payload
+        return _build_concise_api_validation_response(stored_results)
 
     if processing_state in {'failed', 'cancelled', 'stopped'}:
         failure_reason = str(summary.get('failure_reason') or summary.get('error') or processing_state).strip()
         return {
             'request_id': history.request_id,
             'status': processing_state,
-            'provider_mode': provider_mode,
-            'provider_mode_label': _normalize_provider_mode_label(provider_mode),
             'detail': failure_reason,
-            'dlr_report': _build_email_validation_dlr_report(
-                provider_mode=provider_mode,
-                results=summary.get('results') if isinstance(summary.get('results'), list) else [],
-                history=history,
-            ),
         }
 
     return {
         'request_id': history.request_id,
         'status': processing_state,
-        'provider_mode': provider_mode,
-        'provider_mode_label': _normalize_provider_mode_label(provider_mode),
-        'dlr_report': _build_email_validation_dlr_report(
-            provider_mode=provider_mode,
-            results=summary.get('results') if isinstance(summary.get('results'), list) else [],
-            history=history,
-        ),
     }
 
 
@@ -6019,13 +6028,6 @@ class APIEmailValidationView(generics.GenericAPIView):
                 {
                     'request_id': history.request_id,
                     'status': 'pending',
-                    'provider_mode': provider_mode,
-                    'provider_mode_label': _normalize_provider_mode_label(provider_mode),
-                    'dlr_report': _build_email_validation_dlr_report(
-                        provider_mode=provider_mode,
-                        results=[],
-                        history=history,
-                    ),
                     'detail': 'File accepted and queued for background validation.',
                 },
                 status=status.HTTP_202_ACCEPTED,
@@ -6055,13 +6057,6 @@ class APIEmailValidationView(generics.GenericAPIView):
         history.save(update_fields=['status', 'results_summary', 'completed_at'])
 
         concise_response = _build_concise_api_validation_response(client_results)
-        concise_response['provider_mode'] = provider_mode
-        concise_response['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
-        concise_response['dlr_report'] = _build_email_validation_dlr_report(
-            provider_mode=provider_mode,
-            results=client_results,
-            history=history,
-        )
         return Response(concise_response, status=status.HTTP_200_OK)
 
 

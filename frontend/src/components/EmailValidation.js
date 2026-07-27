@@ -1086,6 +1086,13 @@ export default function EmailValidation() {
   };
 
   const getOwnSystemMailStatus = (row) => {
+    const explicit = String(row?.provider_result_status || '').trim().toLowerCase();
+    if (explicit === 'valid') {
+      return 'Valid';
+    }
+    if (explicit === 'invalid') {
+      return 'Invalid';
+    }
     const bhisha = row?.bhisha_result || {};
     const validInbox = Boolean(bhisha.valid_inbox ?? row?.validMailbox);
     return validInbox ? 'Valid' : 'Invalid';
