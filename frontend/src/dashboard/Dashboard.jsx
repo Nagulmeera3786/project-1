@@ -38,6 +38,16 @@ const Dashboard = () => {
     return Number.isInteger(parsed) ? String(parsed) : parsed.toFixed(2);
   };
 
+  const adminMessageBalance = useMemo(() => {
+    if (!user) {
+      return 0;
+    }
+    if (isAdmin && user.provider_message_balance !== undefined && user.provider_message_balance !== null) {
+      return Number(user.provider_message_balance || 0);
+    }
+    return Number(user.wallet_balance || 0);
+  }, [user, isAdmin]);
+
   const usageChartData = useMemo(() => {
     if (!user) {
       return [
@@ -48,11 +58,11 @@ const Dashboard = () => {
     }
 
     return [
-      { name: "Wallet Balance", value: Number(user.wallet_balance || 0) },
+      { name: isAdmin ? "Provider Message Balance" : "Wallet Balance", value: adminMessageBalance },
       { name: "Messages Used", value: Number(user.sms_used_messages || 0) },
       { name: "Messages Available", value: Number(user.sms_available_messages || 0) },
     ];
-  }, [user]);
+  }, [user, isAdmin, adminMessageBalance]);
 
   const profileInsights = useMemo(() => {
     if (!user) {
@@ -118,7 +128,7 @@ const Dashboard = () => {
     const staticKeywords = [
       'sms', 'whatsapp', 'rcs', 'email validation', 'api keys', 'history',
       'wallet', 'credits', 'notifications', 'users', 'dashboard', 'support',
-      'send', 'delivery', 'dlt', 'settings', 'profile', 'reports'
+      'send', 'delivery', 'dlt', 'settings', 'profile', 'reports', 'sender id', 'request sender id'
     ];
 
     const collected = new Set(staticKeywords.map((item) => item.toLowerCase()));
@@ -220,8 +230,8 @@ const Dashboard = () => {
             <div className="stat-card stat-card-1 dashboard-fade-in">
               <div className="stat-card-icon"><FaWallet /></div>
               <div className="stat-card-info">
-                <div className="stat-card-label">Wallet Balance</div>
-                <div className="stat-card-value">{user ? formatNumeric(user.wallet_balance) : '—'}</div>
+                <div className="stat-card-label">{isAdmin ? 'Provider Message Balance' : 'Wallet Balance'}</div>
+                <div className="stat-card-value">{user ? formatNumeric(adminMessageBalance) : '—'}</div>
               </div>
             </div>
             <div className="stat-card stat-card-2 dashboard-fade-in dashboard-delay-1">
@@ -365,8 +375,8 @@ const Dashboard = () => {
           <div className="stat-card stat-card-1 dashboard-fade-in">
             <div className="stat-card-icon"><FaWallet /></div>
             <div className="stat-card-info">
-              <div className="stat-card-label">Wallet Balance</div>
-              <div className="stat-card-value">{user ? formatNumeric(user.wallet_balance) : '—'}</div>
+              <div className="stat-card-label">{isAdmin ? 'Provider Message Balance' : 'Wallet Balance'}</div>
+              <div className="stat-card-value">{user ? formatNumeric(adminMessageBalance) : '—'}</div>
             </div>
           </div>
           <div className="stat-card stat-card-2 dashboard-fade-in dashboard-delay-1">
@@ -422,7 +432,7 @@ const Dashboard = () => {
               <div><strong>Total Limit:</strong> {user.sms_total_limit || 0}</div>
               <div><strong>Messages Used:</strong> {user.sms_used_messages || 0} ({user.sms_used_percentage || 0}%)</div>
               <div><strong>Messages Available:</strong> {user.sms_available_messages || 0} ({user.sms_available_percentage || 0}%)</div>
-              <div><strong>Wallet Balance:</strong> {formatNumeric(user.wallet_balance)}</div>
+              <div><strong>{isAdmin ? 'Provider Message Balance' : 'Wallet Balance'}:</strong> {formatNumeric(adminMessageBalance)}</div>
               {!user.is_staff && <div><strong>Free Trial Number Ready:</strong> {user.free_trial_verified_numbers_count || 0}</div>}
             </div>
           )}

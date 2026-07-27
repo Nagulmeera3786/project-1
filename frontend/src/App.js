@@ -9,6 +9,10 @@ import UserProfile from './components/UserProfile';
 import AdminUsers from './components/AdminUsers';
 import MainPage from './components/MainPage';
 import ApiDocsOverview from './components/ApiDocsOverview';
+import TermsAndConditions from './components/TermsAndConditions';
+import PrivacyNotice from './components/PrivacyNotice';
+import TermsOfUse from './components/TermsOfUse';
+import BhishaForStartups from './components/BhishaForStartups';
 
 // SMS components
 import SMSSend from './components/SMSSend';
@@ -21,6 +25,7 @@ import UserNotifications from './components/UserNotifications';
 import EmailValidation from './components/EmailValidation';
 import Reports from './components/Reports';
 import ContactSupportPage from './dashboard/ContactSupportPage';
+import SenderIdRequestPage from './dashboard/SenderIdRequestPage';
 import { FaChevronDown, FaSearch } from 'react-icons/fa';
 
 const landingMenus = [
@@ -200,7 +205,12 @@ function App() {
   };
 
   return (
-    <BrowserRouter>
+    <BrowserRouter
+      future={{
+        v7_startTransition: true,
+        v7_relativeSplatPath: true,
+      }}
+    >
       {isPublicRoute && (
       <div className="bhisha-header-shell" onMouseLeave={closeMenu}>
         <div className="bhisha-utility-bar">
@@ -260,9 +270,9 @@ function App() {
             </div>
 
             <div className="bhisha-nav-actions">
-              <button type="button" className="bhisha-search-btn" aria-label="Search">
+              <span className="bhisha-search-btn bhisha-search-label" aria-hidden="true">
                 <FaSearch />
-              </button>
+              </span>
               <Link to="/contact-support" className="bhisha-btn bhisha-btn-outline" onClick={closeMenu}>
                 Contact us
               </Link>
@@ -292,6 +302,7 @@ function App() {
         <Route path="/dashboard" element={privateRoute('Dashboard', <DashboardLayout page="dashboard" />)} />
         <Route path="/dashboard/recharge" element={privateRoute('Recharge & Payments', <DashboardLayout page="recharge" />)} />
         <Route path="/dashboard/contact-support" element={privateRoute('Contact Support', <DashboardLayout page="contactSupport" />)} />
+        <Route path="/dashboard/sender-id-request" element={privateRoute('Sender ID Request', <SenderIdRequestPage />)} />
 
         {/* SMS Routes */}
         <Route path="/sms/send" element={adminRoute('SMS Send', <SMSSend />)} />
@@ -307,6 +318,10 @@ function App() {
         <Route path="/reports" element={privateRoute('Reports', <Reports />)} />
         <Route path="/notifications" element={privateRoute('User Notifications', <UserNotifications />)} />
         <Route path="/contact-support" element={wrapModule('Contact Support', <ContactSupportPage />)} />
+        <Route path="/terms-and-conditions" element={wrapModule('Terms and Conditions', <TermsAndConditions />)} />
+        <Route path="/privacy-notice" element={wrapModule('Privacy Notice', <PrivacyNotice />)} />
+        <Route path="/terms-of-use" element={wrapModule('Terms of Use', <TermsOfUse />)} />
+        <Route path="/bhisha-for-startups" element={wrapModule('Bhisha for Startups', <BhishaForStartups />)} />
         
         <Route path="/" element={wrapModule('Home', <MainPage />)} />
       </Routes>

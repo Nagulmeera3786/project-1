@@ -3,6 +3,8 @@ from django.urls import path, include
 from django.urls import re_path
 from django.http import JsonResponse
 from django.shortcuts import render
+from django.conf import settings
+from django.conf.urls.static import static
 from accounts.views import ShortURLRedirectView
 
 
@@ -30,4 +32,7 @@ urlpatterns = [
     path('s/<str:short_code>/', ShortURLRedirectView.as_view(), name='short-url-redirect'),
     re_path(r'^(?!api/|admin/|static/|healthz/).*$', frontend_index_or_api_status),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 

@@ -221,6 +221,8 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Serve React frontend build files when frontend and backend are deployed together.
 STATICFILES_DIRS = [FRONTEND_STATIC_DIR] if os.path.isdir(FRONTEND_STATIC_DIR) else []
@@ -462,11 +464,20 @@ SMS_DLT_TELEMARKETER_ID = _env_text('SMS_DLT_TELEMARKETER_ID', '')
 SMS_SEND_MAX_FILE_SIZE_MB = int(_env_text('SMS_SEND_MAX_FILE_SIZE_MB', 250))
 SMS_MAX_SEGMENTS = int(_env_text('SMS_MAX_SEGMENTS', 10))
 
-# Verifalia email validation
-VERIFALIA_API_BASE_URL = _env_text('VERIFALIA_API_BASE_URL', 'https://api.verifalia.com/v2.6')
-VERIFALIA_USERNAME = _env_text('VERIFALIA_USERNAME', '')
-VERIFALIA_PASSWORD = _env_secret('VERIFALIA_PASSWORD')
-VERIFALIA_WAIT_TIMEOUT_SECONDS = int(_env_text('VERIFALIA_WAIT_TIMEOUT_SECONDS', 15))
+# Razorpay wallet recharge settings
+RAZORPAY_KEY_ID = _env_text('RAZORPAY_KEY_ID', '')
+RAZORPAY_KEY_SECRET = _env_secret('RAZORPAY_KEY_SECRET')
+RAZORPAY_CURRENCY = _env_text('RAZORPAY_CURRENCY', 'INR')
+
+# Email validation provider settings
+EMAIL_VALIDATION_PROVIDER_MODE = _env_text('EMAIL_VALIDATION_PROVIDER_MODE', 'own_system').strip().lower()
+EMAIL_VALIDATION_BATCH_SIZE = int(_env_text('EMAIL_VALIDATION_BATCH_SIZE', 500))
+EMAIL_VALIDATION_MAX_WORKERS = int(_env_text('EMAIL_VALIDATION_MAX_WORKERS', 64))
+
+# ZeroBounce API
+ZEROBOUNCE_API_KEY = _env_secret('ZEROBOUNCE_API_KEY')
+ZEROBOUNCE_VALIDATE_URL = _env_text('ZEROBOUNCE_VALIDATE_URL', 'https://api.zerobounce.net/v2/validate')
+ZEROBOUNCE_CREDITS_URL = _env_text('ZEROBOUNCE_CREDITS_URL', 'https://api.zerobounce.net/v2/getcredits')
 
 # Celery + Redis async processing
 EMAIL_VALIDATION_USE_CELERY = _env_bool('EMAIL_VALIDATION_USE_CELERY', False)

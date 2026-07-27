@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.conf import settings
@@ -11,9 +12,11 @@ from .models import (
     InternalNotification,
     InternalNotificationRecipient,
     UserWallet,
+    WalletRechargePayment,
     PlatformSetting,
     UserAPIKey,
     EmailValidationHistory,
+    SenderIdRequest,
     Employee,
 )
 from .utils import calculate_sms_segments
@@ -409,6 +412,45 @@ class UserWalletSerializer(serializers.ModelSerializer):
         fields = ['balance', 'email_validation_balance', 'created_at', 'updated_at']
 
 
+class WalletRechargePaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletRechargePayment
+        fields = [
+            'id',
+            'entered_amount',
+            'service_charge_percentage',
+            'tax_percentage',
+            'service_charge_amount',
+            'tax_amount',
+            'total_amount',
+            'currency',
+            'razorpay_order_id',
+            'razorpay_payment_id',
+            'status',
+            'failure_reason',
+            'credited_amount',
+            'credited_at',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+
+class WalletRechargeCreateOrderSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('1.00'))
+    payment_method = serializers.ChoiceField(
+        choices=['upi', 'credit_card', 'debit_card', 'netbanking', 'wallet'],
+        required=False,
+        default='upi',
+    )
+
+
+class WalletRechargeVerifySerializer(serializers.Serializer):
+    razorpay_order_id = serializers.CharField(max_length=100)
+    razorpay_payment_id = serializers.CharField(max_length=100)
+    razorpay_signature = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
 class PlatformSettingSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlatformSetting
@@ -509,6 +551,81 @@ class EmailValidationHistorySerializer(serializers.ModelSerializer):
             'file_name', 'provider_message_id', 'provider_message_ids', 'completed_at', 'dlr_report', 'created_at'
         ]
         read_only_fields = fields
+
+
+class _SenderIdRequestSerializerBase(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    company_documentation_url = serializers.SerializerMethodField()
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+
+    def get_company_documentation_url(self, obj):
+        if not getattr(obj, 'company_documentation', None):
+            return ''
+        try:
+            return obj.company_documentation.url
+        except Exception:
+            return ''
+
+    def _validate_required_sender_id(self, value):
+        sender_id = str(value or '').strip()
+        if len(sender_id) < 3:
+            raise serializers.ValidationError('Sender ID must be at least 3 characters long')
+
+        if sender_id.isdigit():
+            if len(sender_id) < 10 or len(sender_id) > 15:
+                raise serializers.ValidationError('Numeric sender ID length must be between 10 and 15 digits')
+            return sender_id
+
+        if not sender_id.isalnum():
+            raise serializers.ValidationError('Alphanumeric sender ID must use only letters and numbers')
+
+        if len(sender_id) < 3 or len(sender_id) > 11:
+            raise serializers.ValidationError('Alphanumeric sender ID length must be between 3 and 11 characters')
+
+        return sender_id
+
+    def validate(self, attrs):
+        incoming_sender_id = attrs.get('required_sender_id')
+        existing_sender_id = getattr(self.instance, 'required_sender_id', '') if self.instance else ''
+        attrs['required_sender_id'] = self._validate_required_sender_id(incoming_sender_id or existing_sender_id)
+
+        if self.instance is None and not attrs.get('company_documentation'):
+            raise serializers.ValidationError({'company_documentation': 'Company documentation is required'})
+
+        return attrs
+
+
+class SenderIdRequestSerializer(_SenderIdRequestSerializerBase):
+    class Meta:
+        model = SenderIdRequest
+        fields = [
+            'id', 'user', 'user_email', 'full_name', 'email', 'contact_number', 'required_sender_id',
+            'destination_country', 'primary_use_case', 'company_name', 'industry_sector_type',
+            'company_website', 'message_content', 'company_documentation', 'company_documentation_url',
+            'status', 'status_label', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'user', 'user_email', 'status', 'company_documentation_url', 'status_label', 'created_at', 'updated_at']
+
+    def create(self, validated_data):
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class SenderIdRequestAdminSerializer(_SenderIdRequestSerializerBase):
+    class Meta:
+        model = SenderIdRequest
+        fields = [
+            'id', 'user', 'user_email', 'full_name', 'email', 'contact_number', 'required_sender_id',
+            'destination_country', 'primary_use_case', 'company_name', 'industry_sector_type',
+            'company_website', 'message_content', 'company_documentation', 'company_documentation_url',
+            'status', 'status_label', 'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'user', 'user_email', 'full_name', 'email', 'contact_number', 'required_sender_id',
+            'destination_country', 'primary_use_case', 'company_name', 'industry_sector_type',
+            'company_website', 'message_content', 'company_documentation', 'company_documentation_url',
+            'status_label', 'created_at', 'updated_at',
+        ]
 
 
 class EmployeeSignupSerializer(serializers.Serializer):

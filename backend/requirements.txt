@@ -8,6 +8,7 @@ xlrd
 pytz
 requests
 certifi
+dnspython
 whitenoise
 smpplib
 cryptography
@@ -16,4 +17,5 @@ waitress
 psycopg2-binary
 celery
 redis
+razorpay
 

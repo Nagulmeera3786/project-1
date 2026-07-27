@@ -78,6 +78,8 @@ export default function EmailValidation() {
   const [activeTab, setActiveTab] = useState('validate');
   const [isAdmin, setIsAdmin] = useState(false);
   const [walletBalance, setWalletBalance] = useState('0');
+  const [providerEmailBalance, setProviderEmailBalance] = useState('');
+  const [providerMessageBalance, setProviderMessageBalance] = useState('');
   const [canViewSupportData, setCanViewSupportData] = useState(false);
   const [canManageValidation, setCanManageValidation] = useState(false);
 
@@ -128,7 +130,12 @@ export default function EmailValidation() {
   const [selectedUserCreditDraft, setSelectedUserCreditDraft] = useState({ add_message_credits: '', add_email_validation_credits: '' });
   const [adminLoading, setAdminLoading] = useState(false);
 
-  const [creditSetting, setCreditSetting] = useState({ value: '0', description: '' });
+  const [creditSetting, setCreditSetting] = useState({
+    value: '0',
+    description: '',
+    provider_mode: 'own_system',
+  });
+  const [validationProviderMode, setValidationProviderMode] = useState('own_system');
 
   useEffect(() => {
     const initialize = async () => {
@@ -136,16 +143,17 @@ export default function EmailValidation() {
         const [profile, wallet] = await Promise.all([API.get('profile/'), API.get('wallet/')]);
         const adminUser = Boolean(profile.data?.is_staff || profile.data?.is_superuser || profile.data?.is_primary_admin);
         const supportUser = Boolean(profile.data?.can_view_support_data || profile.data?.is_employee);
-        const providerBalance = wallet.data?.verifalia_credits;
-        const validationBalance = wallet.data?.email_validation_balance;
+        const currentProviderEmailBalance = wallet.data?.provider_email_balance;
+        const currentProviderMessageBalance = wallet.data?.provider_message_balance;
+        const validationBalance = wallet.data?.balance;
+        const providerMode = String(wallet.data?.email_validation_provider_mode || 'own_system').toLowerCase();
         setIsAdmin(adminUser);
         setCanViewSupportData(supportUser);
         setCanManageValidation(true);
-        setWalletBalance(
-          (adminUser || supportUser) && providerBalance !== undefined && providerBalance !== null
-            ? String(providerBalance)
-            : String(validationBalance ?? '0')
-        );
+        setValidationProviderMode(providerMode);
+        setWalletBalance(String(validationBalance ?? '0'));
+        setProviderEmailBalance(currentProviderEmailBalance !== undefined && currentProviderEmailBalance !== null ? String(currentProviderEmailBalance) : '');
+        setProviderMessageBalance(currentProviderMessageBalance !== undefined && currentProviderMessageBalance !== null ? String(currentProviderMessageBalance) : '');
       } catch {
         setIsAdmin(false);
       }
@@ -162,13 +170,14 @@ export default function EmailValidation() {
 
     try {
       const refreshedWallet = await API.get('wallet/');
-      const providerBalance = refreshedWallet.data?.verifalia_credits;
-      const validationBalance = refreshedWallet.data?.email_validation_balance;
-      setWalletBalance(
-        isAdmin
-          ? String(providerBalance ?? validationBalance ?? walletBalance)
-          : String(validationBalance ?? preferResponseBalance ?? walletBalance)
-      );
+      const currentProviderEmailBalance = refreshedWallet.data?.provider_email_balance;
+      const currentProviderMessageBalance = refreshedWallet.data?.provider_message_balance;
+      const validationBalance = refreshedWallet.data?.balance;
+      const providerMode = String(refreshedWallet.data?.email_validation_provider_mode || validationProviderMode || 'own_system').toLowerCase();
+      setWalletBalance(String(validationBalance ?? preferResponseBalance ?? walletBalance));
+      setValidationProviderMode(providerMode);
+      setProviderEmailBalance(currentProviderEmailBalance !== undefined && currentProviderEmailBalance !== null ? String(currentProviderEmailBalance) : providerEmailBalance);
+      setProviderMessageBalance(currentProviderMessageBalance !== undefined && currentProviderMessageBalance !== null ? String(currentProviderMessageBalance) : providerMessageBalance);
     } catch {
       if (preferResponseBalance !== undefined && preferResponseBalance !== null) {
         setWalletBalance(String(preferResponseBalance));
@@ -218,6 +227,7 @@ export default function EmailValidation() {
       setCreditSetting({
         value: String(creditRes.data?.value ?? '0'),
         description: String(creditRes.data?.description ?? ''),
+        provider_mode: String(creditRes.data?.provider_mode ?? 'own_system'),
       });
       setAdminUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
     } catch (err) {
@@ -286,6 +296,13 @@ export default function EmailValidation() {
     setSummary({ safe_to_send_yes: safeCount, safe_to_send_no: unsafeCount });
     setLastFileName(data?.source_file_name || history?.file_name || '');
     setLatestRequestId(data?.request_id || history?.request_id || '');
+    const modeFromPayload = String(
+      data?.provider_mode
+      || historySummary?.provider_mode
+      || validationProviderMode
+      || 'own_system'
+    ).toLowerCase();
+    setValidationProviderMode(modeFromPayload);
   };
 
   const hydrateFromHistoryRow = (current = {}) => {
@@ -524,7 +541,7 @@ export default function EmailValidation() {
     }
 
     if (Number(walletBalance || 0) <= 0) {
-      setError(isAdmin ? 'Provider credits are exhausted.' : 'No email validation credits available.');
+      setError('No wallet credits available.');
       return;
     }
 
@@ -709,14 +726,22 @@ export default function EmailValidation() {
     }
 
     try {
-      await API.patch(`admin/users/${selectedUserDetails.id}/wallet/credits/`, {
+      const response = await API.patch(`admin/users/${selectedUserDetails.id}/wallet/credits/`, {
         add_message_credits: String(addMessage),
         add_email_validation_credits: String(addEmail),
       });
 
+      setSelectedUserDetails((prev) => (prev ? {
+        ...prev,
+        wallet_balance: response.data?.message_credits ?? prev.wallet_balance,
+        email_validation_balance: response.data?.email_validation_credits ?? prev.email_validation_balance,
+      } : prev));
+
       await fetchAdminData();
       setSelectedUserCreditDraft({ add_message_credits: '', add_email_validation_credits: '' });
       await loadUserHistory(selectedUserDetails.id);
+      setError('');
+      setInfo(`Credits updated. Unified wallet: ${response.data?.message_credits || response.data?.email_validation_credits || '0'}`);
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'Could not update user credits.'));
     }
@@ -732,7 +757,9 @@ export default function EmailValidation() {
       await API.patch('admin/email-validation/credit-settings/', {
         value: creditSetting.value,
         description: creditSetting.description,
+        provider_mode: creditSetting.provider_mode,
       });
+      setValidationProviderMode(String(creditSetting.provider_mode || 'own_system').toLowerCase());
       fetchAdminData();
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'Could not save credit setting'));
@@ -922,6 +949,7 @@ export default function EmailValidation() {
     const factors = [
       { label: 'Valid Inbox', type: 'bool', value: toBool(bhisha.valid_inbox ?? row?.validMailbox) },
       { label: 'Valid Syntax', type: 'bool', value: toBool(bhisha.valid_syntax ?? row?.validSyntax) },
+      { label: 'Spam / Do Not Mail', type: 'bool', value: toBool(bhisha.spam ?? row?.spam) },
       { label: 'Catch All', type: 'bool', value: toBool(bhisha.catch_all ?? row?.catchAll) },
       { label: 'Disposable', type: 'bool', value: toBool(bhisha.disposable ?? row?.disposable) },
       { label: 'Role Based', type: 'bool', value: toBool(bhisha.role_based ?? row?.roleBased) },
@@ -949,6 +977,23 @@ export default function EmailValidation() {
         })}
       </div>
     );
+  };
+
+  const isOwnSystemModeActive = isAdmin && String(creditSetting.provider_mode || '').toLowerCase() === 'own_system';
+
+  const isOwnSystemValidationResultMode = String(validationProviderMode || '').toLowerCase() === 'own_system';
+
+  const getOwnSystemMailStatus = (row) => {
+    const bhisha = row?.bhisha_result || {};
+    const validInbox = Boolean(bhisha.valid_inbox);
+    return validInbox ? 'Valid' : 'Invalid';
+  };
+
+  const getOwnSystemMailStatusStyle = (statusValue) => {
+    if (statusValue === 'Valid') {
+      return { color: '#166534', background: '#dcfce7', border: '#86efac' };
+    }
+    return { color: '#991b1b', background: '#fee2e2', border: '#fca5a5' };
   };
 
   return (
@@ -996,7 +1041,7 @@ export default function EmailValidation() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px', marginBottom: '16px' }}>
         <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '12px' }}>
-          <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>{isAdmin ? 'Provider Wallet Balance' : 'Email Validation Wallet Balance'}</div>
+          <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>Unified Wallet Balance</div>
           <div style={{ color: '#111827', fontSize: '24px', fontWeight: 800 }}>{walletBalance}</div>
         </div>
         <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '12px' }}>
@@ -1011,6 +1056,18 @@ export default function EmailValidation() {
           <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>Safe/Unsafe Ratio</div>
           <div style={{ color: '#1f2937', fontSize: '18px', fontWeight: 800 }}>{safeUnsafeRatio.safePct}% / {safeUnsafeRatio.unsafePct}%</div>
         </div>
+        {isAdmin && (
+          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '12px' }}>
+            <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>ZeroBounce Provider Balance</div>
+            <div style={{ color: '#0f766e', fontSize: '24px', fontWeight: 800 }}>{providerEmailBalance || '-'}</div>
+          </div>
+        )}
+        {isAdmin && (
+          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '12px' }}>
+            <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>SMS Provider Balance</div>
+            <div style={{ color: '#0f766e', fontSize: '24px', fontWeight: 800 }}>{providerMessageBalance || '-'}</div>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -1027,6 +1084,42 @@ export default function EmailValidation() {
 
       {activeTab === 'validate' && (
         <>
+          {isAdmin && (
+            <div
+              style={{
+                marginBottom: '12px',
+                border: '1px solid #dbeafe',
+                background: '#eff6ff',
+                borderRadius: '10px',
+                padding: '10px 12px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '8px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ fontSize: '12px', color: '#1e3a8a', fontWeight: 700 }}>
+                Current Global Validation Mode
+              </div>
+              <div
+                style={{
+                  fontSize: '12px',
+                  fontWeight: 800,
+                  color: '#1f2937',
+                  background: '#ffffff',
+                  border: '1px solid #bfdbfe',
+                  borderRadius: '999px',
+                  padding: '4px 10px',
+                }}
+              >
+                {String(validationProviderMode || 'own_system').toLowerCase() === 'zerobounce'
+                  ? 'API Mode'
+                  : 'Own System Mode'}
+              </div>
+            </div>
+          )}
+
           <form onSubmit={runValidation} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '18px', marginBottom: '20px' }}>
             <div style={{ display: 'flex', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
               {[{ key: 'single', label: 'Single Email', icon: <FaEnvelopeOpenText /> }, { key: 'bulk', label: 'Bulk Emails', icon: <FaListUl /> }, { key: 'file', label: 'Upload File', icon: <FaUpload /> }].map((item) => (
@@ -1160,10 +1253,54 @@ export default function EmailValidation() {
               <div style={{ padding: '12px 14px', background: '#fcfcff', display: 'grid', gap: '10px' }}>
                 {results.map((row, idx) => (
                   <div key={`summary-${row.email || idx}-${idx}`} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', background: '#fff', padding: '10px' }}>
-                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '12px', color: '#374151', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px' }}>
-                      {formatLiveResult(row)}
-                    </pre>
-                    {factorCards(row)}
+                    {isOwnSystemValidationResultMode ? (
+                      <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
+                        <div style={{ fontSize: '13px', color: '#111827', fontWeight: 700, marginBottom: '6px' }}>
+                          Entered Mail: {String(row?.email || '').trim().toLowerCase() || '-'}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Validation Status</div>
+                          <div
+                            style={{
+                              border: `1px solid ${getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).border}`,
+                              background: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).background,
+                              color: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).color,
+                              borderRadius: '999px',
+                              padding: '4px 10px',
+                              fontSize: '12px',
+                              fontWeight: 800,
+                            }}
+                          >
+                            {getOwnSystemMailStatus(row)}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {isOwnSystemModeActive && (
+                          <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Own System Mail Status</div>
+                            <div
+                              style={{
+                                border: `1px solid ${getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).border}`,
+                                background: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).background,
+                                color: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).color,
+                                borderRadius: '999px',
+                                padding: '4px 10px',
+                                fontSize: '12px',
+                                fontWeight: 800,
+                              }}
+                            >
+                              {getOwnSystemMailStatus(row)}
+                            </div>
+                          </div>
+                        )}
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '12px', color: '#374151', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px' }}>
+                          {formatLiveResult(row)}
+                        </pre>
+                        {factorCards(row)}
+                      </>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1332,6 +1469,15 @@ export default function EmailValidation() {
               onChange={(e) => setCreditSetting((prev) => ({ ...prev, value: e.target.value }))}
               style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db', marginBottom: '10px' }}
             />
+            <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>Validation provider mode</label>
+            <select
+              value={creditSetting.provider_mode}
+              onChange={(e) => setCreditSetting((prev) => ({ ...prev, provider_mode: e.target.value }))}
+              style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db', marginBottom: '10px' }}
+            >
+              <option value="own_system">Own System (SMTP + DNS)</option>
+              <option value="zerobounce">ZeroBounce API</option>
+            </select>
             <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>Description</label>
             <input
               type="text"
@@ -1376,8 +1522,7 @@ export default function EmailValidation() {
               <div style={{ marginBottom: '10px', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>User ID:</strong> {selectedUserDetails.id}</div>
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Email:</strong> {selectedUserDetails.email}</div>
-                <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Messaging Credits:</strong> {selectedUserDetails.wallet_balance || '0'}</div>
-                <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Email Credits:</strong> {selectedUserDetails.email_validation_balance || '0'}</div>
+                <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Unified Wallet Credits (SMS + Email):</strong> {selectedUserDetails.wallet_balance || selectedUserDetails.email_validation_balance || '0'}</div>
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>API Keys:</strong> {selectedUserDetails.api_key_count || 0}</div>
 
                 <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>

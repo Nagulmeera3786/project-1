@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import User, SMSMessage, SMSCredential, SMSContactGroup, UserWallet, EmailValidationHistory
+from .models import User, SMSMessage, SMSCredential, SMSContactGroup, UserWallet, EmailValidationHistory, SenderIdRequest
 from .utils import send_admin_promotion_confirmation_email
 import secrets
 from django.utils import timezone
@@ -277,6 +277,72 @@ class SMSMessageAdmin(admin.ModelAdmin):
             obj.status.upper()
         )
     status_badge.short_description = 'Status'
+
+
+@admin.register(SenderIdRequest)
+class SenderIdRequestAdmin(admin.ModelAdmin):
+    list_display = ('full_name', 'email', 'required_sender_id', 'destination_country', 'primary_use_case', 'status_badge', 'created_at')
+    list_filter = ('status', 'destination_country', 'primary_use_case', 'industry_sector_type', 'created_at')
+    search_fields = ('full_name', 'email', 'contact_number', 'required_sender_id', 'company_name', 'user__email')
+    readonly_fields = ('created_at', 'updated_at', 'company_documentation_link')
+    actions = ('mark_progress', 'mark_rejected', 'mark_completed')
+
+    fieldsets = (
+        ('Requester', {
+            'fields': ('user', 'full_name', 'email', 'contact_number')
+        }),
+        ('Sender ID Requirements', {
+            'fields': ('required_sender_id', 'destination_country', 'primary_use_case')
+        }),
+        ('Company Details', {
+            'fields': ('company_name', 'industry_sector_type', 'company_website', 'message_content')
+        }),
+        ('Documentation', {
+            'fields': ('company_documentation', 'company_documentation_link')
+        }),
+        ('Review', {
+            'fields': ('status',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+
+    def company_documentation_link(self, obj):
+        if not obj.company_documentation:
+            return '-'
+        return format_html('<a href="{}" target="_blank" rel="noopener">View documentation</a>', obj.company_documentation.url)
+    company_documentation_link.short_description = 'Uploaded document'
+
+    def status_badge(self, obj):
+        colors = {
+            'progress': '#ff9800',
+            'completed': '#4caf50',
+            'rejected': '#f44336',
+        }
+        color = colors.get(obj.status, '#ccc')
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold;">{}</span>',
+            color,
+            obj.get_status_display().upper(),
+        )
+    status_badge.short_description = 'Status'
+
+    @admin.action(description='Mark selected sender ID requests as Progress')
+    def mark_progress(self, request, queryset):
+        updated_count = queryset.update(status=SenderIdRequest.STATUS_PROGRESS)
+        self.message_user(request, f'{updated_count} request(s) marked as Progress.')
+
+    @admin.action(description='Mark selected sender ID requests as Rejected')
+    def mark_rejected(self, request, queryset):
+        updated_count = queryset.update(status=SenderIdRequest.STATUS_REJECTED)
+        self.message_user(request, f'{updated_count} request(s) marked as Rejected.')
+
+    @admin.action(description='Mark selected sender ID requests as Completed')
+    def mark_completed(self, request, queryset):
+        updated_count = queryset.update(status=SenderIdRequest.STATUS_COMPLETED)
+        self.message_user(request, f'{updated_count} request(s) marked as Completed.')
 
 
 @admin.register(SMSCredential)

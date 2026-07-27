@@ -80,6 +80,83 @@ class SMSMessage(models.Model):
         return f"SMS from {self.display_sender_id} to {self.recipient_number} - {self.status}"
 
 
+class SenderIdRequest(models.Model):
+    STATUS_PROGRESS = 'progress'
+    STATUS_COMPLETED = 'completed'
+    STATUS_REJECTED = 'rejected'
+    # Backward-compatible aliases for legacy status names.
+    STATUS_IN_PROGRESS = STATUS_PROGRESS
+    STATUS_IGNORED = STATUS_REJECTED
+    STATUS_FAILED = STATUS_REJECTED
+    STATUS_CHOICES = [
+        (STATUS_PROGRESS, 'Progress'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    PRIMARY_USE_CASE_OTP = 'otp'
+    PRIMARY_USE_CASE_TWO_FACTOR = 'two_factor_authentication'
+    PRIMARY_USE_CASE_TRANSACTIONAL = 'transactional_notifications'
+    PRIMARY_USE_CASE_CRITICAL = 'critical_alerts'
+    PRIMARY_USE_CASE_CUSTOMER_SERVICE = 'customer_service'
+    PRIMARY_USE_CASE_MARKETING = 'marketing_promotions'
+    PRIMARY_USE_CASE_CHOICES = [
+        (PRIMARY_USE_CASE_OTP, 'OTP'),
+        (PRIMARY_USE_CASE_TWO_FACTOR, 'Two-Factor authentication'),
+        (PRIMARY_USE_CASE_TRANSACTIONAL, 'Transactional Notifications'),
+        (PRIMARY_USE_CASE_CRITICAL, 'Critical alerts'),
+        (PRIMARY_USE_CASE_CUSTOMER_SERVICE, 'Customer service'),
+        (PRIMARY_USE_CASE_MARKETING, 'Marketing promotions'),
+    ]
+
+    INDUSTRY_FINTECH = 'fintech'
+    INDUSTRY_HEALTHCARE = 'healthcare'
+    INDUSTRY_EDUCATION = 'education'
+    INDUSTRY_ECOMMERCE = 'ecommerce'
+    INDUSTRY_TELECOM = 'telecom'
+    INDUSTRY_LOGISTICS = 'logistics'
+    INDUSTRY_GOVERNMENT = 'government'
+    INDUSTRY_RETAIL = 'retail'
+    INDUSTRY_MANUFACTURING = 'manufacturing'
+    INDUSTRY_TRAVEL = 'travel'
+    INDUSTRY_OTHER = 'other'
+    INDUSTRY_CHOICES = [
+        (INDUSTRY_FINTECH, 'Fintech'),
+        (INDUSTRY_HEALTHCARE, 'Healthcare'),
+        (INDUSTRY_EDUCATION, 'Education'),
+        (INDUSTRY_ECOMMERCE, 'E-commerce'),
+        (INDUSTRY_TELECOM, 'Telecom'),
+        (INDUSTRY_LOGISTICS, 'Logistics'),
+        (INDUSTRY_GOVERNMENT, 'Government'),
+        (INDUSTRY_RETAIL, 'Retail'),
+        (INDUSTRY_MANUFACTURING, 'Manufacturing'),
+        (INDUSTRY_TRAVEL, 'Travel'),
+        (INDUSTRY_OTHER, 'Other'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sender_id_requests')
+    full_name = models.CharField(max_length=150)
+    email = models.EmailField()
+    contact_number = models.CharField(max_length=25)
+    required_sender_id = models.CharField(max_length=20)
+    destination_country = models.CharField(max_length=100)
+    primary_use_case = models.CharField(max_length=60, choices=PRIMARY_USE_CASE_CHOICES)
+    company_name = models.CharField(max_length=200)
+    industry_sector_type = models.CharField(max_length=50, choices=INDUSTRY_CHOICES)
+    company_website = models.URLField(max_length=500)
+    message_content = models.TextField()
+    company_documentation = models.FileField(upload_to='sender_id_requests/', blank=False, null=False)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PROGRESS)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Sender ID request from {self.full_name} ({self.required_sender_id})"
+
+
 class SMSCredential(models.Model):
     """Store encrypted SMS provider credentials - ADMIN ONLY"""
     user = models.CharField(max_length=100, help_text="Profile ID from SMS provider")
@@ -224,6 +301,43 @@ class PlatformSetting(models.Model):
 
     def __str__(self):
         return f"{self.key}={self.value}"
+
+
+class WalletRechargePayment(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_SUCCESSFUL = 'successful'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_SUCCESSFUL, 'Successful'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='wallet_recharge_payments')
+    entered_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    service_charge_percentage = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    tax_percentage = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    service_charge_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=10, default='INR')
+
+    razorpay_order_id = models.CharField(max_length=100, unique=True)
+    razorpay_payment_id = models.CharField(max_length=100, blank=True, default='')
+    razorpay_signature = models.CharField(max_length=255, blank=True, default='')
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    failure_reason = models.TextField(blank=True, default='')
+    credited_amount = models.DecimalField(max_digits=12, decimal_places=4, default=0)
+    credited_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Recharge {self.razorpay_order_id} ({self.status})"
 
 
 class UserAPIKey(models.Model):

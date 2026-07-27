@@ -80,16 +80,47 @@ export default function AdminUsers() {
     }));
   };
 
+  const validateSenderIdDraft = (senderIdType, senderIdValue) => {
+    const value = String(senderIdValue || '').trim();
+    if (!value) {
+      return '';
+    }
+
+    if (senderIdType === 'numeric') {
+      if (!/^\d+$/.test(value)) {
+        return 'Numeric sender ID must contain only digits';
+      }
+      if (value.length < 10 || value.length > 15) {
+        return 'Numeric sender ID length must be between 10 and 15 digits';
+      }
+      return '';
+    }
+
+    if (!/^[a-zA-Z0-9]+$/.test(value)) {
+      return 'Alphanumeric sender ID must use only letters and numbers';
+    }
+    if (value.length < 3 || value.length > 11) {
+      return 'Alphanumeric sender ID length must be between 3 and 11 characters';
+    }
+    return '';
+  };
+
   const saveSenderId = async (userId) => {
     if (!canManageUsers) {
       return;
     }
 
     const draft = senderDrafts[userId] || { sender_id_type: 'alphanumeric', sender_id: '' };
+    const validationError = validateSenderIdDraft(draft.sender_id_type, draft.sender_id);
+    if (validationError) {
+      alert(validationError);
+      return;
+    }
+
     try {
       const response = await API.patch(`admin/users/${userId}/permissions/`, {
         sender_id_type: draft.sender_id_type,
-        sender_id: draft.sender_id,
+        sender_id: String(draft.sender_id || '').trim(),
       });
 
       setUsers((prev) =>
@@ -200,6 +231,11 @@ export default function AdminUsers() {
       return;
     }
 
+    if (addMessage < 0 || addEmail < 0) {
+      alert('Credit values must be zero or positive');
+      return;
+    }
+
     try {
       const response = await API.patch(`admin/users/${userId}/wallet/credits/`, {
         add_message_credits: String(addMessage),
@@ -223,6 +259,10 @@ export default function AdminUsers() {
           add_email_validation_credits: '',
         },
       }));
+
+      alert(
+        `Credits updated successfully. Unified wallet credits: ${response.data.message_credits}`
+      );
     } catch (err) {
       alert(`Failed to update credits: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     }
@@ -571,8 +611,7 @@ export default function AdminUsers() {
                   )}
 
                   <div style={{ marginTop: '8px', fontSize: '12px', color: '#334155' }}>
-                    <div><strong>Messaging Credits:</strong> {user.wallet_balance || '0'}</div>
-                    <div><strong>Mail Credits:</strong> {user.email_validation_balance || '0'}</div>
+                    <div><strong>Unified Wallet Credits (SMS + Mail):</strong> {user.wallet_balance || user.email_validation_balance || '0'}</div>
                   </div>
                 </td>
               </tr>

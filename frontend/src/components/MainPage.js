@@ -106,7 +106,7 @@ const solutionsBoards = [
     title: 'Our Services',
     items: [
       { heading: 'Now: SMS and OTP', text: 'Production-ready messaging and verification workflows.' },
-      { heading: 'Now: Email validation', text: 'Use Verifalia-backed checks to keep customer data clean.' },
+      { heading: 'Now: Email validation', text: 'Use Own System or ZeroBounce checks to keep customer data clean.' },
       { heading: 'Next: Omnichannel orchestration', text: 'Grow into WhatsApp and journey-led automation modules.' },
     ],
   },
@@ -115,19 +115,42 @@ const solutionsBoards = [
 const footerColumns = [
   {
     title: 'Business',
-    items: ['SMS Messaging', 'OTP Verification', 'WhatsApp Messaging', 'Email Validation', 'Tracking'],
+    items: [
+      { label: 'SMS Messaging' },
+      { label: 'OTP Verification' },
+      { label: 'WhatsApp Messaging' },
+      { label: 'Email Validation' },
+      { label: 'Tracking' },
+    ],
   },
   {
     title: 'Solutions',
-    items: ['Customer journeys', 'Notifications', 'Campaign automation', 'Reporting', 'Integrations'],
+    items: [
+      { label: 'Customer journeys' },
+      { label: 'Notifications' },
+      { label: 'Campaign automation' },
+      { label: 'Reporting' },
+      { label: 'Integrations' },
+    ],
   },
   {
     title: 'Company',
-    items: ['About Bhisha', 'Pricing', 'API Docs', 'Login', 'Try for free'],
+    items: [
+      { label: 'About Bhisha' },
+      { label: 'Pricing', to: '/signup' },
+      { label: 'API Docs', to: '/api-docs' },
+      { label: 'Login', to: '/login' },
+      { label: 'Try for free', to: '/signup' },
+    ],
   },
   {
     title: 'Support',
-    items: ['Support center', 'Contact us', 'Service status', 'External connectivity status', 'Startups'],
+    items: [
+      { label: 'Support center', to: '/contact-support' },
+      { label: 'Contact us', to: '/contact-support' },
+      { label: 'Service status' },
+      { label: 'External connectivity status' },
+    ],
   },
 ];
 
@@ -153,26 +176,6 @@ const clientPartners = [
     logo: '/logos/lalitha-logo.svg',
   },
 ];
-
-const footerLinkTo = (item) => {
-  if (item === 'Contact us' || item === 'Support center' || item === 'Service status' || item === 'External connectivity status') {
-    return '/contact-support';
-  }
-
-  if (item === 'API Docs') {
-    return '/api-docs';
-  }
-
-  if (item === 'Login') {
-    return '/login';
-  }
-
-  if (item === 'Try for free' || item === 'Pricing') {
-    return '/signup';
-  }
-
-  return '/#services';
-};
 
 export default function MainPage() {
   return (
@@ -396,9 +399,15 @@ export default function MainPage() {
               <h3>{column.title}</h3>
               <div className="landing-footer-links">
                 {column.items.map((item) => (
-                  <Link key={item} to={footerLinkTo(item)} className="landing-footer-link-btn">
-                    {item}
-                  </Link>
+                  item.to ? (
+                    <Link key={`${column.title}-${item.label}`} to={item.to} className="landing-footer-link-btn">
+                      {item.label}
+                    </Link>
+                  ) : (
+                    <span key={`${column.title}-${item.label}`} className="landing-footer-link-label">
+                      {item.label}
+                    </span>
+                  )
                 ))}
               </div>
             </div>
@@ -409,9 +418,10 @@ export default function MainPage() {
       <section className="landing-bottom-bar">
         <div className="landing-bottom-copy">Copyright © 2020-2026 Bhisha Ltd.</div>
         <div className="landing-bottom-links">
-          <a href="/" className="landing-bottom-link">Terms & Conditions</a>
-          <a href="/" className="landing-bottom-link">Privacy Notice</a>
-          <a href="/" className="landing-bottom-link">Terms of Use</a>
+          <Link to="/terms-and-conditions" className="landing-bottom-link">Terms & Conditions</Link>
+          <Link to="/privacy-notice" className="landing-bottom-link">Privacy Notice</Link>
+          <Link to="/terms-of-use" className="landing-bottom-link">Terms of Use</Link>
+          <Link to="/bhisha-for-startups" className="landing-bottom-link">Bhisha for Startups</Link>
         </div>
       </section>
     </div>

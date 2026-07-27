@@ -1973,6 +1973,11 @@ body.dark-theme .btn-purple:disabled {
   font-size: 18px;
 }
 
+.bhisha-search-label {
+  cursor: default;
+  opacity: 0.8;
+}
+
 .landing-footer-options {
   width: min(1180px, 100%);
   margin: 18px auto 0;
@@ -2062,6 +2067,21 @@ body.dark-theme .btn-purple:disabled {
   transition: transform 0.16s ease, background 0.16s ease;
 }
 
+.landing-footer-link-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 38px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(246, 243, 255, 0.82);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: default;
+}
+
 .landing-footer-link-btn:hover {
   transform: translateY(-1px);
   background: rgba(255, 255, 255, 0.2);
@@ -2103,6 +2123,15 @@ body.dark-theme .btn-purple:disabled {
 
 .landing-bottom-link:hover {
   opacity: 1;
+}
+
+.landing-bottom-link-label {
+  cursor: default;
+  opacity: 0.78;
+}
+
+.landing-bottom-link-label:hover {
+  opacity: 0.78;
 }
 
 .landing-bottom-social {
@@ -2155,4 +2184,45 @@ body.dark-theme .btn-purple:disabled {
     padding: 16px 18px;
     border-radius: 20px;
   }
+}
+
+.terms-page-shell {
+  min-height: calc(100vh - 120px);
+  padding: 28px 16px 40px;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+}
+
+.terms-page-card {
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+  padding: 22px;
+}
+
+.terms-page-card h1 {
+  margin: 0 0 8px;
+  color: #0f172a;
+}
+
+.terms-page-subtitle {
+  margin: 0 0 14px;
+  color: #475569;
+  line-height: 1.55;
+}
+
+.terms-page-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #1e293b;
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  padding: 14px;
 }

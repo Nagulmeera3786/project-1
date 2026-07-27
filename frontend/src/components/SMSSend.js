@@ -8,6 +8,30 @@ import { FaPaperPlane, FaArrowLeft } from 'react-icons/fa';
 const MAX_SMS_UPLOAD_MB = 250;
 const MAX_SMS_SEGMENTS = 10;
 
+function validateSenderIdFormat(senderId) {
+  const value = String(senderId || '').trim();
+  if (!value) {
+    return 'Please select a sender ID or enter one manually';
+  }
+
+  if (/^\d+$/.test(value)) {
+    if (value.length < 10 || value.length > 15) {
+      return 'Numeric sender ID length must be between 10 and 15 digits';
+    }
+    return '';
+  }
+
+  if (!/^[a-zA-Z0-9]+$/.test(value)) {
+    return 'Alphanumeric sender ID must use only letters and numbers';
+  }
+
+  if (value.length < 3 || value.length > 11) {
+    return 'Alphanumeric sender ID length must be between 3 and 11 characters';
+  }
+
+  return '';
+}
+
 export default function SMSSend() {
   const [profileLoading, setProfileLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -657,6 +681,15 @@ export default function SMSSend() {
       return;
     }
 
+    if (!isSmppTransport) {
+      const senderIdError = validateSenderIdFormat(effectiveSenderId);
+      if (senderIdError) {
+        setError(senderIdError);
+        setLoading(false);
+        return;
+      }
+    }
+
     if (!smsType) {
       setError('Please select SMS type');
       setLoading(false);
@@ -1022,38 +1055,56 @@ export default function SMSSend() {
             <FaPaperPlane style={{ marginRight: '10px' }} />
             Send SMS Message
           </span>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '8px', backgroundColor: '#f5f7fb', border: '1px solid #d9e2f1', borderRadius: '999px' }}>
-            <span style={{ fontSize: '13px', color: '#475467', fontWeight: 'bold' }}>Transport</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <button
               type="button"
-              onClick={() => handleTransportChange('api')}
+              onClick={() => navigate('/dashboard/sender-id-request')}
               style={{
-                border: 'none',
-                borderRadius: '999px',
-                padding: '8px 14px',
-                backgroundColor: transport === 'api' ? '#5B3FA8' : 'transparent',
-                color: transport === 'api' ? '#fff' : '#4B4B6B',
+                border: '1px solid #c7d2fe',
+                borderRadius: '10px',
+                padding: '8px 12px',
+                backgroundColor: '#eef2ff',
+                color: '#3730a3',
                 cursor: 'pointer',
                 fontWeight: 'bold',
+                fontSize: '13px',
               }}
             >
-              SMS API
+              + New Sender ID
             </button>
-            <button
-              type="button"
-              onClick={() => handleTransportChange('smpp')}
-              style={{
-                border: 'none',
-                borderRadius: '999px',
-                padding: '8px 14px',
-                backgroundColor: transport === 'smpp' ? '#7C5DC7' : 'transparent',
-                color: transport === 'smpp' ? '#fff' : '#4B4B6B',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-              }}
-            >
-              SMPP
-            </button>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '8px', backgroundColor: '#f5f7fb', border: '1px solid #d9e2f1', borderRadius: '999px' }}>
+              <span style={{ fontSize: '13px', color: '#475467', fontWeight: 'bold' }}>Transport</span>
+              <button
+                type="button"
+                onClick={() => handleTransportChange('api')}
+                style={{
+                  border: 'none',
+                  borderRadius: '999px',
+                  padding: '8px 14px',
+                  backgroundColor: transport === 'api' ? '#5B3FA8' : 'transparent',
+                  color: transport === 'api' ? '#fff' : '#4B4B6B',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                }}
+              >
+                SMS API
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTransportChange('smpp')}
+                style={{
+                  border: 'none',
+                  borderRadius: '999px',
+                  padding: '8px 14px',
+                  backgroundColor: transport === 'smpp' ? '#7C5DC7' : 'transparent',
+                  color: transport === 'smpp' ? '#fff' : '#4B4B6B',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                }}
+              >
+                SMPP
+              </button>
+            </div>
           </div>
         </div>
       </h2>
@@ -1158,6 +1209,9 @@ export default function SMSSend() {
                 </select>
                 <small style={{ color: '#999', display: 'block', marginTop: '6px' }}>
                   Select from existing sender IDs or enter a new one below.
+                </small>
+                <small style={{ color: '#475467', display: 'block', marginTop: '4px' }}>
+                  Alphanumeric: 3-11 characters. Numeric only: 10-15 digits.
                 </small>
               </>
             )}

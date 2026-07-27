@@ -4,6 +4,7 @@ import TopRightMenu from "./TopRightMenu";
 import Dashboard from "./Dashboard";
 import RechargePaymentsPage from "./RechargePaymentsPage";
 import ContactSupportPage from "./ContactSupportPage";
+import SenderIdRequestPage from "./SenderIdRequestPage";
 import "../App.css";
 
 const Layout = ({ page = "dashboard" }) => {
@@ -11,6 +12,7 @@ const Layout = ({ page = "dashboard" }) => {
     dashboard: <Dashboard />,
     recharge: <RechargePaymentsPage />,
     contactSupport: <ContactSupportPage />,
+    senderIdRequest: <SenderIdRequestPage embedded />,
   };
 
   return (

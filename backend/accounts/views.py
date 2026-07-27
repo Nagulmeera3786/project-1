@@ -17,15 +17,26 @@ from django.views import View
 import requests
 import time
 import re
+import difflib
 import io
+import smtplib
+import hmac
+import hashlib
 import random
 import secrets
 import string
 import uuid
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone as dt_timezone, timedelta
 from zoneinfo import ZoneInfo, available_timezones
+from urllib.parse import urlparse
+
+try:
+    import dns.resolver
+except Exception:  # pragma: no cover - optional import in dev
+    dns = None
 from .serializers import (
     SignupSerializer, OTPVerifySerializer, LoginSerializer,
     ForgotPasswordSerializer, ResetPasswordSerializer,
@@ -38,10 +49,15 @@ from .serializers import (
     AdminNotificationHistorySerializer,
     UserNotificationSerializer,
     UserWalletSerializer,
+    WalletRechargePaymentSerializer,
+    WalletRechargeCreateOrderSerializer,
+    WalletRechargeVerifySerializer,
     PlatformSettingSerializer,
     UserAPIKeySerializer,
     AdminUserAPIKeySerializer,
     EmailValidationHistorySerializer,
+    SenderIdRequestSerializer,
+    SenderIdRequestAdminSerializer,
     EmployeeSignupSerializer,
     EmployeeVerifySerializer,
     EmployeeLoginSerializer,
@@ -62,9 +78,11 @@ from .models import (
     InternalNotification,
     InternalNotificationRecipient,
     UserWallet,
+    WalletRechargePayment,
     PlatformSetting,
     UserAPIKey,
     EmailValidationHistory,
+    SenderIdRequest,
     Employee,
 )
 
@@ -80,6 +98,32 @@ _COMMON_FREE_EMAIL_DOMAINS = {
 
 _EMAIL_VALIDATION_WORKERS = {}
 _EMAIL_VALIDATION_WORKERS_LOCK = threading.Lock()
+_MX_CACHE = {}
+_MX_CACHE_LOCK = threading.Lock()
+_HISTORY_SIGNAL_CACHE = {}
+_HISTORY_SIGNAL_CACHE_LOCK = threading.Lock()
+
+_POPULAR_MAIL_DOMAINS = {
+    'gmail.com', 'googlemail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'live.com',
+    'icloud.com', 'zoho.com', 'proton.me', 'protonmail.com', 'gmx.com', 'aol.com',
+}
+
+_POPULAR_DOMAIN_TYPOS = {
+    'gmil.com': 'gmail.com',
+    'gamil.com': 'gmail.com',
+    'gmai.com': 'gmail.com',
+    'gmail.co': 'gmail.com',
+    'hmail.com': 'hotmail.com',
+    'hotnail.com': 'hotmail.com',
+    'outlok.com': 'outlook.com',
+    'otlook.com': 'outlook.com',
+    'yaho.com': 'yahoo.com',
+    'yhoo.com': 'yahoo.com',
+    'zho.com': 'zoho.com',
+    'zohoo.com': 'zoho.com',
+    'protonmai.com': 'protonmail.com',
+    'protonmaill.com': 'protonmail.com',
+}
 
 
 def _is_celery_enabled():
@@ -370,8 +414,8 @@ def _normalize_sender_id(sender_id_type, sender_id):
     if normalized_type == 'numeric':
         if not raw_sender_id.isdigit():
             raise ValueError('Numeric sender ID must contain only digits')
-        if len(raw_sender_id) < 6 or len(raw_sender_id) > 15:
-            raise ValueError('Numeric sender ID length must be between 6 and 15 digits')
+        if len(raw_sender_id) < 10 or len(raw_sender_id) > 15:
+            raise ValueError('Numeric sender ID length must be between 10 and 15 digits')
         return normalized_type, raw_sender_id
 
     normalized_sender_id = raw_sender_id.upper()
@@ -405,7 +449,7 @@ def _build_sender_id_suggestions(sender_id, sender_id_type, exclude_user_id=None
 
     if normalized_type == 'numeric':
         base_digits = ''.join(ch for ch in (sender_id or '') if ch.isdigit())
-        while len(base_digits) < 6:
+        while len(base_digits) < 10:
             base_digits += str(random.randint(0, 9))
         base_prefix = base_digits[:10]
 
@@ -476,7 +520,7 @@ def _format_utc_offset(offset_delta):
 FREE_TRIAL_MESSAGE_LIMIT = 3
 FREE_TRIAL_OTP_EXPIRY_MINUTES = 10
 _PROVIDER_BALANCE_CACHE = {'value': None, 'expires_at': None}
-_VERIFALIA_CREDITS_CACHE = {'value': None, 'expires_at': None}
+_EMAIL_PROVIDER_CREDITS_CACHE = {'value': None, 'expires_at': None}
 
 
 def _extract_first_numeric_value(text):
@@ -495,6 +539,11 @@ def _get_balance_candidate_urls(provider_config):
         return [configured_balance_url]
 
     send_url = str(getattr(settings, 'SMS_PROVIDER_URL', '') or '').strip().lower()
+    if 'infobip.com' in send_url:
+        parsed_url = urlparse(send_url)
+        if parsed_url.scheme and parsed_url.netloc:
+            return [f'{parsed_url.scheme}://{parsed_url.netloc}/account/1/balance']
+
     if 'mshastra.com' in send_url:
         return [
             'https://mshastra.com/bsms/buser/balance.aspx',
@@ -564,12 +613,804 @@ def _get_email_validation_max_request_count():
     return max(1, configured_limit)
 
 
-def _get_verifalia_batch_size():
+def _get_email_validation_batch_size():
     try:
-        configured_batch_size = int(getattr(settings, 'VERIFALIA_BATCH_SIZE', 200) or 200)
+        configured_batch_size = int(getattr(settings, 'EMAIL_VALIDATION_BATCH_SIZE', 500) or 500)
     except (TypeError, ValueError):
-        configured_batch_size = 200
+        configured_batch_size = 500
     return max(1, min(configured_batch_size, 1000))
+
+
+def _get_email_validation_provider_mode():
+    setting = PlatformSetting.objects.filter(key='email_validation_provider_mode').first()
+    configured = str(setting.value if setting else getattr(settings, 'EMAIL_VALIDATION_PROVIDER_MODE', 'own_system') or '').strip().lower()
+    if configured not in {'own_system', 'zerobounce'}:
+        return 'own_system'
+    return configured
+
+
+def _get_email_validation_worker_count():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_MAX_WORKERS', 64) or 64)
+    except (TypeError, ValueError):
+        configured = 64
+    return max(8, min(configured, 256))
+
+
+def _get_smtp_retry_attempts():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_SMTP_RETRY_ATTEMPTS', 2) or 2)
+    except (TypeError, ValueError):
+        configured = 2
+    return max(1, min(configured, 4))
+
+
+def _get_smtp_retry_backoff_seconds():
+    try:
+        configured = float(getattr(settings, 'EMAIL_VALIDATION_SMTP_RETRY_BACKOFF_SECONDS', 0.8) or 0.8)
+    except (TypeError, ValueError):
+        configured = 0.8
+    return max(0.2, min(configured, 5.0))
+
+
+def _get_smtp_mail_from_pool():
+    configured_pool = getattr(settings, 'EMAIL_VALIDATION_SMTP_MAIL_FROM_POOL', None)
+    if isinstance(configured_pool, (list, tuple, set)):
+        normalized_pool = [str(item or '').strip().lower() for item in configured_pool if str(item or '').strip()]
+        if normalized_pool:
+            return normalized_pool[:5]
+    return ['validator@bhisha.com', 'postmaster@bhisha.com']
+
+
+def _detect_popular_domain_typo(domain):
+    normalized = str(domain or '').strip().lower()
+    if not normalized:
+        return ''
+
+    direct = _POPULAR_DOMAIN_TYPOS.get(normalized)
+    if direct:
+        return direct
+
+    close = difflib.get_close_matches(normalized, list(_POPULAR_MAIL_DOMAINS), n=1, cutoff=0.86)
+    return close[0] if close else ''
+
+
+def _extract_email_from_history_result_item(item):
+    if not isinstance(item, dict):
+        return ''
+    if isinstance(item.get('bhisha_result'), dict):
+        return str(item['bhisha_result'].get('email') or '').strip().lower()
+    return str(item.get('email') or '').strip().lower()
+
+
+def _extract_inbox_valid_from_history_result_item(item):
+    if not isinstance(item, dict):
+        return None
+    if isinstance(item.get('bhisha_result'), dict):
+        return bool(item['bhisha_result'].get('valid_inbox'))
+    if 'valid_inbox' in item:
+        return bool(item.get('valid_inbox'))
+    valid_syntax = bool(item.get('validSyntax')) if 'validSyntax' in item else None
+    valid_mailbox = bool(item.get('validMailbox')) if 'validMailbox' in item else None
+    if valid_syntax is None or valid_mailbox is None:
+        return None
+    return bool(valid_syntax and valid_mailbox)
+
+
+def _get_historical_verification_signal(email):
+    normalized = str(email or '').strip().lower()
+    if not normalized:
+        return {
+            'sample_size': 0,
+            'valid_inbox_rate': None,
+            'last_seen_at': '',
+        }
+
+    now_ts = time.time()
+    with _HISTORY_SIGNAL_CACHE_LOCK:
+        cached = _HISTORY_SIGNAL_CACHE.get(normalized)
+        if cached and cached.get('expires_at', 0) > now_ts:
+            return dict(cached.get('value') or {})
+
+    sample_size = 0
+    valid_count = 0
+    last_seen_at = ''
+
+    try:
+        histories = EmailValidationHistory.objects.filter(
+            status=EmailValidationHistory.STATUS_COMPLETED
+        ).order_by('-created_at')[:250]
+
+        for history in histories:
+            summary = _get_history_summary(history)
+            rows = summary.get('results') if isinstance(summary.get('results'), list) else []
+            for item in rows:
+                row_email = _extract_email_from_history_result_item(item)
+                if row_email != normalized:
+                    continue
+                inbox_valid = _extract_inbox_valid_from_history_result_item(item)
+                if inbox_valid is None:
+                    continue
+                sample_size += 1
+                if inbox_valid:
+                    valid_count += 1
+                if not last_seen_at:
+                    last_seen_at = str(getattr(history, 'created_at', '') or '')
+                if sample_size >= 30:
+                    break
+            if sample_size >= 30:
+                break
+    except Exception:
+        sample_size = 0
+        valid_count = 0
+        last_seen_at = ''
+
+    valid_inbox_rate = None if sample_size == 0 else round(valid_count / sample_size, 4)
+    signal = {
+        'sample_size': sample_size,
+        'valid_inbox_rate': valid_inbox_rate,
+        'last_seen_at': last_seen_at,
+    }
+
+    with _HISTORY_SIGNAL_CACHE_LOCK:
+        _HISTORY_SIGNAL_CACHE[normalized] = {
+            'value': signal,
+            'expires_at': now_ts + 300,
+        }
+
+    return signal
+
+
+def _compute_domain_reputation(domain, *, disposable=False, typo_suggestion='', status_code='', history_signal=None):
+    normalized = str(domain or '').strip().lower()
+    code = str(status_code or '').strip().upper()
+    history_signal = history_signal or {}
+
+    score = 50
+    reasons = []
+
+    if normalized in _POPULAR_MAIL_DOMAINS:
+        score += 20
+        reasons.append('popular_provider')
+
+    if disposable:
+        score -= 45
+        reasons.append('disposable_domain')
+
+    if typo_suggestion:
+        score -= 40
+        reasons.append('likely_domain_typo')
+
+    if code in {'DOMAIN_NOT_FOUND', 'NO_MX'}:
+        score -= 35
+        reasons.append(code.lower())
+    elif code in {'DNS_LOOKUP_FAILED', 'DNS_UNAVAILABLE'}:
+        score -= 20
+        reasons.append(code.lower())
+
+    valid_rate = history_signal.get('valid_inbox_rate')
+    sample_size = int(history_signal.get('sample_size') or 0)
+    if valid_rate is not None and sample_size >= 3:
+        if valid_rate >= 0.7:
+            score += 10
+            reasons.append('historical_success')
+        elif valid_rate <= 0.3:
+            score -= 10
+            reasons.append('historical_failures')
+
+    score = max(0, min(score, 100))
+    if score >= 70:
+        tier = 'high'
+    elif score >= 40:
+        tier = 'medium'
+    else:
+        tier = 'low'
+
+    return {
+        'score': score,
+        'tier': tier,
+        'reasons': reasons,
+    }
+
+
+def _resolve_mx_hosts_with_error(domain):
+    domain = str(domain or '').strip().lower()
+    if not domain:
+        return [], 'INVALID_DOMAIN'
+
+    now_ts = time.time()
+    with _MX_CACHE_LOCK:
+        cached = _MX_CACHE.get(domain)
+        if cached and cached['expires_at'] > now_ts:
+            return list(cached.get('mx_hosts') or []), ''
+
+    if dns is None:
+        return [], 'DNS_UNAVAILABLE'
+
+    try:
+        records = dns.resolver.resolve(domain, 'MX')
+        sorted_records = sorted(records, key=lambda record: int(getattr(record, 'preference', 0)))
+        mx_hosts = [str(record.exchange).rstrip('.') for record in sorted_records if str(record.exchange).strip()]
+        mx_error = ''
+    except dns.resolver.NXDOMAIN:
+        mx_hosts = []
+        mx_error = 'DOMAIN_NOT_FOUND'
+    except dns.resolver.NoAnswer:
+        mx_hosts = []
+        mx_error = 'NO_MX'
+    except dns.resolver.NoNameservers:
+        mx_hosts = []
+        mx_error = 'DNS_NO_NAMESERVERS'
+    except dns.exception.Timeout:
+        mx_hosts = []
+        mx_error = 'DNS_TIMEOUT'
+    except Exception:
+        mx_hosts = []
+        mx_error = 'DNS_LOOKUP_FAILED'
+
+    with _MX_CACHE_LOCK:
+        _MX_CACHE[domain] = {
+            'mx_hosts': mx_hosts,
+            'expires_at': now_ts + 300,
+        }
+
+    return mx_hosts, mx_error
+
+
+def _resolve_mx_hosts(domain):
+    mx_hosts, _ = _resolve_mx_hosts_with_error(domain)
+    return mx_hosts
+
+
+def _domain_resolves(domain):
+    domain = str(domain or '').strip().lower()
+    if not domain:
+        return False
+    try:
+        socket.getaddrinfo(domain, None)
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_mx_host(domain):
+    hosts = _resolve_mx_hosts(domain)
+    return hosts[0] if hosts else ''
+
+
+_EMAIL_REGEX = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+
+
+def _build_validation_result(email, *, valid_syntax, valid_mailbox, catch_all=False, did_you_mean='', disposable=False, role_based=False, spam=False, risky=False, risk='low', provider_message_id='', status='Validation completed.', status_code='Success', classification='Deliverable', failure_reason=''):
+    normalized_email = str(email or '').strip().lower()
+    domain = normalized_email.split('@', 1)[1] if '@' in normalized_email else ''
+    domain_related = bool(domain and domain not in _COMMON_FREE_EMAIL_DOMAINS)
+    quality = 'deliverable' if (valid_syntax and valid_mailbox and not disposable and not role_based) else ('invalid' if not valid_syntax else 'risky')
+
+    report_lines = [
+        '#### Validation summary',
+        f'Input data:**{normalized_email}**',
+        f'Classification:{classification}',
+        f'Status:{status}',
+        f'Status code:{status_code}',
+        '',
+        '#### Validation report',
+        f'Valid syntax: {str(bool(valid_syntax))}',
+        f'Valid mailbox: {str(bool(valid_mailbox))}',
+        f'Domain related mail: {str(domain_related)}',
+        f'Catch-all domain: {str(bool(catch_all))}',
+        f'Disposable address: {str(bool(disposable))}',
+        f'Role-based address: {str(bool(role_based))}',
+        f'Spam / do-not-mail: {str(bool(spam))}',
+        f'Risk level: {risk}',
+    ]
+
+    return {
+        'email': normalized_email,
+        'domain': domain,
+        'domainRelatedMail': domain_related,
+        'validMailbox': bool(valid_mailbox),
+        'validSyntax': bool(valid_syntax),
+        'catchAll': bool(catch_all),
+        'didYouMean': str(did_you_mean or normalized_email).strip(),
+        'disposable': bool(disposable),
+        'roleBased': bool(role_based),
+        'spam': bool(spam),
+        'risky': bool(risky),
+        'risk': str(risk or 'unknown').strip().lower(),
+        'providerMessageId': str(provider_message_id or '').strip(),
+        'summary': f'{status} ({classification})',
+        'report': '\n'.join(report_lines),
+        'status': status,
+        'statusCode': status_code,
+        'classification': classification,
+        'quality': quality,
+        'failure_reason': failure_reason,
+    }
+
+
+def _validate_email_with_own_system_diagnostics(email):
+    normalized = str(email or '').strip().lower()
+    diagnostics = {
+        'email': normalized,
+        'provider': 'own_system',
+        'syntax_valid': False,
+        'mx_hosts': [],
+        'mx_lookup_error': '',
+        'domain_resolves': None,
+        'domain_reputation': {},
+        'historical_signal': {},
+        'typo_suggestion': '',
+        'heuristics': {},
+        'retry_strategy': {
+            'smtp_retry_attempts': _get_smtp_retry_attempts(),
+            'mail_from_pool_size': len(_get_smtp_mail_from_pool()),
+            'multi_ip_retry_supported': False,
+            'multi_ip_note': 'Application retries across MX hosts and sender identities; multi-source-IP retry requires network-level egress infrastructure.',
+        },
+        'attempts': [],
+        'final_status_code': '',
+        'final_status': '',
+    }
+
+    if not re.fullmatch(_EMAIL_REGEX, normalized):
+        result = _build_validation_result(
+            normalized,
+            valid_syntax=False,
+            valid_mailbox=False,
+            risky=True,
+            risk='high',
+            status='Invalid Email Format',
+            status_code='INVALID_FORMAT',
+            classification='Invalid',
+            failure_reason='Invalid Email Format',
+        )
+        diagnostics['final_status_code'] = 'INVALID_FORMAT'
+        diagnostics['final_status'] = 'Invalid Email Format'
+        return result, diagnostics
+
+    diagnostics['syntax_valid'] = True
+
+    domain = normalized.split('@', 1)[1]
+    typo_suggestion = _detect_popular_domain_typo(domain)
+    if typo_suggestion and typo_suggestion != domain:
+        diagnostics['typo_suggestion'] = typo_suggestion
+        history_signal = _get_historical_verification_signal(normalized)
+        reputation = _compute_domain_reputation(
+            domain,
+            typo_suggestion=typo_suggestion,
+            status_code='INVALID_SYNTAX_DOMAIN_TYPO',
+            history_signal=history_signal,
+        )
+        diagnostics['historical_signal'] = history_signal
+        diagnostics['domain_reputation'] = reputation
+        diagnostics['heuristics'] = {
+            'confidence_score': max(0, reputation.get('score', 0) - 25),
+            'decision_basis': ['syntax_regex', 'popular_domain_typo_detection'],
+        }
+
+        result = _build_validation_result(
+            normalized,
+            valid_syntax=False,
+            valid_mailbox=False,
+            did_you_mean=f"{normalized.split('@', 1)[0]}@{typo_suggestion}",
+            risky=True,
+            risk='high',
+            status='Invalid domain spelling (popular provider typo detected)',
+            status_code='INVALID_SYNTAX_DOMAIN_TYPO',
+            classification='Invalid',
+            failure_reason=f'Likely domain typo: {domain} -> {typo_suggestion}',
+        )
+        diagnostics['final_status_code'] = 'INVALID_SYNTAX_DOMAIN_TYPO'
+        diagnostics['final_status'] = 'Invalid domain spelling (popular provider typo detected)'
+        return result, diagnostics
+
+    mx_hosts, mx_error = _resolve_mx_hosts_with_error(domain)
+    diagnostics['mx_hosts'] = list(mx_hosts)
+    diagnostics['mx_lookup_error'] = mx_error
+    domain_resolves = _domain_resolves(domain)
+    diagnostics['domain_resolves'] = domain_resolves
+
+    if not mx_hosts:
+        if mx_error == 'DOMAIN_NOT_FOUND' or not domain_resolves:
+            status_text = 'Domain does not exist'
+            status_code = 'DOMAIN_NOT_FOUND'
+            failure_reason = 'Domain does not exist or cannot be resolved'
+            risk_level = 'high'
+        elif mx_error in {'DNS_UNAVAILABLE', 'DNS_NO_NAMESERVERS', 'DNS_TIMEOUT', 'DNS_LOOKUP_FAILED'}:
+            status_text = 'Domain DNS lookup unavailable'
+            status_code = 'DNS_LOOKUP_FAILED' if mx_error != 'DNS_UNAVAILABLE' else 'DNS_UNAVAILABLE'
+            failure_reason = f'DNS lookup unavailable: {mx_error}'
+            risk_level = 'medium'
+        else:
+            status_text = 'No MX Record Found'
+            status_code = 'NO_MX'
+            failure_reason = 'No MX Record Found'
+            risk_level = 'high'
+
+        result = _build_validation_result(
+            normalized,
+            valid_syntax=True,
+            valid_mailbox=False,
+            risky=True,
+            risk=risk_level,
+            status=status_text,
+            status_code=status_code,
+            classification='Invalid',
+            failure_reason=failure_reason,
+        )
+        history_signal = _get_historical_verification_signal(normalized)
+        diagnostics['historical_signal'] = history_signal
+        diagnostics['domain_reputation'] = _compute_domain_reputation(
+            domain,
+            status_code=status_code,
+            history_signal=history_signal,
+        )
+        diagnostics['heuristics'] = {
+            'confidence_score': max(20, diagnostics['domain_reputation'].get('score', 0) - 10),
+            'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup'],
+        }
+        diagnostics['final_status_code'] = status_code
+        diagnostics['final_status'] = status_text
+        return result, diagnostics
+
+    last_failure_reason = ''
+    smtp_retry_attempts = _get_smtp_retry_attempts()
+    smtp_retry_backoff = _get_smtp_retry_backoff_seconds()
+    mail_from_pool = _get_smtp_mail_from_pool()
+    retryable_codes = {421, 450, 451, 452}
+    greylist_markers = ('greylist', 'greylisting', 'try again later', 'temporarily deferred')
+
+    for mx_host in mx_hosts:
+        attempt = {
+            'mx_host': mx_host,
+            'connected': False,
+            'starttls_used': False,
+            'smtp_retries': [],
+            'error': '',
+        }
+
+        successful = False
+        for retry_index in range(smtp_retry_attempts):
+            for mail_from in mail_from_pool:
+                retry_event = {
+                    'retry': retry_index + 1,
+                    'mail_from': mail_from,
+                    'connected': False,
+                    'starttls_used': False,
+                    'rcpt_code': None,
+                    'rcpt_message': '',
+                    'catch_all_probe_code': None,
+                    'catch_all_probe_message': '',
+                    'error': '',
+                }
+                attempt['smtp_retries'].append(retry_event)
+
+                try:
+                    with smtplib.SMTP(timeout=8) as server:
+                        server.connect(mx_host, 25)
+                        retry_event['connected'] = True
+                        attempt['connected'] = True
+                        server.ehlo_or_helo_if_needed()
+                        if server.has_extn('starttls'):
+                            server.starttls()
+                            server.ehlo_or_helo_if_needed()
+                            retry_event['starttls_used'] = True
+                            attempt['starttls_used'] = True
+
+                        server.mail(mail_from)
+                        code, message = server.rcpt(normalized)
+                        code = int(code or 0)
+                        message_text = str(message or '').strip()
+                        retry_event['rcpt_code'] = code
+                        retry_event['rcpt_message'] = message_text
+
+                        if code == 250:
+                            probe_local_part = f'bhisha_probe_{secrets.token_hex(6)}'
+                            probe_email = f'{probe_local_part}@{domain}'
+                            probe_code, probe_message = server.rcpt(probe_email)
+                            catch_all = int(probe_code or 0) == 250
+                            retry_event['catch_all_probe_code'] = int(probe_code or 0)
+                            retry_event['catch_all_probe_message'] = str(probe_message or '').strip()
+                            diagnostics['attempts'].append(attempt)
+
+                            history_signal = _get_historical_verification_signal(normalized)
+                            diagnostics['historical_signal'] = history_signal
+                            diagnostics['domain_reputation'] = _compute_domain_reputation(
+                                domain,
+                                status_code='CATCH_ALL_DOMAIN' if catch_all else 'SMTP_ACCEPTED',
+                                history_signal=history_signal,
+                            )
+                            confidence_score = diagnostics['domain_reputation'].get('score', 50)
+                            if catch_all:
+                                confidence_score = max(45, confidence_score - 10)
+                            diagnostics['heuristics'] = {
+                                'confidence_score': confidence_score,
+                                'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_rcpt', 'catch_all_probe', 'historical_signal', 'domain_reputation'],
+                            }
+
+                            result = _build_validation_result(
+                                normalized,
+                                valid_syntax=True,
+                                valid_mailbox=True,
+                                catch_all=catch_all,
+                                risky=catch_all,
+                                risk='medium' if catch_all else 'low',
+                                status='Catch-all domain detected' if catch_all else 'Valid Mailbox',
+                                status_code='CATCH_ALL_DOMAIN' if catch_all else 'SMTP_ACCEPTED',
+                                classification='Risky' if catch_all else 'Deliverable',
+                                failure_reason='Catch-all domain accepted test recipient' if catch_all else '',
+                            )
+                            diagnostics['final_status_code'] = result.get('statusCode', '')
+                            diagnostics['final_status'] = result.get('status', '')
+                            return result, diagnostics
+
+                        if code in {550, 551, 553}:
+                            diagnostics['attempts'].append(attempt)
+                            history_signal = _get_historical_verification_signal(normalized)
+                            diagnostics['historical_signal'] = history_signal
+                            diagnostics['domain_reputation'] = _compute_domain_reputation(
+                                domain,
+                                status_code='HARD_BOUNCE_MAILBOX_NOT_FOUND',
+                                history_signal=history_signal,
+                            )
+                            diagnostics['heuristics'] = {
+                                'confidence_score': min(95, diagnostics['domain_reputation'].get('score', 50) + 15),
+                                'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_rcpt_hard_bounce', 'historical_signal', 'domain_reputation'],
+                            }
+
+                            result = _build_validation_result(
+                                normalized,
+                                valid_syntax=True,
+                                valid_mailbox=False,
+                                risky=True,
+                                risk='high',
+                                status='Hard Bounce (Mailbox Not Found)',
+                                status_code='HARD_BOUNCE_MAILBOX_NOT_FOUND',
+                                classification='Invalid',
+                                failure_reason=f'Hard bounce from {mx_host}: {message_text}',
+                            )
+                            diagnostics['final_status_code'] = result.get('statusCode', '')
+                            diagnostics['final_status'] = result.get('status', '')
+                            return result, diagnostics
+
+                        lower_message = message_text.lower()
+                        if code in retryable_codes:
+                            if any(marker in lower_message for marker in greylist_markers):
+                                if retry_index + 1 < smtp_retry_attempts:
+                                    time.sleep(smtp_retry_backoff * (retry_index + 1))
+                                    continue
+
+                                diagnostics['attempts'].append(attempt)
+                                history_signal = _get_historical_verification_signal(normalized)
+                                diagnostics['historical_signal'] = history_signal
+                                diagnostics['domain_reputation'] = _compute_domain_reputation(
+                                    domain,
+                                    status_code='GREYLISTED',
+                                    history_signal=history_signal,
+                                )
+                                diagnostics['heuristics'] = {
+                                    'confidence_score': max(40, diagnostics['domain_reputation'].get('score', 50) - 5),
+                                    'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_greylisting_signal', 'retry_logic'],
+                                }
+
+                                result = _build_validation_result(
+                                    normalized,
+                                    valid_syntax=True,
+                                    valid_mailbox=False,
+                                    risky=True,
+                                    risk='medium',
+                                    status='Greylisting detected (temporary deferral)',
+                                    status_code='GREYLISTED',
+                                    classification='Risky',
+                                    failure_reason=f'Greylisting response from {mx_host}: {message_text}',
+                                )
+                                diagnostics['final_status_code'] = result.get('statusCode', '')
+                                diagnostics['final_status'] = result.get('status', '')
+                                return result, diagnostics
+
+                            if retry_index + 1 < smtp_retry_attempts:
+                                time.sleep(smtp_retry_backoff * (retry_index + 1))
+                                continue
+
+                            diagnostics['attempts'].append(attempt)
+                            history_signal = _get_historical_verification_signal(normalized)
+                            diagnostics['historical_signal'] = history_signal
+                            diagnostics['domain_reputation'] = _compute_domain_reputation(
+                                domain,
+                                status_code='SMTP_TEMPORARY_FAILURE',
+                                history_signal=history_signal,
+                            )
+                            diagnostics['heuristics'] = {
+                                'confidence_score': max(35, diagnostics['domain_reputation'].get('score', 50) - 8),
+                                'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_rcpt_temporary_failure', 'retry_logic'],
+                            }
+
+                            result = _build_validation_result(
+                                normalized,
+                                valid_syntax=True,
+                                valid_mailbox=False,
+                                risky=True,
+                                risk='medium',
+                                status=f'Temporary SMTP failure ({code})',
+                                status_code='SMTP_TEMPORARY_FAILURE',
+                                classification='Risky',
+                                failure_reason=f'Temporary SMTP response from {mx_host}: {message_text}',
+                            )
+                            diagnostics['final_status_code'] = result.get('statusCode', '')
+                            diagnostics['final_status'] = result.get('status', '')
+                            return result, diagnostics
+
+                        last_failure_reason = f'SMTP response from {mx_host}: {code} {message_text}'.strip()
+                except Exception as exc:
+                    retry_event['error'] = str(exc)
+                    last_failure_reason = f'SMTP error on {mx_host}: {exc}'
+                    continue
+
+            if successful:
+                break
+
+        diagnostics['attempts'].append(attempt)
+
+    result = _build_validation_result(
+        normalized,
+        valid_syntax=True,
+        valid_mailbox=False,
+        risky=True,
+        risk='high',
+        status='SMTP validation failed across MX hosts',
+        status_code='SMTP_CONNECTION_FAILED',
+        classification='Risky',
+        failure_reason=last_failure_reason or 'SMTP validation failed',
+    )
+    history_signal = _get_historical_verification_signal(normalized)
+    diagnostics['historical_signal'] = history_signal
+    diagnostics['domain_reputation'] = _compute_domain_reputation(
+        domain,
+        status_code='SMTP_CONNECTION_FAILED',
+        history_signal=history_signal,
+    )
+    diagnostics['heuristics'] = {
+        'confidence_score': max(30, diagnostics['domain_reputation'].get('score', 50) - 12),
+        'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_transport_failure', 'retry_logic'],
+    }
+    diagnostics['final_status_code'] = result.get('statusCode', '')
+    diagnostics['final_status'] = result.get('status', '')
+    return result, diagnostics
+def _validate_email_with_own_system(email):
+    result, _ = _validate_email_with_own_system_diagnostics(email)
+    return result
+
+
+def _validate_email_with_zerobounce(email):
+    normalized = str(email or '').strip().lower()
+    api_key = str(getattr(settings, 'ZEROBOUNCE_API_KEY', '') or '').strip()
+    base_url = str(getattr(settings, 'ZEROBOUNCE_VALIDATE_URL', 'https://api.zerobounce.net/v2/validate') or '').strip()
+
+    if not api_key:
+        return _build_validation_result(
+            normalized,
+            valid_syntax=False,
+            valid_mailbox=False,
+            risky=True,
+            risk='high',
+            status='Validation provider is not configured.',
+            status_code='PROVIDER_NOT_CONFIGURED',
+            classification='Invalid',
+            failure_reason='Validation provider is not configured.',
+        )
+
+    if not re.fullmatch(_EMAIL_REGEX, normalized):
+        return _build_validation_result(
+            normalized,
+            valid_syntax=False,
+            valid_mailbox=False,
+            risky=True,
+            risk='high',
+            status='Invalid Email Format',
+            status_code='INVALID_FORMAT',
+            classification='Invalid',
+            failure_reason='Invalid Email Format',
+        )
+
+    try:
+        response = requests.get(
+            base_url,
+            params={'api_key': api_key, 'email': normalized, 'ip_address': ''},
+            timeout=8,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return _build_validation_result(
+            normalized,
+            valid_syntax=True,
+            valid_mailbox=False,
+            risky=True,
+            risk='high',
+            status=f'Validation request failed: {type(exc).__name__}',
+            status_code='PROVIDER_ERROR',
+            classification='Risky',
+            failure_reason=f'Validation request failed: {type(exc).__name__}',
+        )
+
+    status_value = str(payload.get('status') or '').strip().lower()
+    sub_status = str(payload.get('sub_status') or '').strip()
+    did_you_mean = str(payload.get('did_you_mean') or '').strip()
+    disposable = bool(payload.get('disposable'))
+    role_based = bool(payload.get('role'))
+    spam = status_value == 'do_not_mail'
+    catch_all = status_value == 'catch-all'
+
+    valid_syntax = status_value not in {'invalid'}
+    valid_mailbox = status_value == 'valid'
+
+    if status_value == 'valid':
+        classification = 'Deliverable'
+        risk = 'low'
+        risky = False
+    elif status_value in {'invalid', 'do_not_mail'}:
+        classification = 'Invalid'
+        risk = 'high'
+        risky = True
+    elif status_value in {'catch-all', 'unknown'}:
+        classification = 'Risky'
+        risk = 'medium'
+        risky = True
+    else:
+        classification = 'Unknown'
+        risk = 'unknown'
+        risky = True
+
+    status_text = f'Validation status: {status_value or "unknown"}'
+    if sub_status:
+        status_text = f'{status_text} ({sub_status})'
+
+    return _build_validation_result(
+        normalized,
+        valid_syntax=valid_syntax,
+        valid_mailbox=valid_mailbox,
+        catch_all=catch_all,
+        did_you_mean=did_you_mean,
+        disposable=disposable,
+        role_based=role_based,
+        spam=spam,
+        risky=risky,
+        risk=risk,
+        provider_message_id=str(payload.get('transaction_id') or ''),
+        status=status_text,
+        status_code=str(payload.get('error') or payload.get('status') or 'Success').upper(),
+        classification=classification,
+        failure_reason='' if classification == 'Deliverable' else status_text,
+    )
+
+
+def _validate_email_list_with_parallel_workers(unique_emails, validator_fn):
+    workers = _get_email_validation_worker_count()
+    result_map = {}
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(validator_fn, candidate): candidate
+            for candidate in unique_emails
+        }
+        for future in as_completed(future_map):
+            candidate = future_map[future]
+            try:
+                result_map[candidate] = future.result()
+            except Exception as exc:
+                result_map[candidate] = _build_email_validation_error_result(candidate, str(exc))
+
+    return [result_map[candidate] for candidate in unique_emails if candidate in result_map]
+
+
+def _validate_email_list(unique_emails, provider_mode=None):
+    mode = str(provider_mode or _get_email_validation_provider_mode() or 'own_system').strip().lower()
+
+    if mode == 'zerobounce':
+        return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_zerobounce)
+
+    return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_own_system)
 
 
 def _score_verifalia_entry(entry):
@@ -1399,60 +2240,32 @@ def _validate_email_with_verifalia(email):
 
 def _get_verifalia_admin_credits():
     now = timezone.now()
-    cached_value = _VERIFALIA_CREDITS_CACHE.get('value')
-    cache_expiry = _VERIFALIA_CREDITS_CACHE.get('expires_at')
+    cached_value = _EMAIL_PROVIDER_CREDITS_CACHE.get('value')
+    cache_expiry = _EMAIL_PROVIDER_CREDITS_CACHE.get('expires_at')
     if cache_expiry and cache_expiry > now and cached_value is not None:
         return cached_value
 
-    username = str(getattr(settings, 'VERIFALIA_USERNAME', '') or '').strip()
-    password = str(getattr(settings, 'VERIFALIA_PASSWORD', '') or '').strip()
-    if not username or not password:
+    api_key = str(getattr(settings, 'ZEROBOUNCE_API_KEY', '') or '').strip()
+    if not api_key:
         return None
 
-    base_url = str(getattr(settings, 'VERIFALIA_API_BASE_URL', 'https://api.verifalia.com/v2.6') or '').strip().rstrip('/')
-    configured_endpoint = str(getattr(settings, 'VERIFALIA_CREDITS_ENDPOINT', '') or '').strip()
+    credits_url = str(getattr(settings, 'ZEROBOUNCE_CREDITS_URL', 'https://api.zerobounce.net/v2/getcredits') or '').strip()
 
-    candidate_urls = []
-    if configured_endpoint:
-        if configured_endpoint.startswith('http://') or configured_endpoint.startswith('https://'):
-            candidate_urls.append(configured_endpoint)
-        else:
-            candidate_urls.append(f'{base_url}/{configured_endpoint.lstrip("/")}')
+    try:
+        response = requests.get(credits_url, params={'api_key': api_key}, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None
 
-    candidate_urls.extend([
-        f'{base_url}/credits-balance',
-        f'{base_url}/credits/balance',
-    ])
+    credits_value = _extract_balance_from_data(payload)
+    if credits_value is None:
+        return None
 
-    checked = set()
-    for candidate_url in candidate_urls:
-        if candidate_url in checked:
-            continue
-        checked.add(candidate_url)
-
-        try:
-            response = requests.get(candidate_url, auth=(username, password), timeout=10)
-        except requests.RequestException:
-            continue
-
-        if response.status_code != 200:
-            continue
-
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = response.text
-
-        credits_value = _extract_balance_from_data(payload)
-        if credits_value is None:
-            continue
-
-        resolved_credits = round(max(0.0, float(credits_value)), 4)
-        _VERIFALIA_CREDITS_CACHE['value'] = resolved_credits
-        _VERIFALIA_CREDITS_CACHE['expires_at'] = now + timedelta(seconds=45)
-        return resolved_credits
-
-    return None
+    resolved_credits = round(max(0.0, float(credits_value)), 4)
+    _EMAIL_PROVIDER_CREDITS_CACHE['value'] = resolved_credits
+    _EMAIL_PROVIDER_CREDITS_CACHE['expires_at'] = now + timedelta(seconds=45)
+    return resolved_credits
 
 
 def _extract_balance_from_data(payload):
@@ -1509,8 +2322,16 @@ def _get_provider_wallet_balance():
     }
 
     for balance_url in candidate_urls:
+        normalized_url = str(balance_url or '').strip().lower()
         try:
-            if method == 'POST':
+            if 'infobip.com' in normalized_url:
+                response = requests.get(
+                    balance_url,
+                    auth=(provider_config.get('user', ''), provider_config.get('password', '')),
+                    headers={'Accept': 'application/json'},
+                    timeout=8,
+                )
+            elif method == 'POST':
                 response = requests.post(balance_url, data=request_params, timeout=8)
             else:
                 response = requests.get(balance_url, params=request_params, timeout=8)
@@ -1598,22 +2419,16 @@ def _get_user_sms_usage_summary(user):
 
 
 def _get_or_create_wallet(user):
-    wallet, _ = UserWallet.objects.get_or_create(user=user, defaults={'balance': Decimal('0')})
+    wallet, _ = UserWallet.objects.get_or_create(
+        user=user,
+        defaults={'balance': Decimal('0'), 'email_validation_balance': Decimal('0')},
+    )
     return wallet
 
 
 def _get_email_validation_wallet_balance(user):
-    if _has_admin_access(user):
-        verifalia_credits = _get_verifalia_admin_credits()
-        if verifalia_credits is None:
-            return None
-        try:
-            return Decimal(str(verifalia_credits)).quantize(Decimal('0.0001'))
-        except (InvalidOperation, TypeError, ValueError):
-            return Decimal('0.0000')
-
     wallet = _get_or_create_wallet(user)
-    return Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
+    return Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
 
 
 def _get_email_validation_cost_per_request():
@@ -1625,6 +2440,91 @@ def _get_email_validation_cost_per_request():
         return cost if cost > 0 else Decimal('0')
     except (InvalidOperation, TypeError, ValueError):
         return Decimal('0')
+
+
+def _get_platform_setting_decimal(key, default=Decimal('0')):
+    setting = PlatformSetting.objects.filter(key=key).first()
+    if not setting:
+        return Decimal(str(default))
+    try:
+        return Decimal(str(setting.value or default))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal(str(default))
+
+
+def _get_platform_setting_text(key, default=''):
+    setting = PlatformSetting.objects.filter(key=key).first()
+    if not setting:
+        return str(default or '').strip()
+    return str(setting.value or default or '').strip()
+
+
+def _get_recharge_charge_percentages():
+    service_charge_percentage = _get_platform_setting_decimal('recharge_service_charge_percentage', Decimal('0'))
+    tax_percentage = _get_platform_setting_decimal('recharge_tax_percentage', Decimal('0'))
+
+    service_charge_percentage = max(Decimal('0'), service_charge_percentage)
+    tax_percentage = max(Decimal('0'), tax_percentage)
+    return service_charge_percentage.quantize(Decimal('0.01')), tax_percentage.quantize(Decimal('0.01'))
+
+
+def _get_razorpay_config():
+    key_id = str(getattr(settings, 'RAZORPAY_KEY_ID', '') or '').strip()
+    key_secret = str(getattr(settings, 'RAZORPAY_KEY_SECRET', '') or '').strip()
+
+    # Support common alternate env names to reduce deployment mistakes.
+    if not key_id:
+        key_id = str(getattr(settings, 'RAZORPAY_API_KEY', '') or '').strip()
+    if not key_secret:
+        key_secret = str(getattr(settings, 'RAZORPAY_API_SECRET', '') or '').strip()
+
+    currency = str(getattr(settings, 'RAZORPAY_CURRENCY', 'INR') or 'INR').strip().upper() or 'INR'
+    return {
+        'key_id': key_id,
+        'key_secret': key_secret,
+        'currency': currency,
+        'configured': bool(key_id and key_secret),
+    }
+
+
+def _is_razorpay_sdk_installed():
+    try:
+        import razorpay  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _get_razorpay_client_or_none():
+    config = _get_razorpay_config()
+    if not config['configured']:
+        return None
+
+    try:
+        import razorpay
+    except Exception:
+        return None
+
+    try:
+        return razorpay.Client(auth=(config['key_id'], config['key_secret']))
+    except Exception:
+        return None
+
+
+def _calculate_recharge_breakdown(entered_amount, service_charge_percentage, tax_percentage):
+    entered = Decimal(str(entered_amount or '0')).quantize(Decimal('0.01'))
+    service_amount = ((entered * service_charge_percentage) / Decimal('100')).quantize(Decimal('0.01'))
+    tax_amount = ((entered * tax_percentage) / Decimal('100')).quantize(Decimal('0.01'))
+    total_amount = (entered + service_amount + tax_amount).quantize(Decimal('0.01'))
+
+    return {
+        'entered_amount': entered,
+        'service_charge_percentage': service_charge_percentage,
+        'tax_percentage': tax_percentage,
+        'service_charge_amount': service_amount,
+        'tax_amount': tax_amount,
+        'total_amount': total_amount,
+    }
 
 
 def _yes_no(value):
@@ -1702,7 +2602,8 @@ def _deduct_sms_credits(user, message_count):
         raise ValueError('Insufficient messaging credits.')
 
     wallet.balance = (current_balance - total_cost).quantize(Decimal('0.0001'))
-    wallet.save(update_fields=['balance', 'updated_at'])
+    wallet.email_validation_balance = wallet.balance
+    wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
     return total_cost, wallet.balance
 
 
@@ -1743,64 +2644,20 @@ def _deduct_email_validation_credits(user, email_count):
             return Decimal('0.0000'), Decimal('0.0000')
         return Decimal('0.0000'), Decimal(str(available_balance)).quantize(Decimal('0.0001'))
 
-    if _has_admin_access(user):
-        available_admin_credits = _get_email_validation_wallet_balance(user)
-        if available_admin_credits is None:
-            raise ValueError('Admin Verifalia credits are unavailable for email validation.')
-
-        available_admin_credits = Decimal(str(available_admin_credits)).quantize(Decimal('0.0001'))
-        if available_admin_credits < total_cost:
-            raise ValueError('Insufficient email validation credits.')
-
-        # Verifalia credits are consumed by Verifalia itself; we only enforce quota locally.
-        return total_cost, (available_admin_credits - total_cost).quantize(Decimal('0.0001'))
-
     wallet = _get_or_create_wallet(user)
-    validation_balance = Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
+    wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
 
-    if validation_balance < total_cost:
+    if wallet_balance < total_cost:
         raise ValueError('Insufficient email validation credits.')
 
-    wallet.email_validation_balance = (validation_balance - total_cost).quantize(Decimal('0.0001'))
-    wallet.save(update_fields=['email_validation_balance', 'updated_at'])
-    return total_cost, wallet.email_validation_balance
+    wallet.balance = (wallet_balance - total_cost).quantize(Decimal('0.0001'))
+    wallet.email_validation_balance = wallet.balance
+    wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
+    return total_cost, wallet.balance
 
 
 def _validate_email_list_with_verifalia(unique_emails):
-    result_map = {}
-    provider_candidates = []
-
-    for candidate in unique_emails:
-        if '@' not in candidate:
-            result_map[candidate] = _build_email_validation_error_result(
-                candidate,
-                'Invalid email address.',
-                classification='Invalid',
-                quality='invalid',
-                status_code='Success',
-                risk='none',
-            )
-            result_map[candidate]['risky'] = False
-            continue
-
-        provider_candidates.append(candidate)
-
-    if provider_candidates:
-        batch_size = _get_verifalia_batch_size()
-        try:
-            if len(provider_candidates) == 1:
-                item = _validate_email_with_verifalia(provider_candidates[0])
-                result_map[item['email']] = item
-            else:
-                for start in range(0, len(provider_candidates), batch_size):
-                    current_batch = provider_candidates[start:start + batch_size]
-                    for item in _validate_email_batch_with_verifalia(current_batch):
-                        result_map[item['email']] = item
-        except ValueError as exc:
-            for candidate in provider_candidates:
-                result_map[candidate] = _build_email_validation_error_result(candidate, str(exc))
-
-    return [result_map[candidate] for candidate in unique_emails if candidate in result_map]
+    return _validate_email_list(unique_emails)
 
 
 def _authenticate_api_key_request(request):
@@ -1911,6 +2768,8 @@ def _is_free_email_domain(email, disposable=False):
 
 def _build_bhisha_risk_factors(item):
     factors = []
+    if item.get('spam'):
+        factors.append('Spam / Do Not Mail')
     if item.get('roleBased'):
         factors.append('Role Based Address')
     if item.get('catchAll'):
@@ -1932,11 +2791,29 @@ def _build_bhisha_raw_status_details(item):
         return 'risky (catch_all)'
     if item.get('validSyntax') is False:
         return 'invalid (syntax)'
+
+    status_code = str(item.get('statusCode') or '').strip().upper()
+    status_map = {
+        'SMTP_ACCEPTED': 'safe_to_mail',
+        'HARD_BOUNCE_MAILBOX_NOT_FOUND': 'do_not_mail (hard_bounce)',
+        'DOMAIN_NOT_FOUND': 'do_not_mail (domain_not_found)',
+        'NO_MX': 'do_not_mail (no_mx)',
+        'DNS_LOOKUP_FAILED': 'risky (dns_lookup_failed)',
+        'DNS_UNAVAILABLE': 'risky (dns_unavailable)',
+        'GREYLISTED': 'risky (greylisted)',
+        'SMTP_TEMPORARY_FAILURE': 'risky (temporary_failure)',
+        'SMTP_CONNECTION_FAILED': 'risky (smtp_unreachable)',
+        'CATCH_ALL_DOMAIN': 'risky (catch_all)',
+        'INVALID_FORMAT': 'invalid (syntax)',
+        'INVALID_SYNTAX_DOMAIN_TYPO': 'invalid (domain_typo)',
+    }
+    if status_code in status_map:
+        return status_map[status_code]
+
     if item.get('validMailbox') is False:
         return 'do_not_mail'
 
-    status_code = str(item.get('statusCode') or '').strip()
-    if status_code and status_code != 'Success':
+    if status_code and status_code not in {'SUCCESS'}:
         return status_code.lower()
 
     classification = str(item.get('classification') or '').strip().lower()
@@ -1955,17 +2832,29 @@ def _build_bhisha_api_validation_result(item):
         and not item.get('roleBased')
     )
     disposable = bool(item.get('disposable'))
+    is_free_domain = _is_free_email_domain(item.get('email'), disposable=disposable)
+    status_code = str(item.get('statusCode') or '').strip().upper()
+    domain_related_mail = bool(item.get('validSyntax')) and status_code not in {
+        'INVALID_FORMAT',
+        'INVALID_SYNTAX_DOMAIN_TYPO',
+        'DOMAIN_NOT_FOUND',
+        'NO_MX',
+        'DNS_LOOKUP_FAILED',
+        'DNS_UNAVAILABLE',
+    }
 
     result = {
         'email': str(item.get('email') or '').strip().lower(),
         'valid_inbox': valid_inbox,
         'valid_syntax': valid_syntax,
+        'domain_related_mail': domain_related_mail,
         'disposable': disposable,
         'role_based': bool(item.get('roleBased')),
+        'spam': bool(item.get('spam')),
         'catch_all': bool(item.get('catchAll')),
         'risk_factors': _build_bhisha_risk_factors(item),
         'raw_status_details': _build_bhisha_raw_status_details(item),
-        'is_free_domain': _is_free_email_domain(item.get('email'), disposable=disposable),
+        'is_free_domain': is_free_domain,
     }
 
     result['result_profile'] = _build_bhisha_result_profile(result)
@@ -1979,6 +2868,7 @@ def _build_bhisha_result_profile(result):
     email = str(result.get('email') or '').strip().lower()
     valid_inbox = bool(result.get('valid_inbox'))
     valid_syntax = bool(result.get('valid_syntax'))
+    domain_related_mail = bool(result.get('domain_related_mail'))
     disposable = bool(result.get('disposable'))
     role_based = bool(result.get('role_based'))
     catch_all = bool(result.get('catch_all'))
@@ -1991,6 +2881,7 @@ def _build_bhisha_result_profile(result):
         '----------------------------------------',
         f'Valid Inbox:    {str(valid_inbox)}',
         f'Valid Syntax:   {str(valid_syntax)}',
+        f'Domain Related Mail: {str(domain_related_mail)}',
         f'Disposable:     {str(disposable)}',
         f'Role Based:     {str(role_based)}',
         f'Catch All:      {str(catch_all)}',
@@ -2030,6 +2921,7 @@ def _build_concise_api_validation_response(result_items):
                 'email': str(bhisha_result.get('email') or '').strip().lower(),
                 'valid_inbox': bool(bhisha_result.get('valid_inbox')),
                 'valid_syntax': bool(bhisha_result.get('valid_syntax')),
+                'domain_related_mail': bool(bhisha_result.get('domain_related_mail')),
                 'disposable': bool(bhisha_result.get('disposable')),
                 'role_based': bool(bhisha_result.get('role_based')),
                 'catch_all': bool(bhisha_result.get('catch_all')),
@@ -2237,7 +3129,8 @@ def _process_email_validation_history_job(history_id):
         history.results_summary = summary
         history.save(update_fields=['results_summary'])
 
-        batch_size = _get_verifalia_batch_size()
+        batch_size = _get_email_validation_batch_size()
+        provider_mode = _get_email_validation_provider_mode()
         collected_results = []
         provider_request_ids = []
         processed_count = 0
@@ -2281,10 +3174,7 @@ def _process_email_validation_history_job(history_id):
                     batch_provider_candidates.append(candidate)
 
             if batch_provider_candidates:
-                if len(batch_provider_candidates) == 1:
-                    batch_results.append(_validate_email_with_verifalia(batch_provider_candidates[0]))
-                else:
-                    batch_results.extend(_validate_email_batch_with_verifalia(batch_provider_candidates))
+                batch_results.extend(_validate_email_list(batch_provider_candidates, provider_mode=provider_mode))
 
             result_map = {str(item.get('email') or '').strip().lower(): item for item in batch_results}
             for candidate in current_batch:
@@ -2637,6 +3527,10 @@ class UserProfileView(generics.GenericAPIView):
             'can_view_support_data': _has_support_read_access(user),
             'can_manage_support_data': _has_admin_access(user),
         }
+        if _has_admin_access(user):
+            provider_balance = _get_provider_wallet_balance()
+            if provider_balance is not None:
+                data['provider_message_balance'] = provider_balance
         return Response(data)
 
     def patch(self, request):
@@ -4367,6 +5261,7 @@ class EmailValidationView(generics.GenericAPIView):
 
     def post(self, request):
         source_file = request.FILES.get('source_file') if hasattr(request, 'FILES') else None
+        provider_mode = _get_email_validation_provider_mode()
         available_validation_balance = _get_email_validation_wallet_balance(request.user)
         if available_validation_balance is None:
             return Response({'detail': 'Provider credits are unavailable for email validation.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -4382,9 +5277,6 @@ class EmailValidationView(generics.GenericAPIView):
             cost_deducted, remaining_balance = _deduct_email_validation_credits(request.user, len(unique_emails))
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
-
-        if _has_admin_access(request.user):
-            remaining_balance = (available_validation_balance - cost_deducted).quantize(Decimal('0.0001'))
 
         if source_file:
             history = EmailValidationHistory.objects.create(
@@ -4421,6 +5313,7 @@ class EmailValidationView(generics.GenericAPIView):
                     'request_id': history.request_id,
                     'count': len(unique_emails),
                     'wallet_balance': str(remaining_balance),
+                    'provider_mode': provider_mode,
                     'source_file_name': file_name,
                     'summary': {
                         'safe_to_send_yes': 0,
@@ -4440,7 +5333,7 @@ class EmailValidationView(generics.GenericAPIView):
                 status=status.HTTP_202_ACCEPTED,
             )
 
-        results = _validate_email_list_with_verifalia(unique_emails)
+        results = _validate_email_list(unique_emails, provider_mode=provider_mode)
         client_results = [_to_client_validation_result(item) for item in results]
         safe_count = sum(1 for item in client_results if _is_safe_client_validation_result(item))
         unsafe_count = len(client_results) - safe_count
@@ -4477,6 +5370,7 @@ class EmailValidationView(generics.GenericAPIView):
                 'request_id': history.request_id,
                 'count': len(client_results),
                 'wallet_balance': str(remaining_balance),
+                'provider_mode': provider_mode,
                 'source_file_name': file_name,
                 'summary': {
                     'safe_to_send_yes': safe_count,
@@ -4502,12 +5396,273 @@ class UserWalletView(generics.GenericAPIView):
 
     def get(self, request):
         wallet = _get_or_create_wallet(request.user)
+        if Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001')) != Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001')):
+            wallet.email_validation_balance = wallet.balance
+            wallet.save(update_fields=['email_validation_balance', 'updated_at'])
         payload = UserWalletSerializer(wallet).data
+        payload['email_validation_provider_mode'] = _get_email_validation_provider_mode()
         if _has_admin_access(request.user):
-            verifalia_credits = _get_verifalia_admin_credits()
-            if verifalia_credits is not None:
-                payload['verifalia_credits'] = str(verifalia_credits)
+            provider_email_balance = _get_verifalia_admin_credits()
+            if provider_email_balance is not None:
+                payload['provider_email_balance'] = str(provider_email_balance)
+            provider_balance = _get_provider_wallet_balance()
+            if provider_balance is not None:
+                payload['provider_message_balance'] = str(provider_balance)
         return Response(payload)
+
+
+class WalletRechargeConfigView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        service_charge_percentage, tax_percentage = _get_recharge_charge_percentages()
+        razorpay_config = _get_razorpay_config()
+        paypal_checkout_url = _get_platform_setting_text(
+            'recharge_paypal_checkout_url',
+            str(getattr(settings, 'PAYPAL_CHECKOUT_URL', '') or '').strip(),
+        )
+        upi_vpa = _get_platform_setting_text(
+            'recharge_upi_vpa',
+            str(getattr(settings, 'RAZORPAY_UPI_VPA', '') or '').strip(),
+        )
+        upi_payee_name = _get_platform_setting_text(
+            'recharge_upi_payee_name',
+            str(getattr(settings, 'COMPANY_NAME', 'Bhisha') or 'Bhisha').strip(),
+        )
+        return Response(
+            {
+                'service_charge_percentage': str(service_charge_percentage),
+                'tax_percentage': str(tax_percentage),
+                'currency': razorpay_config['currency'],
+                'razorpay_key_id': razorpay_config['key_id'],
+                'gateway_configured': razorpay_config['configured'],
+                'sdk_installed': _is_razorpay_sdk_installed(),
+                'paypal_checkout_url': paypal_checkout_url,
+                'paypal_enabled': bool(paypal_checkout_url),
+                'upi_vpa': upi_vpa,
+                'upi_payee_name': upi_payee_name or 'Bhisha',
+                'upi_enabled': bool(upi_vpa),
+            }
+        )
+
+
+class WalletRechargeCreateOrderView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = WalletRechargeCreateOrderSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        selected_method = serializer.validated_data.get('payment_method', 'upi')
+
+        razorpay_config = _get_razorpay_config()
+        if not razorpay_config['configured']:
+            return Response({'detail': 'Payment gateway is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend environment.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not _is_razorpay_sdk_installed():
+            return Response({'detail': 'Razorpay SDK is not installed on server. Install backend dependency: razorpay.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        razorpay_client = _get_razorpay_client_or_none()
+        if not razorpay_client:
+            return Response({'detail': 'Payment gateway client initialization failed.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        entered_amount = serializer.validated_data['amount']
+        service_charge_percentage, tax_percentage = _get_recharge_charge_percentages()
+        breakdown = _calculate_recharge_breakdown(entered_amount, service_charge_percentage, tax_percentage)
+
+        total_amount_paise = int((breakdown['total_amount'] * Decimal('100')).quantize(Decimal('1')))
+        if total_amount_paise <= 0:
+            return Response({'detail': 'Recharge amount must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        min_amount_paise = 100
+        if total_amount_paise < min_amount_paise:
+            return Response(
+                {'detail': 'Minimum payable amount is INR 1.00 after charges.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        receipt_value = f"recharge-{request.user.id}-{uuid.uuid4().hex[:12]}"
+
+        try:
+            order = razorpay_client.order.create(
+                {
+                    'amount': total_amount_paise,
+                    'currency': razorpay_config['currency'],
+                    'receipt': receipt_value,
+                    'payment_capture': 1,
+                }
+            )
+        except Exception as exc:
+            raw_message = str(exc) or type(exc).__name__
+            return Response(
+                {
+                    'detail': f'Unable to create payment order: {raw_message}',
+                    'gateway_error': raw_message,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        created_order_id = str(order.get('id') or '').strip()
+        if not created_order_id:
+            return Response(
+                {'detail': 'Payment gateway did not return a valid order id.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payment = WalletRechargePayment.objects.create(
+            user=request.user,
+            entered_amount=breakdown['entered_amount'],
+            service_charge_percentage=breakdown['service_charge_percentage'],
+            tax_percentage=breakdown['tax_percentage'],
+            service_charge_amount=breakdown['service_charge_amount'],
+            tax_amount=breakdown['tax_amount'],
+            total_amount=breakdown['total_amount'],
+            currency=razorpay_config['currency'],
+            razorpay_order_id=created_order_id,
+            status=WalletRechargePayment.STATUS_PENDING,
+        )
+
+        return Response(
+            {
+                'order': {
+                    'id': payment.razorpay_order_id,
+                    'amount': total_amount_paise,
+                    'currency': payment.currency,
+                    'receipt': receipt_value,
+                },
+                'payment_method': selected_method,
+                'charges': {
+                    'entered_amount': str(payment.entered_amount),
+                    'service_charge_percentage': str(payment.service_charge_percentage),
+                    'tax_percentage': str(payment.tax_percentage),
+                    'service_charge_amount': str(payment.service_charge_amount),
+                    'tax_amount': str(payment.tax_amount),
+                    'total_amount': str(payment.total_amount),
+                },
+                'wallet_credit_amount': str(payment.entered_amount),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class WalletRechargeVerifyView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = WalletRechargeVerifySerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        razorpay_order_id = serializer.validated_data['razorpay_order_id']
+        razorpay_payment_id = serializer.validated_data['razorpay_payment_id']
+        razorpay_signature = str(serializer.validated_data.get('razorpay_signature') or '').strip()
+
+        razorpay_config = _get_razorpay_config()
+        if not razorpay_config['configured']:
+            return Response({'detail': 'Payment gateway is not configured.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        payment = WalletRechargePayment.objects.filter(
+            user=request.user,
+            razorpay_order_id=razorpay_order_id,
+        ).first()
+        if not payment:
+            return Response({'detail': 'Payment order not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        is_verified = False
+        verification_failure_reason = ''
+
+        if razorpay_signature:
+            generated_signature = hmac.new(
+                razorpay_config['key_secret'].encode('utf-8'),
+                f"{razorpay_order_id}|{razorpay_payment_id}".encode('utf-8'),
+                hashlib.sha256,
+            ).hexdigest()
+            is_verified = hmac.compare_digest(generated_signature, razorpay_signature)
+            if not is_verified:
+                verification_failure_reason = 'Signature verification failed.'
+        else:
+            razorpay_client = _get_razorpay_client_or_none()
+            if not razorpay_client:
+                verification_failure_reason = 'Payment gateway verification client unavailable.'
+            else:
+                try:
+                    fetched_payment = razorpay_client.payment.fetch(razorpay_payment_id)
+                    fetched_order_id = str(fetched_payment.get('order_id') or '')
+                    fetched_status = str(fetched_payment.get('status') or '').lower()
+                    fetched_amount = int(fetched_payment.get('amount') or 0)
+                    expected_amount = int((Decimal(str(payment.total_amount or 0)) * Decimal('100')).quantize(Decimal('1')))
+
+                    order_matches = fetched_order_id == razorpay_order_id
+                    status_ok = fetched_status in {'captured', 'authorized'}
+                    amount_matches = fetched_amount == expected_amount
+                    is_verified = bool(order_matches and status_ok and amount_matches)
+
+                    if not is_verified:
+                        verification_failure_reason = 'Payment verification failed against Razorpay order details.'
+                except Exception:
+                    verification_failure_reason = 'Unable to verify payment with Razorpay.'
+
+        if not is_verified:
+            payment.status = WalletRechargePayment.STATUS_FAILED
+            payment.failure_reason = verification_failure_reason or 'Payment verification failed.'
+            payment.razorpay_payment_id = razorpay_payment_id
+            payment.razorpay_signature = razorpay_signature
+            payment.save(update_fields=['status', 'failure_reason', 'razorpay_payment_id', 'razorpay_signature', 'updated_at'])
+            return Response({'detail': payment.failure_reason}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            payment = WalletRechargePayment.objects.select_for_update().get(id=payment.id)
+            if payment.status != WalletRechargePayment.STATUS_SUCCESSFUL:
+                wallet = _get_or_create_wallet(request.user)
+                current_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
+                credit_amount = Decimal(str(payment.entered_amount or 0)).quantize(Decimal('0.0001'))
+                wallet.balance = (current_balance + credit_amount).quantize(Decimal('0.0001'))
+                wallet.email_validation_balance = wallet.balance
+                wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
+
+                payment.status = WalletRechargePayment.STATUS_SUCCESSFUL
+                payment.failure_reason = ''
+                payment.credited_amount = credit_amount
+                payment.credited_at = timezone.now()
+
+            payment.razorpay_payment_id = razorpay_payment_id
+            payment.razorpay_signature = razorpay_signature
+            payment.save(
+                update_fields=[
+                    'status',
+                    'failure_reason',
+                    'credited_amount',
+                    'credited_at',
+                    'razorpay_payment_id',
+                    'razorpay_signature',
+                    'updated_at',
+                ]
+            )
+
+        updated_wallet = _get_or_create_wallet(request.user)
+        return Response(
+            {
+                'detail': 'Payment verified and wallet credited successfully.',
+                'wallet_balance': str(Decimal(str(updated_wallet.balance or 0)).quantize(Decimal('0.0001'))),
+                'payment': WalletRechargePaymentSerializer(payment).data,
+            }
+        )
+
+
+class WalletRechargePaymentListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = WalletRechargePaymentSerializer
+
+    def get_queryset(self):
+        queryset = WalletRechargePayment.objects.filter(user=self.request.user).order_by('-created_at')
+        status_filter = str(self.request.query_params.get('status') or '').strip().lower()
+        if status_filter in {
+            WalletRechargePayment.STATUS_PENDING,
+            WalletRechargePayment.STATUS_SUCCESSFUL,
+            WalletRechargePayment.STATUS_FAILED,
+        }:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
 
 
 class UserAPIKeyListCreateView(generics.GenericAPIView):
@@ -4559,6 +5714,7 @@ class APIEmailValidationView(generics.GenericAPIView):
 
     def post(self, request):
         source_file = request.FILES.get('source_file') if hasattr(request, 'FILES') else None
+        provider_mode = _get_email_validation_provider_mode()
         try:
             user, api_key = _authenticate_api_key_request(request)
         except ValueError as exc:
@@ -4579,9 +5735,6 @@ class APIEmailValidationView(generics.GenericAPIView):
             cost_deducted, remaining_balance = _deduct_email_validation_credits(user, len(unique_emails))
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
-
-        if _has_admin_access(user):
-            remaining_balance = (available_validation_balance - cost_deducted).quantize(Decimal('0.0001'))
 
         history = EmailValidationHistory.objects.create(
             user=user,
@@ -4619,12 +5772,13 @@ class APIEmailValidationView(generics.GenericAPIView):
                 {
                     'request_id': history.request_id,
                     'status': 'pending',
+                    'provider_mode': provider_mode,
                     'detail': 'File accepted and queued for background validation.',
                 },
                 status=status.HTTP_202_ACCEPTED,
             )
 
-        results = _validate_email_list_with_verifalia(unique_emails)
+        results = _validate_email_list(unique_emails, provider_mode=provider_mode)
         client_results = [_to_client_validation_result(item) for item in results]
         safe_count = sum(1 for item in client_results if _is_safe_client_validation_result(item))
         unsafe_count = len(client_results) - safe_count
@@ -4646,6 +5800,7 @@ class APIEmailValidationView(generics.GenericAPIView):
         history.save(update_fields=['status', 'results_summary', 'completed_at'])
 
         concise_response = _build_concise_api_validation_response(client_results)
+        concise_response['provider_mode'] = provider_mode
         return Response(concise_response, status=status.HTTP_200_OK)
 
 
@@ -4941,6 +6096,50 @@ class AdminUserValidationHistoryView(generics.ListAPIView):
         return queryset
 
 
+class AdminOwnSystemValidationDiagnosticsView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request):
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        try:
+            unique_emails, _ = _collect_validation_emails_from_file(request, enforce_request_limit=True)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Diagnostics can be expensive; keep this endpoint focused for investigations.
+        max_diagnostics = 200
+        if len(unique_emails) > max_diagnostics:
+            return Response(
+                {'detail': f'Maximum {max_diagnostics} emails are allowed per diagnostics request.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        diagnostics_rows = []
+        for candidate in unique_emails:
+            result, diagnostics = _validate_email_with_own_system_diagnostics(candidate)
+            client_result = _to_client_validation_result(result)
+            diagnostics_rows.append(
+                {
+                    'email': client_result.get('email'),
+                    'result': client_result,
+                    'diagnostics': diagnostics,
+                }
+            )
+
+        return Response(
+            {
+                'provider_mode': 'own_system',
+                'count': len(diagnostics_rows),
+                'rows': diagnostics_rows,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class AdminCreditSettingsView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -4952,7 +6151,18 @@ class AdminCreditSettingsView(generics.GenericAPIView):
             key='email_validation_cost_per_request',
             defaults={'value': '1', 'description': 'Wallet credits charged for each validated email'},
         )
-        return Response(PlatformSettingSerializer(setting).data)
+        provider_setting, _ = PlatformSetting.objects.get_or_create(
+            key='email_validation_provider_mode',
+            defaults={'value': 'own_system', 'description': 'Provider used for email validation: own_system or zerobounce'},
+        )
+        return Response(
+            {
+                **PlatformSettingSerializer(setting).data,
+                'provider_mode': str(provider_setting.value or 'own_system').strip().lower(),
+                'provider_mode_description': provider_setting.description,
+                'provider_mode_options': ['own_system', 'zerobounce'],
+            }
+        )
 
     def patch(self, request):
         guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
@@ -4977,7 +6187,166 @@ class AdminCreditSettingsView(generics.GenericAPIView):
         if 'description' in request.data:
             setting.description = str(request.data.get('description') or '').strip()
         setting.save(update_fields=['value', 'description', 'updated_at'])
-        return Response(PlatformSettingSerializer(setting).data)
+
+        provider_mode = request.data.get('provider_mode')
+        if provider_mode is not None:
+            normalized_mode = str(provider_mode or '').strip().lower()
+            if normalized_mode not in {'own_system', 'zerobounce'}:
+                return Response({'detail': 'provider_mode must be own_system or zerobounce'}, status=status.HTTP_400_BAD_REQUEST)
+            provider_setting, _ = PlatformSetting.objects.get_or_create(
+                key='email_validation_provider_mode',
+                defaults={'value': normalized_mode, 'description': 'Provider used for email validation: own_system or zerobounce'},
+            )
+            provider_setting.value = normalized_mode
+            if 'provider_mode_description' in request.data:
+                provider_setting.description = str(request.data.get('provider_mode_description') or '').strip()
+            provider_setting.save(update_fields=['value', 'description', 'updated_at'])
+
+        provider_mode_setting = PlatformSetting.objects.filter(key='email_validation_provider_mode').first()
+        return Response(
+            {
+                **PlatformSettingSerializer(setting).data,
+                'provider_mode': str((provider_mode_setting.value if provider_mode_setting else 'own_system') or 'own_system').strip().lower(),
+                'provider_mode_description': str(provider_mode_setting.description if provider_mode_setting else 'Provider used for email validation: own_system or zerobounce').strip(),
+                'provider_mode_options': ['own_system', 'zerobounce'],
+            }
+        )
+
+
+class AdminRechargeChargeSettingsView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        service_charge_percentage, tax_percentage = _get_recharge_charge_percentages()
+        razorpay_config = _get_razorpay_config()
+        paypal_checkout_url = _get_platform_setting_text(
+            'recharge_paypal_checkout_url',
+            str(getattr(settings, 'PAYPAL_CHECKOUT_URL', '') or '').strip(),
+        )
+        upi_vpa = _get_platform_setting_text(
+            'recharge_upi_vpa',
+            str(getattr(settings, 'RAZORPAY_UPI_VPA', '') or '').strip(),
+        )
+        upi_payee_name = _get_platform_setting_text(
+            'recharge_upi_payee_name',
+            str(getattr(settings, 'COMPANY_NAME', 'Bhisha') or 'Bhisha').strip(),
+        )
+        return Response(
+            {
+                'service_charge_percentage': str(service_charge_percentage),
+                'tax_percentage': str(tax_percentage),
+                'gateway_configured': bool(razorpay_config.get('configured')),
+                'paypal_checkout_url': paypal_checkout_url,
+                'paypal_enabled': bool(paypal_checkout_url),
+                'upi_vpa': upi_vpa,
+                'upi_payee_name': upi_payee_name or 'Bhisha',
+                'upi_enabled': bool(upi_vpa),
+                'updated_at': timezone.now(),
+            }
+        )
+
+    def patch(self, request):
+        guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        service_charge_percentage = request.data.get('service_charge_percentage')
+        tax_percentage = request.data.get('tax_percentage')
+        if service_charge_percentage is None or tax_percentage is None:
+            return Response(
+                {'detail': 'service_charge_percentage and tax_percentage are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            service_charge_decimal = Decimal(str(service_charge_percentage)).quantize(Decimal('0.01'))
+            tax_decimal = Decimal(str(tax_percentage)).quantize(Decimal('0.01'))
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({'detail': 'Percentages must be valid numbers'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if service_charge_decimal < 0 or tax_decimal < 0:
+            return Response({'detail': 'Percentages cannot be negative'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if service_charge_decimal > Decimal('100') or tax_decimal > Decimal('100'):
+            return Response({'detail': 'Percentages cannot exceed 100'}, status=status.HTTP_400_BAD_REQUEST)
+
+        service_setting, _ = PlatformSetting.objects.get_or_create(
+            key='recharge_service_charge_percentage',
+            defaults={'value': '0', 'description': 'Service charge percentage applied to recharge amount'},
+        )
+        tax_setting, _ = PlatformSetting.objects.get_or_create(
+            key='recharge_tax_percentage',
+            defaults={'value': '0', 'description': 'Tax percentage applied to recharge amount'},
+        )
+
+        service_setting.value = str(service_charge_decimal)
+        tax_setting.value = str(tax_decimal)
+        if 'service_charge_description' in request.data:
+            service_setting.description = str(request.data.get('service_charge_description') or '').strip()
+        if 'tax_description' in request.data:
+            tax_setting.description = str(request.data.get('tax_description') or '').strip()
+
+        service_setting.save(update_fields=['value', 'description', 'updated_at'])
+        tax_setting.save(update_fields=['value', 'description', 'updated_at'])
+
+        paypal_checkout_url = request.data.get('paypal_checkout_url')
+        if paypal_checkout_url is not None:
+            paypal_setting, _ = PlatformSetting.objects.get_or_create(
+                key='recharge_paypal_checkout_url',
+                defaults={'value': '', 'description': 'PayPal checkout URL for wallet recharge'},
+            )
+            paypal_setting.value = str(paypal_checkout_url or '').strip()
+            paypal_setting.save(update_fields=['value', 'updated_at'])
+
+        upi_vpa = request.data.get('upi_vpa')
+        if upi_vpa is not None:
+            upi_setting, _ = PlatformSetting.objects.get_or_create(
+                key='recharge_upi_vpa',
+                defaults={'value': '', 'description': 'UPI VPA for wallet recharge QR'},
+            )
+            upi_setting.value = str(upi_vpa or '').strip()
+            upi_setting.save(update_fields=['value', 'updated_at'])
+
+        upi_payee_name = request.data.get('upi_payee_name')
+        if upi_payee_name is not None:
+            payee_name_setting, _ = PlatformSetting.objects.get_or_create(
+                key='recharge_upi_payee_name',
+                defaults={'value': 'Bhisha', 'description': 'UPI payee name for wallet recharge QR'},
+            )
+            payee_name_setting.value = str(upi_payee_name or 'Bhisha').strip() or 'Bhisha'
+            payee_name_setting.save(update_fields=['value', 'updated_at'])
+
+        razorpay_config = _get_razorpay_config()
+        updated_paypal_checkout_url = _get_platform_setting_text(
+            'recharge_paypal_checkout_url',
+            str(getattr(settings, 'PAYPAL_CHECKOUT_URL', '') or '').strip(),
+        )
+        updated_upi_vpa = _get_platform_setting_text(
+            'recharge_upi_vpa',
+            str(getattr(settings, 'RAZORPAY_UPI_VPA', '') or '').strip(),
+        )
+        updated_upi_payee_name = _get_platform_setting_text(
+            'recharge_upi_payee_name',
+            str(getattr(settings, 'COMPANY_NAME', 'Bhisha') or 'Bhisha').strip(),
+        )
+
+        return Response(
+            {
+                'service_charge_percentage': str(service_charge_decimal),
+                'tax_percentage': str(tax_decimal),
+                'gateway_configured': bool(razorpay_config.get('configured')),
+                'paypal_checkout_url': updated_paypal_checkout_url,
+                'paypal_enabled': bool(updated_paypal_checkout_url),
+                'upi_vpa': updated_upi_vpa,
+                'upi_payee_name': updated_upi_payee_name or 'Bhisha',
+                'upi_enabled': bool(updated_upi_vpa),
+                'updated_at': max(service_setting.updated_at, tax_setting.updated_at),
+            }
+        )
 
 
 class AdminUserWalletCreditsView(generics.GenericAPIView):
@@ -4995,7 +6364,6 @@ class AdminUserWalletCreditsView(generics.GenericAPIView):
 
         wallet = _get_or_create_wallet(target_user)
         current_sms = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
-        current_email = Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
 
         add_sms_raw = request.data.get('add_message_credits', request.data.get('message_credits_delta', '0'))
         add_email_raw = request.data.get('add_email_validation_credits', request.data.get('email_validation_credits_delta', '0'))
@@ -5009,8 +6377,9 @@ class AdminUserWalletCreditsView(generics.GenericAPIView):
         if add_sms < 0 or add_email < 0:
             return Response({'detail': 'Credit values must be zero or positive numbers'}, status=status.HTTP_400_BAD_REQUEST)
 
-        wallet.balance = max(Decimal('0.0000'), (current_sms + add_sms).quantize(Decimal('0.0001')))
-        wallet.email_validation_balance = max(Decimal('0.0000'), (current_email + add_email).quantize(Decimal('0.0001')))
+        total_add = (add_sms + add_email).quantize(Decimal('0.0001'))
+        wallet.balance = max(Decimal('0.0000'), (current_sms + total_add).quantize(Decimal('0.0001')))
+        wallet.email_validation_balance = wallet.balance
         wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
 
         return Response(
@@ -5018,12 +6387,81 @@ class AdminUserWalletCreditsView(generics.GenericAPIView):
                 'user_id': target_user.id,
                 'user_email': target_user.email,
                 'message_credits': str(wallet.balance),
-                'email_validation_credits': str(wallet.email_validation_balance),
+                'email_validation_credits': str(wallet.balance),
                 'added_message_credits': str(add_sms),
                 'added_email_validation_credits': str(add_email),
+                'total_credits_added': str(total_add),
             },
             status=status.HTTP_200_OK,
         )
+
+
+class SenderIdRequestView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SenderIdRequestSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        return SenderIdRequest.objects.filter(user=self.request.user).order_by('-created_at')
+
+
+class AdminSenderIdRequestListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SenderIdRequestAdminSerializer
+
+    def get_queryset(self):
+        if not _has_support_read_access(self.request.user):
+            return SenderIdRequest.objects.none()
+
+        queryset = SenderIdRequest.objects.select_related('user').all().order_by('-created_at')
+        query = str(self.request.query_params.get('q') or '').strip()
+        status_filter = str(self.request.query_params.get('status') or '').strip()
+        country_filter = str(self.request.query_params.get('destination_country') or '').strip()
+        use_case_filter = str(self.request.query_params.get('primary_use_case') or '').strip()
+        industry_filter = str(self.request.query_params.get('industry_sector_type') or '').strip()
+
+        if query:
+            queryset = queryset.filter(
+                Q(full_name__icontains=query)
+                | Q(email__icontains=query)
+                | Q(contact_number__icontains=query)
+                | Q(required_sender_id__icontains=query)
+                | Q(company_name__icontains=query)
+                | Q(destination_country__icontains=query)
+                | Q(message_content__icontains=query)
+                | Q(user__email__icontains=query)
+            )
+
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if country_filter:
+            queryset = queryset.filter(destination_country__iexact=country_filter)
+        if use_case_filter:
+            queryset = queryset.filter(primary_use_case=use_case_filter)
+        if industry_filter:
+            queryset = queryset.filter(industry_sector_type=industry_filter)
+
+        return queryset
+
+
+class AdminSenderIdRequestDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SenderIdRequestAdminSerializer
+
+    def get_queryset(self):
+        if not _has_support_read_access(self.request.user):
+            return SenderIdRequest.objects.none()
+        return SenderIdRequest.objects.select_related('user').all()
+
+    def update(self, request, *args, **kwargs):
+        if not _has_admin_access(request.user):
+            return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if not _has_admin_access(request.user):
+            return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        return super().partial_update(request, *args, **kwargs)
 
 
 class RequestStatusSearchView(generics.GenericAPIView):

@@ -53,7 +53,8 @@ const LeftSidebar = () => {
   const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/');
 
   const showRechargeNotice = () => {
-    setSidebarNotice('please contact you supporter/admin for recharging your account');
+    setSidebarNotice('');
+    navigate('/dashboard/recharge?tab=recharge');
   };
 
   const adminBaseMenuItems = [
@@ -74,6 +75,7 @@ const LeftSidebar = () => {
     { icon: <FaChartLine />, label: 'Reports', path: '/reports', action: () => navigate('/reports') },
     { icon: <FaMoneyBillWave />, label: "Utilities", path: null, action: () => setShowUtilitiesSubmenu((prev) => !prev) },
     { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
+    { icon: <FaFileAlt />, label: "Request Sender ID", path: '/dashboard/sender-id-request', action: () => navigate('/dashboard/sender-id-request') },
   ];
 
   const supportBaseMenuItems = [
@@ -107,6 +109,7 @@ const LeftSidebar = () => {
 
   const utilitiesSubMenuItems = [
     { icon: <FaWallet />, label: 'Recharge Account', path: null, action: showRechargeNotice },
+    { icon: <FaFileAlt />, label: 'Request Sender ID', path: '/dashboard/sender-id-request', action: () => navigate('/dashboard/sender-id-request') },
   ];
 
   const adminSMSMenuItems = [
