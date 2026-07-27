@@ -101,6 +101,8 @@ _EMAIL_VALIDATION_WORKERS = {}
 _EMAIL_VALIDATION_WORKERS_LOCK = threading.Lock()
 _MX_CACHE = {}
 _MX_CACHE_LOCK = threading.Lock()
+_DOMAIN_RESOLVE_CACHE = {}
+_DOMAIN_RESOLVE_CACHE_LOCK = threading.Lock()
 _HISTORY_SIGNAL_CACHE = {}
 _HISTORY_SIGNAL_CACHE_LOCK = threading.Lock()
 
@@ -638,6 +640,24 @@ def _get_email_validation_worker_count():
     return max(8, min(configured, 256))
 
 
+def _get_email_validation_domain_prefetch_workers():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_DOMAIN_PREFETCH_WORKERS', 32) or 32)
+    except (TypeError, ValueError):
+        configured = 32
+    return max(4, min(configured, 128))
+
+
+def _get_email_validation_use_history_signal():
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_USE_HISTORY_SIGNAL', 'false') or '').strip().lower()
+    return configured in {'1', 'true', 'yes', 'on'}
+
+
+def _get_email_validation_skip_smtp_for_popular_domains():
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS', 'true') or '').strip().lower()
+    return configured in {'1', 'true', 'yes', 'on'}
+
+
 def _get_smtp_retry_attempts():
     try:
         configured = int(getattr(settings, 'EMAIL_VALIDATION_SMTP_RETRY_ATTEMPTS', 1) or 1)
@@ -796,6 +816,16 @@ def _get_historical_verification_signal(email):
     return signal
 
 
+def _get_historical_verification_signal_if_enabled(email):
+    if not _get_email_validation_use_history_signal():
+        return {
+            'sample_size': 0,
+            'valid_inbox_rate': None,
+            'last_seen_at': '',
+        }
+    return _get_historical_verification_signal(email)
+
+
 def _compute_domain_reputation(domain, *, disposable=False, typo_suggestion='', status_code='', history_signal=None):
     normalized = str(domain or '').strip().lower()
     code = str(status_code or '').strip().upper()
@@ -901,11 +931,57 @@ def _domain_resolves(domain):
     domain = str(domain or '').strip().lower()
     if not domain:
         return False
+
+    now_ts = time.time()
+    with _DOMAIN_RESOLVE_CACHE_LOCK:
+        cached = _DOMAIN_RESOLVE_CACHE.get(domain)
+        if cached and cached.get('expires_at', 0) > now_ts:
+            return bool(cached.get('resolves'))
+
     try:
         socket.getaddrinfo(domain, None)
-        return True
+        resolves = True
     except Exception:
-        return False
+        resolves = False
+
+    with _DOMAIN_RESOLVE_CACHE_LOCK:
+        _DOMAIN_RESOLVE_CACHE[domain] = {
+            'resolves': resolves,
+            'expires_at': now_ts + 300,
+        }
+
+    return resolves
+
+
+def _get_domain_validation_snapshot(domain):
+    normalized = str(domain or '').strip().lower()
+    if not normalized:
+        return {
+            'domain': '',
+            'typo_suggestion': '',
+            'mx_hosts': [],
+            'mx_lookup_error': 'INVALID_DOMAIN',
+            'domain_resolves': False,
+        }
+
+    typo_suggestion = _detect_popular_domain_typo(normalized)
+    if typo_suggestion and typo_suggestion != normalized:
+        return {
+            'domain': normalized,
+            'typo_suggestion': typo_suggestion,
+            'mx_hosts': [],
+            'mx_lookup_error': '',
+            'domain_resolves': True,
+        }
+    mx_hosts, mx_error = _resolve_mx_hosts_with_error(normalized)
+    domain_resolves = _domain_resolves(normalized)
+    return {
+        'domain': normalized,
+        'typo_suggestion': typo_suggestion,
+        'mx_hosts': list(mx_hosts)[:_get_smtp_max_mx_hosts()],
+        'mx_lookup_error': mx_error,
+        'domain_resolves': bool(domain_resolves),
+    }
 
 
 def _resolve_mx_host(domain):
@@ -1012,7 +1088,7 @@ def _validate_email_with_own_system_diagnostics(email):
     typo_suggestion = _detect_popular_domain_typo(domain)
     if typo_suggestion and typo_suggestion != domain:
         diagnostics['typo_suggestion'] = typo_suggestion
-        history_signal = _get_historical_verification_signal(normalized)
+        history_signal = _get_historical_verification_signal_if_enabled(normalized)
         reputation = _compute_domain_reputation(
             domain,
             typo_suggestion=typo_suggestion,
@@ -1079,7 +1155,7 @@ def _validate_email_with_own_system_diagnostics(email):
             failure_reason=failure_reason,
             provider='own_system',
         )
-        history_signal = _get_historical_verification_signal(normalized)
+        history_signal = _get_historical_verification_signal_if_enabled(normalized)
         diagnostics['historical_signal'] = history_signal
         diagnostics['domain_reputation'] = _compute_domain_reputation(
             domain,
@@ -1095,7 +1171,7 @@ def _validate_email_with_own_system_diagnostics(email):
         return result, diagnostics
 
     if not _get_own_system_smtp_probe_enabled():
-        history_signal = _get_historical_verification_signal(normalized)
+        history_signal = _get_historical_verification_signal_if_enabled(normalized)
         diagnostics['historical_signal'] = history_signal
         diagnostics['domain_reputation'] = _compute_domain_reputation(
             domain,
@@ -1187,7 +1263,7 @@ def _validate_email_with_own_system_diagnostics(email):
                                 retry_event['catch_all_probe_message'] = str(probe_message or '').strip()
                             diagnostics['attempts'].append(attempt)
 
-                            history_signal = _get_historical_verification_signal(normalized)
+                            history_signal = _get_historical_verification_signal_if_enabled(normalized)
                             diagnostics['historical_signal'] = history_signal
                             diagnostics['domain_reputation'] = _compute_domain_reputation(
                                 domain,
@@ -1221,7 +1297,7 @@ def _validate_email_with_own_system_diagnostics(email):
 
                         if code in {550, 551, 553}:
                             diagnostics['attempts'].append(attempt)
-                            history_signal = _get_historical_verification_signal(normalized)
+                            history_signal = _get_historical_verification_signal_if_enabled(normalized)
                             diagnostics['historical_signal'] = history_signal
                             diagnostics['domain_reputation'] = _compute_domain_reputation(
                                 domain,
@@ -1257,7 +1333,7 @@ def _validate_email_with_own_system_diagnostics(email):
                                     continue
 
                                 diagnostics['attempts'].append(attempt)
-                                history_signal = _get_historical_verification_signal(normalized)
+                                history_signal = _get_historical_verification_signal_if_enabled(normalized)
                                 diagnostics['historical_signal'] = history_signal
                                 diagnostics['domain_reputation'] = _compute_domain_reputation(
                                     domain,
@@ -1290,7 +1366,7 @@ def _validate_email_with_own_system_diagnostics(email):
                                 continue
 
                             diagnostics['attempts'].append(attempt)
-                            history_signal = _get_historical_verification_signal(normalized)
+                            history_signal = _get_historical_verification_signal_if_enabled(normalized)
                             diagnostics['historical_signal'] = history_signal
                             diagnostics['domain_reputation'] = _compute_domain_reputation(
                                 domain,
@@ -1338,7 +1414,7 @@ def _validate_email_with_own_system_diagnostics(email):
         failure_reason=last_failure_reason or 'SMTP validation failed',
         provider='own_system',
     )
-    history_signal = _get_historical_verification_signal(normalized)
+    history_signal = _get_historical_verification_signal_if_enabled(normalized)
     diagnostics['historical_signal'] = history_signal
     diagnostics['domain_reputation'] = _compute_domain_reputation(
         domain,
@@ -1489,7 +1565,175 @@ def _validate_email_list(unique_emails, provider_mode=None):
     if mode == 'zerobounce':
         return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_zerobounce, provider_mode='zerobounce')
 
-    return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_own_system, provider_mode='own_system')
+    smtp_probe_enabled = _get_own_system_smtp_probe_enabled()
+    skip_smtp_for_popular = _get_email_validation_skip_smtp_for_popular_domains()
+
+    invalid_results = {}
+    emails_by_domain = {}
+    for candidate in unique_emails:
+        normalized = str(candidate or '').strip().lower()
+        if not re.fullmatch(_EMAIL_REGEX, normalized):
+            invalid_results[normalized] = _build_validation_result(
+                normalized,
+                valid_syntax=False,
+                valid_mailbox=False,
+                risky=True,
+                risk='high',
+                status='Invalid Email Format',
+                status_code='INVALID_FORMAT',
+                classification='Invalid',
+                failure_reason='Invalid Email Format',
+                provider='own_system',
+            )
+            continue
+
+        domain = normalized.split('@', 1)[1]
+        emails_by_domain.setdefault(domain, []).append(normalized)
+
+    domain_snapshots = {}
+    domains = list(emails_by_domain.keys())
+    if domains:
+        prefetch_workers = min(_get_email_validation_domain_prefetch_workers(), len(domains))
+        if prefetch_workers <= 1:
+            for domain in domains:
+                domain_snapshots[domain] = _get_domain_validation_snapshot(domain)
+        else:
+            with ThreadPoolExecutor(max_workers=prefetch_workers) as executor:
+                future_map = {
+                    executor.submit(_get_domain_validation_snapshot, domain): domain
+                    for domain in domains
+                }
+                for future in as_completed(future_map):
+                    domain = future_map[future]
+                    try:
+                        domain_snapshots[domain] = future.result()
+                    except Exception:
+                        domain_snapshots[domain] = {
+                            'domain': domain,
+                            'typo_suggestion': '',
+                            'mx_hosts': [],
+                            'mx_lookup_error': 'DNS_LOOKUP_FAILED',
+                            'domain_resolves': False,
+                        }
+
+    fast_results = {}
+    smtp_fallback_candidates = []
+
+    for domain, domain_emails in emails_by_domain.items():
+        snapshot = domain_snapshots.get(domain) or {
+            'domain': domain,
+            'typo_suggestion': '',
+            'mx_hosts': [],
+            'mx_lookup_error': 'DNS_LOOKUP_FAILED',
+            'domain_resolves': False,
+        }
+        typo_suggestion = str(snapshot.get('typo_suggestion') or '').strip().lower()
+        mx_hosts = list(snapshot.get('mx_hosts') or [])
+        mx_error = str(snapshot.get('mx_lookup_error') or '').strip().upper()
+        domain_resolves = bool(snapshot.get('domain_resolves'))
+
+        for normalized in domain_emails:
+            local_part = normalized.split('@', 1)[0] if '@' in normalized else ''
+            if typo_suggestion and typo_suggestion != domain:
+                fast_results[normalized] = _build_validation_result(
+                    normalized,
+                    valid_syntax=False,
+                    valid_mailbox=False,
+                    did_you_mean=f'{local_part}@{typo_suggestion}',
+                    risky=True,
+                    risk='high',
+                    status='Invalid domain spelling (popular provider typo detected)',
+                    status_code='INVALID_SYNTAX_DOMAIN_TYPO',
+                    classification='Invalid',
+                    failure_reason=f'Likely domain typo: {domain} -> {typo_suggestion}',
+                    provider='own_system',
+                )
+                continue
+
+            if not mx_hosts:
+                if mx_error == 'DOMAIN_NOT_FOUND' or not domain_resolves:
+                    fast_results[normalized] = _build_validation_result(
+                        normalized,
+                        valid_syntax=True,
+                        valid_mailbox=False,
+                        risky=True,
+                        risk='high',
+                        status='Domain does not exist',
+                        status_code='DOMAIN_NOT_FOUND',
+                        classification='Invalid',
+                        failure_reason='Domain does not exist or cannot be resolved',
+                        provider='own_system',
+                    )
+                elif mx_error in {'DNS_UNAVAILABLE', 'DNS_NO_NAMESERVERS', 'DNS_TIMEOUT', 'DNS_LOOKUP_FAILED'}:
+                    status_code = 'DNS_UNAVAILABLE' if mx_error == 'DNS_UNAVAILABLE' else 'DNS_LOOKUP_FAILED'
+                    fast_results[normalized] = _build_validation_result(
+                        normalized,
+                        valid_syntax=True,
+                        valid_mailbox=False,
+                        risky=True,
+                        risk='medium',
+                        status='Domain DNS lookup unavailable',
+                        status_code=status_code,
+                        classification='Invalid',
+                        failure_reason=f'DNS lookup unavailable: {mx_error}',
+                        provider='own_system',
+                    )
+                else:
+                    fast_results[normalized] = _build_validation_result(
+                        normalized,
+                        valid_syntax=True,
+                        valid_mailbox=False,
+                        risky=True,
+                        risk='high',
+                        status='No MX Record Found',
+                        status_code='NO_MX',
+                        classification='Invalid',
+                        failure_reason='No MX Record Found',
+                        provider='own_system',
+                    )
+                continue
+
+            should_skip_smtp = (not smtp_probe_enabled) or (skip_smtp_for_popular and domain in _POPULAR_MAIL_DOMAINS)
+            if should_skip_smtp:
+                status_text = 'Domain and syntax validated (SMTP probe skipped for fast path)'
+                if smtp_probe_enabled and skip_smtp_for_popular and domain in _POPULAR_MAIL_DOMAINS:
+                    status_text = 'Domain and syntax validated (popular provider SMTP probe skipped)'
+
+                fast_results[normalized] = _build_validation_result(
+                    normalized,
+                    valid_syntax=True,
+                    valid_mailbox=True,
+                    risky=False,
+                    risk='low',
+                    status=status_text,
+                    status_code='DNS_MX_VALID',
+                    classification='Deliverable',
+                    failure_reason='',
+                    provider='own_system',
+                )
+                continue
+
+            smtp_fallback_candidates.append(normalized)
+
+    smtp_results = {}
+    if smtp_fallback_candidates:
+        smtp_results = {
+            str(item.get('email') or '').strip().lower(): item
+            for item in _validate_email_list_with_parallel_workers(smtp_fallback_candidates, _validate_email_with_own_system, provider_mode='own_system')
+        }
+
+    ordered_results = []
+    for candidate in unique_emails:
+        normalized = str(candidate or '').strip().lower()
+        item = (
+            invalid_results.get(normalized)
+            or fast_results.get(normalized)
+            or smtp_results.get(normalized)
+            or _build_email_validation_error_result(normalized, 'Validation result unavailable.', provider_mode='own_system')
+        )
+        ordered_results.append(item)
+
+    return ordered_results
 
 
 def _score_verifalia_entry(entry):
