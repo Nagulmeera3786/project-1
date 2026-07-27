@@ -1257,6 +1257,9 @@ export default function EmailValidation() {
                 <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>Upload File (.xlsv, .csv, .txt, .xls, .xlsx)</label>
                 <input type="file" onChange={handleFileChange} accept=".xlsv,.csv,.txt,.xls,.xlsx" style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
                 <small style={{ color: '#6b7280' }}>{sourceFile ? `Selected: ${sourceFile.name}` : 'Maximum file size: 25MB'}</small>
+                <div style={{ marginTop: '8px', padding: '8px 10px', borderRadius: '6px', background: '#fff7ed', border: '1px solid #fed7aa', color: '#9a3412', fontSize: '12px', fontWeight: 600 }}>
+                  Please make sure the file contains only one column with email addresses. Files with multiple columns will be rejected.
+                </div>
               </div>
             )}
 

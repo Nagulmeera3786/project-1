@@ -19,6 +19,7 @@ import time
 import re
 import difflib
 import io
+import csv
 import smtplib
 import hmac
 import hashlib
@@ -2064,12 +2065,45 @@ def _extract_emails_from_uploaded_file(source_file):
         if normalized:
             extracted.append(normalized)
 
-    if filename.endswith('.txt') or filename.endswith('.csv') or filename.endswith('.xlsv'):
+    if filename.endswith('.txt'):
         source_file.seek(0)
         text_wrapper = io.TextIOWrapper(source_file, encoding='utf-8', errors='ignore')
         try:
-            for line in text_wrapper:
-                extracted.extend(_collect_emails_from_text_blob(line))
+            for line_number, line in enumerate(text_wrapper, start=1):
+                stripped = str(line or '').strip()
+                if not stripped:
+                    continue
+
+                if ',' in stripped or ';' in stripped or '\t' in stripped:
+                    tokens = [part.strip() for part in re.split(r'[,;\t]+', stripped) if part.strip()]
+                    if len(tokens) > 1:
+                        raise ValueError(
+                            f'Invalid file format at line {line_number}. File must contain only one email column.'
+                        )
+
+                extracted.append(stripped.lower())
+        finally:
+            try:
+                text_wrapper.detach()
+            except Exception:
+                pass
+            source_file.seek(0)
+        return extracted
+
+    if filename.endswith('.csv') or filename.endswith('.xlsv'):
+        source_file.seek(0)
+        text_wrapper = io.TextIOWrapper(source_file, encoding='utf-8', errors='ignore', newline='')
+        try:
+            reader = csv.reader(text_wrapper)
+            for row_number, row in enumerate(reader, start=1):
+                non_empty_cells = [str(cell or '').strip() for cell in row if str(cell or '').strip()]
+                if not non_empty_cells:
+                    continue
+                if len(non_empty_cells) > 1:
+                    raise ValueError(
+                        f'Invalid file format at row {row_number}. File must contain only one email column.'
+                    )
+                extracted.append(non_empty_cells[0].lower())
         finally:
             try:
                 text_wrapper.detach()
@@ -2087,11 +2121,23 @@ def _extract_emails_from_uploaded_file(source_file):
         try:
             source_file.seek(0)
             workbook = xlrd.open_workbook(file_contents=source_file.read())
+            used_columns = set()
             for sheet in workbook.sheets():
                 for row_index in range(sheet.nrows):
                     for col_index in range(sheet.ncols):
-                        _add_candidate(sheet.cell_value(row_index, col_index))
+                        value = sheet.cell_value(row_index, col_index)
+                        normalized = str(value).strip().lower()
+                        if not normalized:
+                            continue
+                        used_columns.add(col_index)
+                        if len(used_columns) > 1:
+                            raise ValueError(
+                                f'Invalid file format in sheet "{sheet.name}". File must contain only one email column.'
+                            )
+                        _add_candidate(value)
             return extracted
+        except ValueError:
+            raise
         except Exception as exc:
             raise ValueError(f'Unable to parse XLS file: {exc}') from exc
 
@@ -2105,11 +2151,20 @@ def _extract_emails_from_uploaded_file(source_file):
             source_file.seek(0)
             workbook = openpyxl.load_workbook(source_file, read_only=True, data_only=True)
             worksheet = workbook.active
+            used_columns = set()
             for row in worksheet.iter_rows(values_only=True):
-                for cell in row:
+                for col_index, cell in enumerate(row):
+                    normalized = str(cell).strip().lower() if cell is not None else ''
+                    if not normalized:
+                        continue
+                    used_columns.add(col_index)
+                    if len(used_columns) > 1:
+                        raise ValueError('Invalid file format. File must contain only one email column.')
                     _add_candidate(cell)
             workbook.close()
             return extracted
+        except ValueError:
+            raise
         except Exception as exc:
             raise ValueError(f'Unable to parse XLSX file: {exc}') from exc
 
@@ -2977,32 +3032,44 @@ def _extract_api_result_profiles(result_items):
 
 def _build_concise_api_validation_response(result_items):
     normalized_results = []
+    valid_count = 0
+    invalid_count = 0
+
     for item in result_items or []:
         if not isinstance(item, dict):
             continue
-        bhisha_result = item.get('bhisha_result') if isinstance(item.get('bhisha_result'), dict) else item
-        if isinstance(bhisha_result, dict):
-            normalized_results.append({
-                'email': str(bhisha_result.get('email') or '').strip().lower(),
-                'provider_mode': str(item.get('provider_mode') or bhisha_result.get('provider_mode') or '').strip().lower(),
-                'provider_mode_label': str(item.get('provider_mode_label') or bhisha_result.get('provider_mode_label') or '').strip(),
-                'provider_result_status': str(item.get('provider_result_status') or '').strip(),
-                'classification': str(item.get('classification') or '').strip(),
-                'status': str(item.get('status') or '').strip(),
-                'status_code': str(item.get('statusCode') or item.get('status_code') or '').strip(),
-                'valid_inbox': bool(bhisha_result.get('valid_inbox')),
-                'valid_syntax': bool(bhisha_result.get('valid_syntax')),
-                'domain_related_mail': bool(bhisha_result.get('domain_related_mail')),
-                'disposable': bool(bhisha_result.get('disposable')),
-                'role_based': bool(bhisha_result.get('role_based')),
-                'catch_all': bool(bhisha_result.get('catch_all')),
-                'risk_factors': str(bhisha_result.get('risk_factors') or 'None Detected'),
-                'raw_status_details': str(bhisha_result.get('raw_status_details') or ''),
-                'is_free_domain': bool(bhisha_result.get('is_free_domain')),
-            })
+
+        email = str(item.get('email') or '').strip().lower()
+        if not email:
+            bhisha = item.get('bhisha_result') if isinstance(item.get('bhisha_result'), dict) else {}
+            email = str(bhisha.get('email') or '').strip().lower()
+
+        explicit_status = str(item.get('provider_result_status') or '').strip().lower()
+        if explicit_status in {'valid', 'invalid'}:
+            status_value = explicit_status.title()
+        else:
+            bhisha = item.get('bhisha_result') if isinstance(item.get('bhisha_result'), dict) else {}
+            inbox_ok = bool(bhisha.get('valid_inbox')) if isinstance(bhisha, dict) else False
+            status_value = 'Valid' if inbox_ok else 'Invalid'
+
+        if status_value == 'Valid':
+            valid_count += 1
+        else:
+            invalid_count += 1
+
+        normalized_results.append(
+            {
+                'email': email,
+                'status': status_value,
+            }
+        )
 
     return {
         'count': len(normalized_results),
+        'summary': {
+            'valid': valid_count,
+            'invalid': invalid_count,
+        },
         'results': normalized_results,
     }
 
@@ -3091,12 +3158,9 @@ def _build_concise_api_status_response(history):
     if processing_state in {'completed'}:
         stored_results = summary.get('results') if isinstance(summary.get('results'), list) else []
         response_payload = _build_concise_api_validation_response(stored_results)
+        response_payload['request_id'] = history.request_id
         response_payload['provider_mode'] = provider_mode
         response_payload['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
-        response_payload['summary'] = {
-            'safe_to_send_yes': int(summary.get('safe_count') or 0),
-            'safe_to_send_no': int(summary.get('unsafe_count') or 0),
-        }
         response_payload['dlr_report'] = _build_email_validation_dlr_report(
             provider_mode=provider_mode,
             results=stored_results,
@@ -5993,11 +6057,6 @@ class APIEmailValidationView(generics.GenericAPIView):
         concise_response = _build_concise_api_validation_response(client_results)
         concise_response['provider_mode'] = provider_mode
         concise_response['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
-        concise_response['summary'] = {
-            'safe_to_send_yes': safe_count,
-            'safe_to_send_no': unsafe_count,
-        }
-        concise_response['dashboard_results'] = client_results
         concise_response['dlr_report'] = _build_email_validation_dlr_report(
             provider_mode=provider_mode,
             results=client_results,
