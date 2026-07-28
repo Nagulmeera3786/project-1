@@ -116,6 +116,7 @@ _POPULAR_DOMAIN_TYPOS = {
     'gamil.com': 'gmail.com',
     'gmai.com': 'gmail.com',
     'gmail.co': 'gmail.com',
+    'hmil.com': 'hotmail.com',
     'hmail.com': 'hotmail.com',
     'hotnail.com': 'hotmail.com',
     'outlok.com': 'outlook.com',
@@ -2189,6 +2190,13 @@ def _to_client_validation_result(item):
         provider_result_status = f'{classification}: {status_text}'
 
     bhisha_result = _build_bhisha_api_validation_result(normalized_item)
+    safe_to_send = _compute_safe_to_send(
+        valid_syntax=valid_syntax,
+        valid_mailbox=valid_mailbox,
+        disposable=disposable,
+        role_based=role_based,
+        risk=risk,
+    )
 
     return {
         'email': entered_email,
@@ -2203,6 +2211,9 @@ def _to_client_validation_result(item):
         'roleBased': role_based,
         'risky': risky,
         'risk': risk,
+        'safe_to_send': safe_to_send,
+        'valid_syntax': valid_syntax,
+        'valid_mailbox': valid_mailbox,
         'providerMessageId': str(item.get('providerMessageId') or '').strip(),
         'classification': classification,
         'status': status_text,
@@ -2218,13 +2229,23 @@ def _is_high_risk_value(value):
     return risk in {'high', 'very_high', 'medium', 'risky', 'unknown'}
 
 
-def _is_safe_client_validation_result(item):
+def _compute_safe_to_send(*, valid_syntax, valid_mailbox, disposable, role_based, risk):
     return bool(
-        item.get('validMailbox')
-        and item.get('validSyntax')
-        and not item.get('disposable')
-        and not item.get('roleBased')
-        and not _is_high_risk_value(item.get('risk'))
+        valid_syntax
+        and valid_mailbox
+        and not disposable
+        and not role_based
+        and not _is_high_risk_value(risk)
+    )
+
+
+def _is_safe_client_validation_result(item):
+    return _compute_safe_to_send(
+        valid_syntax=bool(item.get('validSyntax')),
+        valid_mailbox=bool(item.get('validMailbox')),
+        disposable=bool(item.get('disposable')),
+        role_based=bool(item.get('roleBased')),
+        risk=item.get('risk'),
     )
 
 
@@ -3020,14 +3041,25 @@ def _build_simple_validation_result(item):
     risk_value = str(item.get('risk') or '').strip().lower()
     risk_high = bool(item.get('risky')) or risk_value in {'high', 'very_high', 'unknown'}
     has_unknown_flag = any(value is None for value in [syntax_ok, valid_mailbox, disposable, role_based])
-    safe_to_send = None if has_unknown_flag else (syntax_ok and valid_mailbox and (not disposable) and (not role_based) and (not risk_high))
+    safe_to_send = None if has_unknown_flag else _compute_safe_to_send(
+        valid_syntax=syntax_ok,
+        valid_mailbox=valid_mailbox,
+        disposable=disposable,
+        role_based=role_based,
+        risk='high' if risk_high else 'low',
+    )
+    normalized_risk = 'high' if risk_high else 'low'
 
     return {
         'email': str(item.get('email') or '').strip().lower(),
+        'valid_syntax': bool(syntax_ok),
+        'valid_mailbox': bool(valid_mailbox),
+        'risk': normalized_risk,
+        'safe_to_send': bool(safe_to_send),
         'valid': _yes_no(None if (syntax_ok is None or valid_mailbox is None) else (syntax_ok and valid_mailbox)),
         'syntax_error': _yes_no(None if syntax_ok is None else (not syntax_ok)),
-        'safe_to_send': _yes_no(safe_to_send),
-        'valid_mailbox': _yes_no(valid_mailbox),
+        'safe_to_send_text': _yes_no(safe_to_send),
+        'valid_mailbox_text': _yes_no(valid_mailbox),
         'catch_all': _yes_no(catch_all),
         'disposable': _yes_no(disposable),
         'role_based': _yes_no(role_based),
@@ -3277,30 +3309,14 @@ def _build_bhisha_result_profile(result):
     if not isinstance(result, dict):
         return ''
 
-    email = str(result.get('email') or '').strip().lower()
     valid_inbox = bool(result.get('valid_inbox'))
     valid_syntax = bool(result.get('valid_syntax'))
-    domain_related_mail = bool(result.get('domain_related_mail'))
-    disposable = bool(result.get('disposable'))
-    role_based = bool(result.get('role_based'))
-    catch_all = bool(result.get('catch_all'))
     risk_factors = str(result.get('risk_factors') or 'None Detected').strip() or 'None Detected'
-    raw_status_details = str(result.get('raw_status_details') or '').strip() or 'safe_to_mail'
-    is_free_domain = bool(result.get('is_free_domain'))
 
     return '\n'.join([
-        f'Results Profile for: {email}',
-        '----------------------------------------',
         f'Valid Inbox:    {str(valid_inbox)}',
         f'Valid Syntax:   {str(valid_syntax)}',
-        f'Domain Related Mail: {str(domain_related_mail)}',
-        f'Disposable:     {str(disposable)}',
-        f'Role Based:     {str(role_based)}',
-        f'Catch All:      {str(catch_all)}',
         f'Risk Factors:   {risk_factors}',
-        '----------------------------------------',
-        f'Raw Status Details:  {raw_status_details}',
-        f'Is Free Domain?:     {str(is_free_domain)}',
     ])
 
 
@@ -3342,8 +3358,26 @@ def _build_concise_api_validation_response(result_items):
             inbox_ok = bool(bhisha.get('valid_inbox')) if isinstance(bhisha, dict) else False
             status_value = 'Valid' if inbox_ok else 'Invalid'
 
+        valid_syntax = bool(item.get('validSyntax'))
+        valid_mailbox = bool(item.get('validMailbox'))
+        risk = 'high' if _is_high_risk_value(item.get('risk')) else 'low'
+        safe_to_send = _compute_safe_to_send(
+            valid_syntax=valid_syntax,
+            valid_mailbox=valid_mailbox,
+            disposable=bool(item.get('disposable')),
+            role_based=bool(item.get('roleBased')),
+            risk=risk,
+        )
+
         normalized_results.append(
-            f'entered mail id: {email} status : {status_value.lower()}'
+            {
+                'email': email,
+                'status': status_value.lower(),
+                'valid_syntax': valid_syntax,
+                'valid_mailbox': valid_mailbox,
+                'risk': risk,
+                'safe_to_send': safe_to_send,
+            }
         )
 
     return {

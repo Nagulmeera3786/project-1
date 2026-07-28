@@ -972,33 +972,17 @@ export default function EmailValidation() {
       return profile;
     }
 
+    const bhisha = row?.bhisha_result || {};
     const validSyntax = toBool(row?.bhisha_result?.valid_syntax ?? row?.validSyntax);
     const disposable = toBool(row?.bhisha_result?.disposable ?? row?.disposable);
     const roleBased = toBool(row?.bhisha_result?.role_based ?? row?.roleBased);
-    const catchAll = toBool(row?.bhisha_result?.catch_all ?? row?.catchAll);
     const validInbox = Boolean(row?.validMailbox && validSyntax && !disposable && !roleBased);
-    const rawStatus = disposable
-      ? 'do_not_mail (disposable)'
-      : roleBased
-        ? 'do_not_mail (role_based)'
-        : catchAll
-          ? 'risky (catch_all)'
-          : validSyntax
-            ? 'safe_to_mail'
-            : 'invalid (syntax)';
+    const riskFactors = String(bhisha.risk_factors || 'None Detected').trim() || 'None Detected';
 
     return [
-      `Results Profile for: ${String(row?.email || '').trim().toLowerCase()}`,
-      '----------------------------------------',
       `Valid Inbox:    ${String(validInbox)}`,
       `Valid Syntax:   ${String(validSyntax)}`,
-      `Disposable:     ${String(disposable)}`,
-      `Role Based:     ${String(roleBased)}`,
-      `Catch All:      ${String(catchAll)}`,
-      'Risk Factors:   None Detected',
-      '----------------------------------------',
-      `Raw Status Details:  ${rawStatus}`,
-      `Is Free Domain?:     ${String(Boolean(row?.email && String(row.email).includes('@')) || disposable)}`,
+      `Risk Factors:   ${riskFactors}`,
     ].join('\n');
   };
 
@@ -1038,12 +1022,6 @@ export default function EmailValidation() {
     const factors = [
       { label: 'Valid Inbox', type: 'bool', value: toBool(bhisha.valid_inbox ?? row?.validMailbox) },
       { label: 'Valid Syntax', type: 'bool', value: toBool(bhisha.valid_syntax ?? row?.validSyntax) },
-      { label: 'Spam / Do Not Mail', type: 'bool', value: toBool(bhisha.spam ?? row?.spam) },
-      { label: 'Catch All', type: 'bool', value: toBool(bhisha.catch_all ?? row?.catchAll) },
-      { label: 'Disposable', type: 'bool', value: toBool(bhisha.disposable ?? row?.disposable) },
-      { label: 'Role Based', type: 'bool', value: toBool(bhisha.role_based ?? row?.roleBased) },
-      { label: 'Risk Factors', type: 'text', value: bhisha.risk_factors || 'None Detected' },
-      { label: 'Raw Status', type: 'text', value: bhisha.raw_status_details || row?.statusCode || 'safe_to_mail' },
     ];
 
     return (

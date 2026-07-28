@@ -862,6 +862,18 @@ class EmailValidationMediatorTests(TestCase):
         self.assertIn('Mailbox validation', report['report'])
         self.assertIn('Catch-all mail exchanger validation', report['report'])
 
+    def test_hmil_domain_is_detected_as_hotmail_typo(self):
+        from accounts.views import _detect_popular_domain_typo, _validate_email_with_own_system
+
+        self.assertEqual(_detect_popular_domain_typo('hmil.com'), 'hotmail.com')
+
+        result = _validate_email_with_own_system('user@hmil.com')
+
+        self.assertFalse(result.get('validSyntax'))
+        self.assertFalse(result.get('validMailbox'))
+        self.assertEqual(result.get('statusCode'), 'INVALID_SYNTAX_DOMAIN_TYPO')
+        self.assertIn('hotmail.com', str(result.get('didYouMean') or ''))
+
     def test_nested_verifalia_payload_extracts_risky_disposable_fields(self):
         from accounts.views import _extract_verifalia_entry, _normalize_email_validation_flags
 
