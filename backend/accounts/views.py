@@ -655,7 +655,7 @@ def _get_email_validation_use_history_signal():
 
 
 def _get_email_validation_skip_smtp_for_popular_domains():
-    configured = str(getattr(settings, 'EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS', 'true') or '').strip().lower()
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS', 'false') or '').strip().lower()
     return configured in {'1', 'true', 'yes', 'on'}
 
 
@@ -705,7 +705,7 @@ def _get_smtp_enable_catch_all_probe():
 
 
 def _get_own_system_smtp_probe_enabled():
-    configured = str(getattr(settings, 'EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP', 'false') or '').strip().lower()
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP', 'true') or '').strip().lower()
     return configured in {'1', 'true', 'yes', 'on'}
 
 
