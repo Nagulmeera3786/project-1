@@ -874,6 +874,28 @@ class EmailValidationMediatorTests(TestCase):
         self.assertEqual(result.get('statusCode'), 'INVALID_SYNTAX_DOMAIN_TYPO')
         self.assertIn('hotmail.com', str(result.get('didYouMean') or ''))
 
+    @override_settings(
+        EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP=True,
+        EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS=True,
+    )
+    def test_popular_domain_fast_path_does_not_mark_mailbox_valid(self):
+        from accounts.views import _validate_email_list
+
+        results = _validate_email_list(['hedh67g@gmail.com'], provider_mode='own_system')
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].get('validSyntax'))
+        self.assertFalse(results[0].get('validMailbox'))
+        self.assertEqual(results[0].get('classification'), 'Risky')
+
+    @override_settings(EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP=False)
+    def test_smtp_disabled_path_does_not_mark_mailbox_valid(self):
+        from accounts.views import _validate_email_with_own_system
+
+        result = _validate_email_with_own_system('user@example.com')
+        self.assertTrue(result.get('validSyntax'))
+        self.assertFalse(result.get('validMailbox'))
+        self.assertEqual(result.get('classification'), 'Risky')
+
     def test_nested_verifalia_payload_extracts_risky_disposable_fields(self):
         from accounts.views import _extract_verifalia_entry, _normalize_email_validation_flags
 

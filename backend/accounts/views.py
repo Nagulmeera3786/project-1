@@ -655,7 +655,7 @@ def _get_email_validation_use_history_signal():
 
 
 def _get_email_validation_skip_smtp_for_popular_domains():
-    configured = str(getattr(settings, 'EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS', 'false') or '').strip().lower()
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS', 'true') or '').strip().lower()
     return configured in {'1', 'true', 'yes', 'on'}
 
 
@@ -1187,13 +1187,13 @@ def _validate_email_with_own_system_diagnostics(email):
         result = _build_validation_result(
             normalized,
             valid_syntax=True,
-            valid_mailbox=True,
-            risky=False,
-            risk='low',
+            valid_mailbox=False,
+            risky=True,
+            risk='medium',
             status='Domain and syntax validated (SMTP probe skipped)',
             status_code='DNS_MX_VALID',
-            classification='Deliverable',
-            failure_reason='',
+            classification='Risky',
+            failure_reason='Mailbox verification skipped',
             provider='own_system',
         )
         diagnostics['final_status_code'] = result.get('statusCode', '')
@@ -1703,13 +1703,13 @@ def _validate_email_list(unique_emails, provider_mode=None):
                 fast_results[normalized] = _build_validation_result(
                     normalized,
                     valid_syntax=True,
-                    valid_mailbox=True,
-                    risky=False,
-                    risk='low',
+                    valid_mailbox=False,
+                    risky=True,
+                    risk='medium',
                     status=status_text,
                     status_code='DNS_MX_VALID',
-                    classification='Deliverable',
-                    failure_reason='',
+                    classification='Risky',
+                    failure_reason='Mailbox verification skipped',
                     provider='own_system',
                 )
                 continue
