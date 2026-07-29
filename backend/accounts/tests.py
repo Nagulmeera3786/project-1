@@ -546,6 +546,46 @@ class EmailValidationMediatorTests(TestCase):
         self.assertEqual(response.data.get('results')[0].get('risk'), 'low')
 
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
+    @patch('accounts.views._start_email_validation_worker')
+    def test_file_validation_defer_start_uploads_extracts_without_auto_start(self, mock_start_worker):
+        from accounts.models import EmailValidationHistory
+
+        wallet = UserWallet.objects.get(user=self.normal_user)
+        wallet.balance = Decimal('50.0000')
+        wallet.email_validation_balance = Decimal('50.0000')
+        wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
+
+        self.client.force_authenticate(user=self.normal_user)
+        source_file = SimpleUploadedFile(
+            'bulk.txt',
+            b'user1@example.com\nuser2@example.com\n',
+            content_type='text/plain',
+        )
+
+        response = self.client.post(
+            '/api/auth/email-validation/validate/',
+            {
+                'source_file': source_file,
+                'defer_start': 'true',
+            },
+            format='multipart',
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(response.data.get('ready_to_start'))
+        self.assertFalse(response.data.get('auto_started'))
+        self.assertEqual(response.data.get('count'), 2)
+        mock_start_worker.assert_not_called()
+
+        request_id = str(response.data.get('request_id') or '')
+        history = EmailValidationHistory.objects.filter(request_id=request_id).first()
+        self.assertIsNotNone(history)
+        self.assertEqual(history.status, EmailValidationHistory.STATUS_PENDING)
+        summary = history.results_summary or {}
+        self.assertEqual(str(summary.get('control_state') or ''), 'paused')
+        self.assertEqual(str(summary.get('processing_state') or ''), 'paused')
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
     @patch('accounts.views._get_verifalia_admin_credits', return_value=None)
     def test_email_validation_fails_when_primary_admin_credits_are_missing(self, _mock_verifalia_credits):
         self.client.force_authenticate(user=self.primary_admin)
@@ -788,6 +828,64 @@ class EmailValidationMediatorTests(TestCase):
         self.assertEqual(emails, ['user1@example.com', 'user2@example.com'])
         self.assertEqual(file_name, 'bulk.txt')
 
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com', EMAIL_VALIDATION_MAX_FILE_SIZE_MB=500)
+    def test_collect_validation_emails_rejects_file_over_500mb_limit(self):
+        from accounts.views import _collect_validation_emails
+
+        oversized_file = Mock()
+        oversized_file.name = 'bulk.csv'
+        oversized_file.size = 501 * 1024 * 1024
+
+        request = Mock()
+        request.data = {}
+        request.FILES = {'source_file': oversized_file}
+
+        with self.assertRaises(ValueError) as exc:
+            _collect_validation_emails(request)
+
+        self.assertIn('Max 500MB allowed', str(exc.exception))
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
+    def test_collect_validation_emails_rejects_non_email_extra_data_in_file(self):
+        from accounts.views import _collect_validation_emails
+
+        source_file = SimpleUploadedFile(
+            'bulk.txt',
+            b'user1@example.com\nnot-an-email\n',
+            content_type='text/plain',
+        )
+
+        request = Mock()
+        request.data = {}
+        request.FILES = {'source_file': source_file}
+
+        with self.assertRaises(ValueError) as exc:
+            _collect_validation_emails(request)
+
+        self.assertIn('file contains extra data and not able to proceed with the file', str(exc.exception).lower())
+
+    @patch('accounts.views._get_email_validation_batch_size', return_value=20)
+    @patch('accounts.views._get_email_validation_worker_count', return_value=4)
+    def test_parallel_worker_helper_handles_large_input_in_chunks(self, _mock_workers, _mock_batch_size):
+        from accounts.views import _validate_email_list_with_parallel_workers
+
+        candidates = [f'user{idx}@example.com' for idx in range(95)]
+
+        def validator(candidate):
+            return {
+                'email': candidate,
+                'validSyntax': True,
+                'validMailbox': True,
+                'statusCode': 'SYNTAX_DOMAIN_VALID',
+                'status': 'Valid (syntax + domain exists)',
+                'classification': 'Deliverable',
+            }
+
+        results = _validate_email_list_with_parallel_workers(candidates, validator, provider_mode='own_system')
+
+        self.assertEqual(len(results), len(candidates))
+        self.assertEqual([item.get('email') for item in results], candidates)
+
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
     def test_admin_can_add_wallet_credits_manually(self):
         self.client.force_authenticate(user=self.primary_admin)
@@ -874,27 +972,191 @@ class EmailValidationMediatorTests(TestCase):
         self.assertEqual(result.get('statusCode'), 'INVALID_SYNTAX_DOMAIN_TYPO')
         self.assertIn('hotmail.com', str(result.get('didYouMean') or ''))
 
+    def test_close_match_typo_is_suggested_from_extended_provider_list(self):
+        from accounts.views import _detect_popular_domain_typo
+
+        suggestion = _detect_popular_domain_typo('gmial.com')
+        self.assertEqual(suggestion, 'gmail.com')
+
+    @override_settings(EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS=False)
+    def test_popular_domain_skip_is_disabled_by_default_behavior(self):
+        from accounts.views import _get_email_validation_skip_smtp_for_popular_domains
+
+        self.assertFalse(_get_email_validation_skip_smtp_for_popular_domains())
+
+    def test_to_client_validation_result_marks_own_system_invalid_when_mailbox_not_verified(self):
+        from accounts.views import _to_client_validation_result
+
+        item = {
+            'provider': 'own_system',
+            'email': 'ramkumarharvansingh6@gmail.com',
+            'validSyntax': True,
+            'validMailbox': False,
+            'classification': 'Deliverable',
+            'status': 'Mailbox Busy',
+            'statusCode': 'SMTP_MAILBOX_BUSY',
+            'provider_result_status': 'Valid',
+            'risk': 'low',
+        }
+
+        normalized = _to_client_validation_result(item)
+
+        self.assertEqual(normalized.get('provider_result_status'), 'Mailbox Busy')
+        self.assertTrue(normalized.get('validSyntax'))
+        self.assertFalse(normalized.get('validMailbox'))
+
+    def test_compact_response_status_prefers_mailbox_flags_over_explicit_text(self):
+        from accounts.views import _build_concise_api_validation_response
+
+        payload = _build_concise_api_validation_response([
+            {
+                'email': 'ramkumarharvansingh6@gmail.com',
+                'provider_result_status': 'Valid',
+                'validSyntax': True,
+                'validMailbox': False,
+                'risk': 'low',
+            }
+        ])
+
+        self.assertEqual(payload['results'][0]['status'], 'invalid')
+        self.assertTrue(payload['results'][0]['valid_syntax'])
+        self.assertFalse(payload['results'][0]['valid_mailbox'])
+
+    def test_to_client_result_maps_hard_bounce_to_invalid_mailbox_status(self):
+        from accounts.views import _to_client_validation_result
+
+        item = {
+            'provider': 'own_system',
+            'email': 'ramkumarharvansingh6@gmail.com',
+            'validSyntax': True,
+            'validMailbox': False,
+            'classification': 'Invalid',
+            'status': 'Hard Bounce (Mailbox Not Found)',
+            'statusCode': 'HARD_BOUNCE_MAILBOX_NOT_FOUND',
+            'risk': 'high',
+        }
+
+        normalized = _to_client_validation_result(item)
+        self.assertEqual(normalized.get('provider_result_status'), 'Invalid')
+        self.assertTrue(normalized.get('validSyntax'))
+        self.assertFalse(normalized.get('validMailbox'))
+
+    def test_to_client_result_maps_252_to_cannot_verify_mailbox(self):
+        from accounts.views import _to_client_validation_result
+
+        item = {
+            'provider': 'own_system',
+            'email': 'user@gmail.com',
+            'validSyntax': True,
+            'validMailbox': False,
+            'classification': 'Risky',
+            'status': 'Cannot Verify Mailbox',
+            'statusCode': 'SMTP_CANNOT_VERIFY_MAILBOX',
+            'risk': 'medium',
+        }
+
+        normalized = _to_client_validation_result(item)
+        self.assertEqual(normalized.get('provider_result_status'), 'Invalid')
+
+    @patch('accounts.views.time.sleep', return_value=None)
+    @patch('accounts.views.dns.resolver.resolve')
+    def test_resolve_mx_retries_after_timeout_and_succeeds(self, mock_resolve, _mock_sleep):
+        from accounts import views as account_views
+        from accounts.views import _resolve_mx_hosts_with_error, _MX_CACHE, _MX_CACHE_LOCK
+
+        class _MxRecord:
+            def __init__(self, preference, exchange):
+                self.preference = preference
+                self.exchange = exchange
+
+        with _MX_CACHE_LOCK:
+            _MX_CACHE.pop('retry-example.com', None)
+
+        mock_resolve.side_effect = [
+            account_views.dns.exception.Timeout(),
+            [_MxRecord(10, 'mx.retry-example.com.')],
+        ]
+
+        mx_hosts, mx_error = _resolve_mx_hosts_with_error('retry-example.com')
+
+        self.assertEqual(mx_error, '')
+        self.assertEqual(mx_hosts, ['mx.retry-example.com'])
+        self.assertEqual(mock_resolve.call_count, 2)
+
+    def test_to_client_result_maps_dns_unavailable_as_mailbox_not_checked(self):
+        from accounts.views import _to_client_validation_result
+
+        item = {
+            'provider': 'own_system',
+            'email': 'mrmeera786@gmail.com',
+            'validSyntax': True,
+            'validMailbox': False,
+            'classification': 'Invalid',
+            'status': 'Domain DNS lookup unavailable (mailbox not checked)',
+            'statusCode': 'DNS_LOOKUP_FAILED',
+            'risk': 'medium',
+        }
+
+        normalized = _to_client_validation_result(item)
+        self.assertEqual(
+            normalized.get('provider_result_status'),
+            'Invalid Domain',
+        )
+
     @override_settings(
         EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP=True,
         EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS=True,
     )
-    def test_popular_domain_fast_path_does_not_mark_mailbox_valid(self):
+    @patch('accounts.views._validate_email_list_with_parallel_workers')
+    def test_popular_domain_uses_syntax_domain_fast_path_by_default(self, mock_parallel):
         from accounts.views import _validate_email_list
 
         results = _validate_email_list(['hedh67g@gmail.com'], provider_mode='own_system')
+
+        self.assertFalse(mock_parallel.called)
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].get('validSyntax'))
-        self.assertFalse(results[0].get('validMailbox'))
-        self.assertEqual(results[0].get('classification'), 'Risky')
+        self.assertTrue(results[0].get('validMailbox'))
+        self.assertEqual(results[0].get('statusCode'), 'SYNTAX_DOMAIN_VALID')
+
+    @override_settings(EMAIL_VALIDATION_MAILBOX_CHECK_ENABLED=True, EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP=True, EMAIL_VALIDATION_SYNTAX_ONLY_MODE=False)
+    @patch('accounts.views._domain_resolves', return_value=True)
+    @patch('accounts.views._resolve_mx_hosts_with_error', side_effect=AssertionError('SMTP should not be used'))
+    def test_own_system_validation_uses_dns_only_even_when_smtp_is_enabled(self, mock_mx, _mock_resolves):
+        from accounts.views import _validate_email_with_own_system
+
+        result = _validate_email_with_own_system('user@example.com')
+
+        self.assertTrue(result.get('validSyntax'))
+        self.assertTrue(result.get('validMailbox'))
+        self.assertEqual(result.get('classification'), 'Deliverable')
+        self.assertEqual(result.get('statusCode'), 'SYNTAX_DOMAIN_VALID')
+        self.assertEqual(result.get('status'), 'Valid (syntax + domain exists)')
+        mock_mx.assert_not_called()
 
     @override_settings(EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP=False)
-    def test_smtp_disabled_path_does_not_mark_mailbox_valid(self):
+    @patch('accounts.views._domain_resolves', return_value=True)
+    @patch('accounts.views._resolve_mx_hosts_with_error', return_value=(['mx.example.com'], ''))
+    def test_smtp_disabled_path_marks_syntax_domain_valid(self, _mock_mx, _mock_resolves):
         from accounts.views import _validate_email_with_own_system
 
         result = _validate_email_with_own_system('user@example.com')
         self.assertTrue(result.get('validSyntax'))
-        self.assertFalse(result.get('validMailbox'))
-        self.assertEqual(result.get('classification'), 'Risky')
+        self.assertTrue(result.get('validMailbox'))
+        self.assertEqual(result.get('classification'), 'Deliverable')
+        self.assertEqual(result.get('statusCode'), 'SYNTAX_DOMAIN_VALID')
+
+    @override_settings(EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP=False)
+    @patch('accounts.views._domain_resolves', return_value=True)
+    @patch('accounts.views._resolve_mx_hosts_with_error', return_value=([], 'NO_MX'))
+    def test_domain_exists_without_mx_is_still_valid(self, _mock_mx, _mock_resolves):
+        from accounts.views import _validate_email_with_own_system
+
+        result = _validate_email_with_own_system('user@example.com')
+
+        self.assertTrue(result.get('validSyntax'))
+        self.assertTrue(result.get('validMailbox'))
+        self.assertEqual(result.get('statusCode'), 'SYNTAX_DOMAIN_VALID')
 
     def test_nested_verifalia_payload_extracts_risky_disposable_fields(self):
         from accounts.views import _extract_verifalia_entry, _normalize_email_validation_flags

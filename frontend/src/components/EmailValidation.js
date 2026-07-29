@@ -4,6 +4,8 @@ import API from '../api';
 import { getProfessionalErrorMessage } from '../errorHelpers';
 import { FaArrowLeft, FaUpload, FaEnvelopeOpenText, FaListUl, FaKey, FaServer, FaUserShield } from 'react-icons/fa';
 
+const MAX_EMAIL_VALIDATION_UPLOAD_MB = 500;
+
 const tabButtonStyle = (active) => ({
   border: active ? '1px solid #7C5DC7' : '1px solid #d1d5db',
   background: active ? '#f5f3ff' : '#fff',
@@ -118,6 +120,7 @@ export default function EmailValidation() {
   const [activeRequestMeta, setActiveRequestMeta] = useState(null);
   const [progressTimeline, setProgressTimeline] = useState([]);
   const [keepInBackground, setKeepInBackground] = useState(false);
+  const [fileUploadReady, setFileUploadReady] = useState(false);
 
   const [apiKeys, setApiKeys] = useState([]);
   const [newApiKeyName, setNewApiKeyName] = useState('');
@@ -424,6 +427,7 @@ export default function EmailValidation() {
     });
 
     const stateDone = ['completed', 'failed', 'cancelled', 'stopped'].includes(processingState);
+    setFileUploadReady(!stateDone);
     if (stateDone || String(current?.status || '').toLowerCase() === 'completed' || String(current?.status || '').toLowerCase() === 'failed') {
       applyValidationPayload({
         request_id: current?.request_id,
@@ -451,6 +455,46 @@ export default function EmailValidation() {
 
     const response = await API.get(`email-validation/history/${requestId}/status/`, { timeout: 60000 });
     return hydrateFromHistoryRow(response.data || {});
+  };
+
+  const downloadDlrCsv = () => {
+    if (!dlrReport || !Array.isArray(dlrReport.results) || dlrReport.results.length === 0) {
+      setError('No DLR rows available to download.');
+      return;
+    }
+
+    const rows = dlrReport.results;
+    const header = ['email', 'status', 'status_code', 'classification', 'valid_mailbox', 'valid_syntax'];
+    const escapeCell = (value) => {
+      const raw = String(value ?? '');
+      if (raw.includes(',') || raw.includes('"') || raw.includes('\n')) {
+        return `"${raw.replace(/"/g, '""')}"`;
+      }
+      return raw;
+    };
+
+    const lines = [header.join(',')];
+    for (const row of rows) {
+      lines.push([
+        escapeCell(row?.email || ''),
+        escapeCell(row?.status || row?.classification || row?.status_code || ''),
+        escapeCell(row?.status_code || row?.statusCode || ''),
+        escapeCell(row?.classification || ''),
+        escapeCell(row?.valid_mailbox ?? row?.validMailbox ?? ''),
+        escapeCell(row?.valid_syntax ?? row?.validSyntax ?? ''),
+      ].join(','));
+    }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const requestLabel = String(latestRequestId || dlrReport?.request_id || 'dlr').trim();
+    link.href = url;
+    link.setAttribute('download', `email-validation-dlr-${requestLabel}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
   };
 
   const runRequestAction = async (action) => {
@@ -599,11 +643,29 @@ export default function EmailValidation() {
 
   const runValidation = async (event) => {
     event.preventDefault();
+
+    if (mode === 'file') {
+      const requestId = activeRequestMeta?.requestId || latestRequestId;
+      if (!sourceFile) {
+        setError('Please upload a file first.');
+        return;
+      }
+      if (!requestId || !fileUploadReady) {
+        setError('Please click Proceed Upload first.');
+        return;
+      }
+      setError('');
+      setInfo('');
+      await runRequestAction('start');
+      return;
+    }
+
     setError('');
     setInfo('');
     setResults([]);
     setSummary({ safe_to_send_yes: 0, safe_to_send_no: 0 });
     setDlrReport(null);
+    setFileUploadReady(false);
     setDeliverableEmailsText('');
     setShowComposePanel(false);
     setSendSummary(null);
@@ -624,11 +686,6 @@ export default function EmailValidation() {
       setError('Please enter bulk emails.');
       return;
     }
-    if (mode === 'file' && !sourceFile) {
-      setError('Please upload a file to validate.');
-      return;
-    }
-
     if (Number(walletBalance || 0) <= 0) {
       setError('No wallet credits available.');
       return;
@@ -639,45 +696,16 @@ export default function EmailValidation() {
     try {
       let response;
 
-      if (mode === 'file') {
-        const formData = new FormData();
-        formData.append('source_file', sourceFile);
-        response = await API.post('email-validation/validate/', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          timeout: 900000,
-          onUploadProgress: (progressEvent) => {
-            const loaded = Number(progressEvent?.loaded || 0);
-            const total = Number(progressEvent?.total || 0);
-            if (total > 0) {
-              const percent = Math.min(100, Math.round((loaded / total) * 100));
-              if (percent < 100) {
-                setProgressStage('uploading');
-                setStatusMessage(`Uploading file... ${percent}%`);
-                setProgressPercent(Math.min(percent, 92));
-              } else {
-                setProgressStage('validating');
-                setStatusMessage('Upload complete. Validating emails...');
-                setProgressPercent((prev) => Math.max(prev, 93));
-              }
-            } else {
-              setProgressStage('uploading');
-              setStatusMessage('Uploading file...');
-              setProgressPercent((prev) => Math.max(prev, 20));
-            }
-          },
-        });
-      } else {
-        const payload = {};
-        if (mode === 'single') {
-          payload.email = singleEmail.trim();
-        } else if (mode === 'bulk') {
-          payload.emails = bulkEmails.trim();
-        }
-        setProgressStage('validating');
-        setStatusMessage('Validating emails...');
-        setProgressPercent(15);
-        response = await API.post('email-validation/validate/', payload, { timeout: 900000 });
+      const payload = {};
+      if (mode === 'single') {
+        payload.email = singleEmail.trim();
+      } else if (mode === 'bulk') {
+        payload.emails = bulkEmails.trim();
       }
+      setProgressStage('validating');
+      setStatusMessage('Validating emails...');
+      setProgressPercent(15);
+      response = await API.post('email-validation/validate/', payload, { timeout: 900000 });
 
       const isQueuedFileValidation = mode === 'file' && String(response?.status || '').toLowerCase() === '202';
       const pendingRequestId = response.data?.request_id || response.data?.history?.request_id || '';
@@ -744,13 +772,84 @@ export default function EmailValidation() {
       return;
     }
 
-    if (file.size > 25 * 1024 * 1024) {
-      setError('File too large. Maximum allowed size is 25MB.');
+    if (file.size > MAX_EMAIL_VALIDATION_UPLOAD_MB * 1024 * 1024) {
+      setError(`File too large. Maximum allowed size is ${MAX_EMAIL_VALIDATION_UPLOAD_MB}MB.`);
       return;
     }
 
     setError('');
     setSourceFile(file);
+    setFileUploadReady(false);
+    setActiveRequestMeta(null);
+    setLatestRequestId('');
+    setLastFileName('');
+    setDlrReport(null);
+    localStorage.removeItem('emailValidationActiveRequestId');
+  };
+
+  const handleProceedUpload = async () => {
+    if (!sourceFile) {
+      setError('Please choose a file first.');
+      return;
+    }
+    if (Number(walletBalance || 0) <= 0) {
+      setError('No wallet credits available.');
+      return;
+    }
+
+    setError('');
+    setInfo('');
+    setResults([]);
+    setSummary({ safe_to_send_yes: 0, safe_to_send_no: 0 });
+    setDlrReport(null);
+    setDeliverableEmailsText('');
+    setShowComposePanel(false);
+    setSendSummary(null);
+    setLoading(true);
+    setProgressPercent(0);
+    setProgressStage('uploading');
+    setStatusMessage('Uploading file...');
+
+    try {
+      const formData = new FormData();
+      formData.append('source_file', sourceFile);
+      formData.append('defer_start', 'true');
+
+      const response = await API.post('email-validation/validate/', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 900000,
+        onUploadProgress: (progressEvent) => {
+          const loaded = Number(progressEvent?.loaded || 0);
+          const total = Number(progressEvent?.total || 0);
+          if (total > 0) {
+            const percent = Math.min(100, Math.round((loaded / total) * 100));
+            setProgressPercent(percent);
+            setStatusMessage(percent < 100 ? `Uploading file... ${percent}%` : 'Upload complete. Extracting file on server...');
+          }
+        },
+      });
+
+      const requestId = String(response?.data?.request_id || '');
+      if (!requestId) {
+        throw new Error('Upload succeeded but request ID is missing.');
+      }
+
+      setLatestRequestId(requestId);
+      localStorage.setItem('emailValidationActiveRequestId', requestId);
+      await loadRequestStatus(requestId);
+      setFileUploadReady(true);
+      setProgressStage('idle');
+      setProgressPercent(100);
+      setStatusMessage('File uploaded and extracted. Click Start Mail Validation.');
+      setInfo('File uploaded and extracted successfully. Click Start Mail Validation to begin parallel processing.');
+      await refreshWalletBalance(response.data?.wallet_balance);
+    } catch (err) {
+      setError(getProfessionalErrorMessage(err, 'File upload/extraction failed.'));
+      setStatusMessage('File upload failed.');
+      setFileUploadReady(false);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const createApiKey = async () => {
@@ -1064,16 +1163,17 @@ export default function EmailValidation() {
   };
 
   const getOwnSystemMailStatus = (row) => {
-    const explicit = String(row?.provider_result_status || '').trim().toLowerCase();
-    if (explicit === 'valid') {
-      return 'Valid';
-    }
-    if (explicit === 'invalid') {
-      return 'Invalid';
-    }
     const bhisha = row?.bhisha_result || {};
-    const validInbox = Boolean(bhisha.valid_inbox ?? row?.validMailbox);
-    return validInbox ? 'Valid' : 'Invalid';
+    const validSyntax = Boolean(bhisha.valid_syntax ?? row?.validSyntax);
+    const statusCode = String(row?.statusCode || row?.status_code || '').trim().toUpperCase();
+
+    if (statusCode === 'SYNTAX_DOMAIN_VALID') return 'Valid';
+    if (!validSyntax) return 'Invalid Syntax';
+    if (statusCode === 'NO_MX' || statusCode === 'DOMAIN_NOT_FOUND') return 'Invalid Domain';
+    if (statusCode === 'DNS_LOOKUP_FAILED' || statusCode === 'DNS_UNAVAILABLE') return 'Invalid Domain';
+    if (statusCode === 'INVALID_SYNTAX_DOMAIN_TYPO') return 'Invalid Domain';
+
+    return String(row?.provider_result_status || row?.status || 'Invalid').trim() || 'Invalid';
   };
 
   const getOwnSystemMailStatusStyle = (statusValue) => {
@@ -1239,21 +1339,45 @@ export default function EmailValidation() {
 
             {mode === 'file' && (
               <div>
+                <div style={{ marginBottom: '8px', fontSize: '12px', color: '#334155', fontWeight: 700 }}>
+                  Option 1: Upload file. Option 2: Validate uploaded file.
+                </div>
                 <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>Upload File (.xlsv, .csv, .txt, .xls, .xlsx)</label>
                 <input type="file" onChange={handleFileChange} accept=".xlsv,.csv,.txt,.xls,.xlsx" style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #d1d5db' }} />
-                <small style={{ color: '#6b7280' }}>{sourceFile ? `Selected: ${sourceFile.name}` : 'Maximum file size: 25MB'}</small>
+                <small style={{ color: '#6b7280' }}>{sourceFile ? `Selected: ${sourceFile.name}` : `Maximum file size: ${MAX_EMAIL_VALIDATION_UPLOAD_MB}MB`}</small>
                 <div style={{ marginTop: '8px', padding: '8px 10px', borderRadius: '6px', background: '#fff7ed', border: '1px solid #fed7aa', color: '#9a3412', fontSize: '12px', fontWeight: 600 }}>
-                  Please make sure the file contains only one column with email addresses. Files with multiple columns will be rejected.
+                  Please make sure the file contains only one column with valid email addresses. If any extra/non-email data is present, validation will stop.
+                </div>
+                <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={handleProceedUpload}
+                    disabled={loading || !sourceFile}
+                    style={{
+                      padding: '8px 12px',
+                      border: '1px solid #1d4ed8',
+                      borderRadius: '8px',
+                      background: '#eff6ff',
+                      color: '#1d4ed8',
+                      fontWeight: 700,
+                      cursor: (loading || !sourceFile) ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {loading ? 'Uploading...' : 'Proceed Upload'}
+                  </button>
+                  <div style={{ fontSize: '12px', color: '#334155', alignSelf: 'center' }}>
+                    {fileUploadReady ? 'Upload complete. You can start mail validation now.' : 'Proceed uploads and extracts the file on server.'}
+                  </div>
                 </div>
               </div>
             )}
 
             <button
               type="submit"
-              disabled={loading && !activeRequestMeta?.requestId}
+              disabled={(loading && !activeRequestMeta?.requestId) || (mode === 'file' && !fileUploadReady)}
               style={{ marginTop: '14px', padding: '10px 16px', border: 'none', borderRadius: '8px', background: '#1d4ed8', color: '#fff', fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer' }}
             >
-              {loading ? 'Validating...' : 'Validate Emails'}
+              {loading ? 'Validating...' : (mode === 'file' ? 'Start Mail Validation' : 'Validate Emails')}
             </button>
 
             {loading && (
@@ -1337,8 +1461,15 @@ export default function EmailValidation() {
 
           {dlrReport && (
             <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', overflow: 'hidden', marginBottom: '16px' }}>
-              <div style={{ padding: '12px 14px', fontWeight: 800, background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                DLR Report ({String(dlrReport?.provider_mode_label || 'Validation')})
+              <div style={{ padding: '12px 14px', fontWeight: 800, background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span>DLR Report</span>
+                <button
+                  type="button"
+                  onClick={downloadDlrCsv}
+                  style={{ border: '1px solid #cbd5e1', background: '#ffffff', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: 700, color: '#1e293b' }}
+                >
+                  Download DLR CSV
+                </button>
               </div>
               <div style={{ padding: '12px 14px', display: 'grid', gap: '8px' }}>
                 <div style={{ fontSize: '12px', color: '#334155' }}>
@@ -1420,6 +1551,7 @@ export default function EmailValidation() {
                             {getOwnSystemMailStatus(row)}
                           </div>
                         </div>
+                
                       </div>
                     ) : (
                       <>

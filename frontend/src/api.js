@@ -58,11 +58,26 @@ const forceHttpForLoopbackInDev = (baseUrl) => {
 
   try {
     const parsed = new URL(baseUrl, window.location.origin);
-    if (isLoopbackHost(parsed.hostname) && parsed.protocol === 'https:') {
-      parsed.protocol = 'http:';
-      return parsed.toString();
+    const browserHost = String(window.location.hostname || '').trim().toLowerCase();
+    const isLocalBrowser = isLoopbackHost(browserHost);
+
+    if (!isLocalBrowser || !isLoopbackHost(parsed.hostname)) {
+      return baseUrl;
     }
-    return baseUrl;
+
+    if (parsed.protocol === 'https:') {
+      parsed.protocol = 'http:';
+    }
+
+    if (parsed.hostname === 'localhost') {
+      parsed.hostname = '127.0.0.1';
+    }
+
+    if (!parsed.port && parsed.hostname === '127.0.0.1') {
+      parsed.port = '8000';
+    }
+
+    return parsed.toString();
   } catch {
     return baseUrl;
   }

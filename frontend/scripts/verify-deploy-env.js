@@ -1,5 +1,8 @@
 /* eslint-disable no-console */
 
+const fs = require('fs');
+const path = require('path');
+
 const isTruthy = (value) => {
   if (value === undefined || value === null) {
     return false;
@@ -17,6 +20,35 @@ const ensureAuthApiSuffix = (raw) => {
   if (/\/api\/$/i.test(withSlash)) return `${withSlash}auth/`;
   return `${withSlash}api/auth/`;
 };
+
+const loadEnvironmentFile = (relativePath) => {
+  const fullPath = path.resolve(process.cwd(), relativePath);
+  if (!fs.existsSync(fullPath)) {
+    return;
+  }
+
+  const contents = fs.readFileSync(fullPath, 'utf8');
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const [, key, rawValue] = match;
+    const value = rawValue.replace(/^['"]|['"]$/g, '').trim();
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+};
+
+loadEnvironmentFile('.env');
+loadEnvironmentFile(process.env.NODE_ENV === 'production' ? '.env.production' : '.env.development');
 
 const nodeEnv = normalize(process.env.NODE_ENV);
 const isProductionBuild = nodeEnv === 'production' || nodeEnv === '';

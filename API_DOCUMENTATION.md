@@ -338,7 +338,7 @@ Bulk (`application/json`, text list):
 File (`multipart/form-data`):
 - key: `source_file`
 - allowed formats: `.xlsv`, `.csv`, `.txt`, `.xls`, `.xlsx`
-- max size: 25MB
+- max size: 500MB
 
 Response highlights:
 - `request_id`: platform unique request ID (example `MeMV00000108ra`)
@@ -573,7 +573,7 @@ Alternative auth style:
 - Content-Type: `multipart/form-data`
 - File field: `source_file`
 - Allowed: `.txt`, `.csv`, `.xlsv`, `.xls`, `.xlsx`
-- Max file size: `25MB`
+- Max file size: `500MB`
 - Large files are accepted asynchronously and return `202` with `request_id`.
 
 ### 6.5 Mail Validation Error Cases

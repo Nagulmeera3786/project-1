@@ -111,6 +111,64 @@ _POPULAR_MAIL_DOMAINS = {
     'icloud.com', 'zoho.com', 'proton.me', 'protonmail.com', 'gmx.com', 'aol.com',
 }
 
+# Known provider domains used for typo suggestions.
+_VALID_PROVIDER_DOMAINS = {
+    'gmail.com', 'googlemail.com',
+    'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
+    'yahoo.com', 'ymail.com', 'rocketmail.com',
+    'icloud.com', 'me.com', 'mac.com',
+    'aol.com', 'aim.com',
+    'proton.me', 'protonmail.com',
+    'tuta.com', 'tutanota.com',
+    'startmail.com',
+    'zoho.com',
+    'fastmail.com',
+    'comcast.net',
+    'att.net',
+    'sbcglobal.net',
+    'bellsouth.net',
+    'verizon.net',
+    'charter.net',
+    'cox.net',
+    'shaw.ca',
+    'sympatico.ca',
+    'rogers.com',
+    'gmx.de', 'gmx.com', 'gmx.net',
+    'web.de',
+    't-online.de',
+    'orange.fr',
+    'free.fr',
+    'wanadoo.fr',
+    'laposte.net',
+    'sfr.fr',
+    'libero.it',
+    'virgilio.it',
+    'alice.it',
+    'tin.it',
+    'btinternet.com',
+    'sky.com',
+    'virginmedia.com',
+    'yandex.ru',
+    'mail.ru',
+    'rambler.ru',
+    'wp.pl',
+    'onet.pl',
+    'qq.com',
+    '163.com',
+    '126.com',
+    'yahoo.co.jp',
+    'naver.com',
+    'daum.net',
+    'hanmail.net',
+    'rediffmail.com',
+    'bigpond.com',
+    'optusnet.com.au',
+    'mail.com',
+    'earthlink.net',
+    'juno.com',
+    'frontiernet.net',
+}
+
 _POPULAR_DOMAIN_TYPOS = {
     'gmil.com': 'gmail.com',
     'gamil.com': 'gmail.com',
@@ -603,17 +661,17 @@ def _map_verifalia_quality(classification, status_text=''):
 
 def _get_email_validation_max_file_size_bytes():
     try:
-        configured_mb = int(getattr(settings, 'EMAIL_VALIDATION_MAX_FILE_SIZE_MB', 25) or 25)
+        configured_mb = int(getattr(settings, 'EMAIL_VALIDATION_MAX_FILE_SIZE_MB', 500) or 500)
     except (TypeError, ValueError):
-        configured_mb = 25
+        configured_mb = 500
     return max(1, configured_mb) * 1024 * 1024
 
 
 def _get_email_validation_max_request_count():
     try:
-        configured_limit = int(getattr(settings, 'EMAIL_VALIDATION_MAX_EMAILS_PER_REQUEST', 5000) or 5000)
+        configured_limit = int(getattr(settings, 'EMAIL_VALIDATION_MAX_EMAILS_PER_REQUEST', 500000) or 500000)
     except (TypeError, ValueError):
-        configured_limit = 5000
+        configured_limit = 500000
     return max(1, configured_limit)
 
 
@@ -655,7 +713,17 @@ def _get_email_validation_use_history_signal():
 
 
 def _get_email_validation_skip_smtp_for_popular_domains():
-    configured = str(getattr(settings, 'EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS', 'true') or '').strip().lower()
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_SKIP_SMTP_FOR_POPULAR_DOMAINS', 'false') or '').strip().lower()
+    return configured in {'1', 'true', 'yes', 'on'}
+
+
+def _get_email_validation_mailbox_check_enabled():
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_MAILBOX_CHECK_ENABLED', 'false') or '').strip().lower()
+    return configured in {'1', 'true', 'yes', 'on'}
+
+
+def _get_email_validation_syntax_only_mode():
+    configured = str(getattr(settings, 'EMAIL_VALIDATION_SYNTAX_ONLY_MODE', 'false') or '').strip().lower()
     return configured in {'1', 'true', 'yes', 'on'}
 
 
@@ -673,6 +741,22 @@ def _get_smtp_retry_backoff_seconds():
     except (TypeError, ValueError):
         configured = 0.35
     return max(0.2, min(configured, 5.0))
+
+
+def _get_dns_retry_attempts():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_DNS_RETRY_ATTEMPTS', 3) or 3)
+    except (TypeError, ValueError):
+        configured = 3
+    return max(1, min(configured, 4))
+
+
+def _get_dns_retry_backoff_seconds():
+    try:
+        configured = float(getattr(settings, 'EMAIL_VALIDATION_DNS_RETRY_BACKOFF_SECONDS', 0.2) or 0.2)
+    except (TypeError, ValueError):
+        configured = 0.2
+    return max(0.1, min(configured, 2.0))
 
 
 def _get_smtp_timeout_seconds():
@@ -705,6 +789,8 @@ def _get_smtp_enable_catch_all_probe():
 
 
 def _get_own_system_smtp_probe_enabled():
+    if not _get_email_validation_mailbox_check_enabled():
+        return False
     configured = str(getattr(settings, 'EMAIL_VALIDATION_OWN_SYSTEM_USE_SMTP', 'true') or '').strip().lower()
     return configured in {'1', 'true', 'yes', 'on'}
 
@@ -723,11 +809,14 @@ def _detect_popular_domain_typo(domain):
     if not normalized:
         return ''
 
+    if normalized in _VALID_PROVIDER_DOMAINS:
+        return ''
+
     direct = _POPULAR_DOMAIN_TYPOS.get(normalized)
     if direct:
         return direct
 
-    close = difflib.get_close_matches(normalized, list(_POPULAR_MAIL_DOMAINS), n=1, cutoff=0.86)
+    close = difflib.get_close_matches(normalized, list(_VALID_PROVIDER_DOMAINS), n=1, cutoff=0.80)
     return close[0] if close else ''
 
 
@@ -888,36 +977,52 @@ def _resolve_mx_hosts_with_error(domain):
     with _MX_CACHE_LOCK:
         cached = _MX_CACHE.get(domain)
         if cached and cached['expires_at'] > now_ts:
-            return list(cached.get('mx_hosts') or []), ''
+            return list(cached.get('mx_hosts') or []), str(cached.get('mx_error') or '')
 
     if dns is None:
         return [], 'DNS_UNAVAILABLE'
 
-    try:
-        records = dns.resolver.resolve(domain, 'MX')
-        sorted_records = sorted(records, key=lambda record: int(getattr(record, 'preference', 0)))
-        mx_hosts = [str(record.exchange).rstrip('.') for record in sorted_records if str(record.exchange).strip()]
-        mx_error = ''
-    except dns.resolver.NXDOMAIN:
-        mx_hosts = []
-        mx_error = 'DOMAIN_NOT_FOUND'
-    except dns.resolver.NoAnswer:
-        mx_hosts = []
-        mx_error = 'NO_MX'
-    except dns.resolver.NoNameservers:
-        mx_hosts = []
-        mx_error = 'DNS_NO_NAMESERVERS'
-    except dns.exception.Timeout:
-        mx_hosts = []
-        mx_error = 'DNS_TIMEOUT'
-    except Exception:
-        mx_hosts = []
-        mx_error = 'DNS_LOOKUP_FAILED'
+    mx_hosts = []
+    mx_error = ''
+    dns_attempts = _get_dns_retry_attempts()
+    dns_backoff = _get_dns_retry_backoff_seconds()
+
+    for attempt_index in range(dns_attempts):
+        try:
+            records = dns.resolver.resolve(domain, 'MX')
+            sorted_records = sorted(records, key=lambda record: int(getattr(record, 'preference', 0)))
+            mx_hosts = [str(record.exchange).rstrip('.') for record in sorted_records if str(record.exchange).strip()]
+            mx_error = ''
+            break
+        except dns.resolver.NXDOMAIN:
+            mx_hosts = []
+            mx_error = 'DOMAIN_NOT_FOUND'
+            break
+        except dns.resolver.NoAnswer:
+            mx_hosts = []
+            mx_error = 'NO_MX'
+            break
+        except dns.resolver.NoNameservers:
+            mx_hosts = []
+            mx_error = 'DNS_NO_NAMESERVERS'
+        except dns.exception.Timeout:
+            mx_hosts = []
+            mx_error = 'DNS_TIMEOUT'
+        except Exception:
+            mx_hosts = []
+            mx_error = 'DNS_LOOKUP_FAILED'
+
+        if attempt_index + 1 < dns_attempts:
+            time.sleep(dns_backoff * (attempt_index + 1))
 
     with _MX_CACHE_LOCK:
+        cache_ttl = 300
+        if mx_error in {'DNS_NO_NAMESERVERS', 'DNS_TIMEOUT', 'DNS_LOOKUP_FAILED'}:
+            cache_ttl = 15
         _MX_CACHE[domain] = {
             'mx_hosts': mx_hosts,
-            'expires_at': now_ts + 300,
+            'mx_error': mx_error,
+            'expires_at': now_ts + cache_ttl,
         }
 
     return mx_hosts, mx_error
@@ -1085,6 +1190,27 @@ def _validate_email_with_own_system_diagnostics(email):
 
     diagnostics['syntax_valid'] = True
 
+    if _get_email_validation_syntax_only_mode():
+        result = _build_validation_result(
+            normalized,
+            valid_syntax=True,
+            valid_mailbox=True,
+            risky=False,
+            risk='low',
+            status='Valid (syntax only)',
+            status_code='SYNTAX_VALID_ONLY',
+            classification='Deliverable',
+            failure_reason='',
+            provider='own_system',
+        )
+        diagnostics['final_status_code'] = result.get('statusCode', '')
+        diagnostics['final_status'] = result.get('status', '')
+        diagnostics['heuristics'] = {
+            'confidence_score': 90,
+            'decision_basis': ['syntax_regex'],
+        }
+        return result, diagnostics
+
     domain = normalized.split('@', 1)[1]
     typo_suggestion = _detect_popular_domain_typo(domain)
     if typo_suggestion and typo_suggestion != domain:
@@ -1120,29 +1246,17 @@ def _validate_email_with_own_system_diagnostics(email):
         diagnostics['final_status'] = 'Invalid domain spelling (popular provider typo detected)'
         return result, diagnostics
 
-    mx_hosts, mx_error = _resolve_mx_hosts_with_error(domain)
-    mx_hosts = list(mx_hosts)[:_get_smtp_max_mx_hosts()]
-    diagnostics['mx_hosts'] = list(mx_hosts)
-    diagnostics['mx_lookup_error'] = mx_error
     domain_resolves = _domain_resolves(domain)
     diagnostics['domain_resolves'] = domain_resolves
+    mx_hosts = []
+    diagnostics['mx_hosts'] = []
+    diagnostics['mx_lookup_error'] = ''
 
-    if not mx_hosts:
-        if mx_error == 'DOMAIN_NOT_FOUND' or not domain_resolves:
-            status_text = 'Domain does not exist'
-            status_code = 'DOMAIN_NOT_FOUND'
-            failure_reason = 'Domain does not exist or cannot be resolved'
-            risk_level = 'high'
-        elif mx_error in {'DNS_UNAVAILABLE', 'DNS_NO_NAMESERVERS', 'DNS_TIMEOUT', 'DNS_LOOKUP_FAILED'}:
-            status_text = 'Domain DNS lookup unavailable'
-            status_code = 'DNS_LOOKUP_FAILED' if mx_error != 'DNS_UNAVAILABLE' else 'DNS_UNAVAILABLE'
-            failure_reason = f'DNS lookup unavailable: {mx_error}'
-            risk_level = 'medium'
-        else:
-            status_text = 'No MX Record Found'
-            status_code = 'NO_MX'
-            failure_reason = 'No MX Record Found'
-            risk_level = 'high'
+    if not domain_resolves:
+        status_text = 'Domain does not exist'
+        status_code = 'DOMAIN_NOT_FOUND'
+        failure_reason = 'Domain does not exist or cannot be resolved'
+        risk_level = 'high'
 
         result = _build_validation_result(
             normalized,
@@ -1171,261 +1285,30 @@ def _validate_email_with_own_system_diagnostics(email):
         diagnostics['final_status'] = status_text
         return result, diagnostics
 
-    if not _get_own_system_smtp_probe_enabled():
-        history_signal = _get_historical_verification_signal_if_enabled(normalized)
-        diagnostics['historical_signal'] = history_signal
-        diagnostics['domain_reputation'] = _compute_domain_reputation(
-            domain,
-            status_code='DNS_MX_VALID',
-            history_signal=history_signal,
-        )
-        diagnostics['heuristics'] = {
-            'confidence_score': max(60, diagnostics['domain_reputation'].get('score', 60)),
-            'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup'],
-        }
-
-        result = _build_validation_result(
-            normalized,
-            valid_syntax=True,
-            valid_mailbox=False,
-            risky=True,
-            risk='medium',
-            status='Domain and syntax validated (SMTP probe skipped)',
-            status_code='DNS_MX_VALID',
-            classification='Risky',
-            failure_reason='Mailbox verification skipped',
-            provider='own_system',
-        )
-        diagnostics['final_status_code'] = result.get('statusCode', '')
-        diagnostics['final_status'] = result.get('status', '')
-        return result, diagnostics
-
-    last_failure_reason = ''
-    smtp_retry_attempts = _get_smtp_retry_attempts()
-    smtp_retry_backoff = _get_smtp_retry_backoff_seconds()
-    smtp_timeout_seconds = _get_smtp_timeout_seconds()
-    sender_probe_limit = _get_smtp_sender_probe_limit()
-    catch_all_probe_enabled = _get_smtp_enable_catch_all_probe()
-    mail_from_pool = _get_smtp_mail_from_pool()[:sender_probe_limit]
-    retryable_codes = {421, 450, 451, 452}
-    greylist_markers = ('greylist', 'greylisting', 'try again later', 'temporarily deferred')
-
-    for mx_host in mx_hosts:
-        attempt = {
-            'mx_host': mx_host,
-            'connected': False,
-            'starttls_used': False,
-            'smtp_retries': [],
-            'error': '',
-        }
-
-        for retry_index in range(smtp_retry_attempts):
-            for mail_from in mail_from_pool:
-                retry_event = {
-                    'retry': retry_index + 1,
-                    'mail_from': mail_from,
-                    'connected': False,
-                    'starttls_used': False,
-                    'rcpt_code': None,
-                    'rcpt_message': '',
-                    'catch_all_probe_code': None,
-                    'catch_all_probe_message': '',
-                    'error': '',
-                }
-                attempt['smtp_retries'].append(retry_event)
-
-                try:
-                    with smtplib.SMTP(timeout=smtp_timeout_seconds) as server:
-                        server.connect(mx_host, 25)
-                        retry_event['connected'] = True
-                        attempt['connected'] = True
-                        server.ehlo_or_helo_if_needed()
-                        if server.has_extn('starttls'):
-                            server.starttls()
-                            server.ehlo_or_helo_if_needed()
-                            retry_event['starttls_used'] = True
-                            attempt['starttls_used'] = True
-
-                        server.mail(mail_from)
-                        code, message = server.rcpt(normalized)
-                        code = int(code or 0)
-                        message_text = str(message or '').strip()
-                        retry_event['rcpt_code'] = code
-                        retry_event['rcpt_message'] = message_text
-
-                        if code == 250:
-                            catch_all = False
-                            if catch_all_probe_enabled:
-                                probe_local_part = f'bhisha_probe_{secrets.token_hex(6)}'
-                                probe_email = f'{probe_local_part}@{domain}'
-                                probe_code, probe_message = server.rcpt(probe_email)
-                                catch_all = int(probe_code or 0) == 250
-                                retry_event['catch_all_probe_code'] = int(probe_code or 0)
-                                retry_event['catch_all_probe_message'] = str(probe_message or '').strip()
-                            diagnostics['attempts'].append(attempt)
-
-                            history_signal = _get_historical_verification_signal_if_enabled(normalized)
-                            diagnostics['historical_signal'] = history_signal
-                            diagnostics['domain_reputation'] = _compute_domain_reputation(
-                                domain,
-                                status_code='CATCH_ALL_DOMAIN' if catch_all else 'SMTP_ACCEPTED',
-                                history_signal=history_signal,
-                            )
-                            confidence_score = diagnostics['domain_reputation'].get('score', 50)
-                            if catch_all:
-                                confidence_score = max(45, confidence_score - 10)
-                            diagnostics['heuristics'] = {
-                                'confidence_score': confidence_score,
-                                'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_rcpt', 'catch_all_probe', 'historical_signal', 'domain_reputation'],
-                            }
-
-                            result = _build_validation_result(
-                                normalized,
-                                valid_syntax=True,
-                                valid_mailbox=True,
-                                catch_all=catch_all,
-                                risky=catch_all,
-                                risk='medium' if catch_all else 'low',
-                                status='Catch-all domain detected' if catch_all else 'Valid Mailbox',
-                                status_code='CATCH_ALL_DOMAIN' if catch_all else 'SMTP_ACCEPTED',
-                                classification='Risky' if catch_all else 'Deliverable',
-                                failure_reason='Catch-all domain accepted test recipient' if catch_all else '',
-                                provider='own_system',
-                            )
-                            diagnostics['final_status_code'] = result.get('statusCode', '')
-                            diagnostics['final_status'] = result.get('status', '')
-                            return result, diagnostics
-
-                        if code in {550, 551, 553}:
-                            diagnostics['attempts'].append(attempt)
-                            history_signal = _get_historical_verification_signal_if_enabled(normalized)
-                            diagnostics['historical_signal'] = history_signal
-                            diagnostics['domain_reputation'] = _compute_domain_reputation(
-                                domain,
-                                status_code='HARD_BOUNCE_MAILBOX_NOT_FOUND',
-                                history_signal=history_signal,
-                            )
-                            diagnostics['heuristics'] = {
-                                'confidence_score': min(95, diagnostics['domain_reputation'].get('score', 50) + 15),
-                                'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_rcpt_hard_bounce', 'historical_signal', 'domain_reputation'],
-                            }
-
-                            result = _build_validation_result(
-                                normalized,
-                                valid_syntax=True,
-                                valid_mailbox=False,
-                                risky=True,
-                                risk='high',
-                                status='Hard Bounce (Mailbox Not Found)',
-                                status_code='HARD_BOUNCE_MAILBOX_NOT_FOUND',
-                                classification='Invalid',
-                                failure_reason=f'Hard bounce from {mx_host}: {message_text}',
-                                provider='own_system',
-                            )
-                            diagnostics['final_status_code'] = result.get('statusCode', '')
-                            diagnostics['final_status'] = result.get('status', '')
-                            return result, diagnostics
-
-                        lower_message = message_text.lower()
-                        if code in retryable_codes:
-                            if any(marker in lower_message for marker in greylist_markers):
-                                if retry_index + 1 < smtp_retry_attempts:
-                                    time.sleep(smtp_retry_backoff * (retry_index + 1))
-                                    continue
-
-                                diagnostics['attempts'].append(attempt)
-                                history_signal = _get_historical_verification_signal_if_enabled(normalized)
-                                diagnostics['historical_signal'] = history_signal
-                                diagnostics['domain_reputation'] = _compute_domain_reputation(
-                                    domain,
-                                    status_code='GREYLISTED',
-                                    history_signal=history_signal,
-                                )
-                                diagnostics['heuristics'] = {
-                                    'confidence_score': max(40, diagnostics['domain_reputation'].get('score', 50) - 5),
-                                    'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_greylisting_signal', 'retry_logic'],
-                                }
-
-                                result = _build_validation_result(
-                                    normalized,
-                                    valid_syntax=True,
-                                    valid_mailbox=False,
-                                    risky=True,
-                                    risk='medium',
-                                    status='Greylisting detected (temporary deferral)',
-                                    status_code='GREYLISTED',
-                                    classification='Risky',
-                                    failure_reason=f'Greylisting response from {mx_host}: {message_text}',
-                                    provider='own_system',
-                                )
-                                diagnostics['final_status_code'] = result.get('statusCode', '')
-                                diagnostics['final_status'] = result.get('status', '')
-                                return result, diagnostics
-
-                            if retry_index + 1 < smtp_retry_attempts:
-                                time.sleep(smtp_retry_backoff * (retry_index + 1))
-                                continue
-
-                            diagnostics['attempts'].append(attempt)
-                            history_signal = _get_historical_verification_signal_if_enabled(normalized)
-                            diagnostics['historical_signal'] = history_signal
-                            diagnostics['domain_reputation'] = _compute_domain_reputation(
-                                domain,
-                                status_code='SMTP_TEMPORARY_FAILURE',
-                                history_signal=history_signal,
-                            )
-                            diagnostics['heuristics'] = {
-                                'confidence_score': max(35, diagnostics['domain_reputation'].get('score', 50) - 8),
-                                'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_rcpt_temporary_failure', 'retry_logic'],
-                            }
-
-                            result = _build_validation_result(
-                                normalized,
-                                valid_syntax=True,
-                                valid_mailbox=False,
-                                risky=True,
-                                risk='medium',
-                                status=f'Temporary SMTP failure ({code})',
-                                status_code='SMTP_TEMPORARY_FAILURE',
-                                classification='Risky',
-                                failure_reason=f'Temporary SMTP response from {mx_host}: {message_text}',
-                                provider='own_system',
-                            )
-                            diagnostics['final_status_code'] = result.get('statusCode', '')
-                            diagnostics['final_status'] = result.get('status', '')
-                            return result, diagnostics
-
-                        last_failure_reason = f'SMTP response from {mx_host}: {code} {message_text}'.strip()
-                except Exception as exc:
-                    retry_event['error'] = str(exc)
-                    last_failure_reason = f'SMTP error on {mx_host}: {exc}'
-                    continue
-
-        diagnostics['attempts'].append(attempt)
-
-    result = _build_validation_result(
-        normalized,
-        valid_syntax=True,
-        valid_mailbox=False,
-        risky=True,
-        risk='high',
-        status='SMTP validation failed across MX hosts',
-        status_code='SMTP_CONNECTION_FAILED',
-        classification='Risky',
-        failure_reason=last_failure_reason or 'SMTP validation failed',
-        provider='own_system',
-    )
     history_signal = _get_historical_verification_signal_if_enabled(normalized)
     diagnostics['historical_signal'] = history_signal
     diagnostics['domain_reputation'] = _compute_domain_reputation(
         domain,
-        status_code='SMTP_CONNECTION_FAILED',
+        status_code='SYNTAX_DOMAIN_VALID',
         history_signal=history_signal,
     )
     diagnostics['heuristics'] = {
-        'confidence_score': max(30, diagnostics['domain_reputation'].get('score', 50) - 12),
-        'decision_basis': ['syntax_regex', 'dns_lookup', 'mx_lookup', 'smtp_transport_failure', 'retry_logic'],
+        'confidence_score': max(70, diagnostics['domain_reputation'].get('score', 70)),
+        'decision_basis': ['syntax_regex', 'dns_lookup'],
     }
+
+    result = _build_validation_result(
+        normalized,
+        valid_syntax=True,
+        valid_mailbox=True,
+        risky=False,
+        risk='low',
+        status='Valid (syntax + domain exists)',
+        status_code='SYNTAX_DOMAIN_VALID',
+        classification='Deliverable',
+        failure_reason='',
+        provider='own_system',
+    )
     diagnostics['final_status_code'] = result.get('statusCode', '')
     diagnostics['final_status'] = result.get('status', '')
     return result, diagnostics
@@ -1545,17 +1428,21 @@ def _validate_email_list_with_parallel_workers(unique_emails, validator_fn, prov
     workers = _get_email_validation_worker_count()
     result_map = {}
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {
-            executor.submit(validator_fn, candidate): candidate
-            for candidate in unique_emails
-        }
-        for future in as_completed(future_map):
-            candidate = future_map[future]
-            try:
-                result_map[candidate] = future.result()
-            except Exception as exc:
-                result_map[candidate] = _build_email_validation_error_result(candidate, str(exc), provider_mode=provider_mode)
+    # Process in chunks to keep memory stable with very large uploads.
+    chunk_size = max(workers * 10, _get_email_validation_batch_size())
+    for start in range(0, len(unique_emails), chunk_size):
+        candidates_chunk = unique_emails[start:start + chunk_size]
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {
+                executor.submit(validator_fn, candidate): candidate
+                for candidate in candidates_chunk
+            }
+            for future in as_completed(future_map):
+                candidate = future_map[future]
+                try:
+                    result_map[candidate] = future.result()
+                except Exception as exc:
+                    result_map[candidate] = _build_email_validation_error_result(candidate, str(exc), provider_mode=provider_mode)
 
     return [result_map[candidate] for candidate in unique_emails if candidate in result_map]
 
@@ -1565,9 +1452,6 @@ def _validate_email_list(unique_emails, provider_mode=None):
 
     if mode == 'zerobounce':
         return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_zerobounce, provider_mode='zerobounce')
-
-    smtp_probe_enabled = _get_own_system_smtp_probe_enabled()
-    skip_smtp_for_popular = _get_email_validation_skip_smtp_for_popular_domains()
 
     invalid_results = {}
     emails_by_domain = {}
@@ -1588,8 +1472,34 @@ def _validate_email_list(unique_emails, provider_mode=None):
             )
             continue
 
+        if _get_email_validation_syntax_only_mode():
+            invalid_results[normalized] = _build_validation_result(
+                normalized,
+                valid_syntax=True,
+                valid_mailbox=True,
+                risky=False,
+                risk='low',
+                status='Valid (syntax only)',
+                status_code='SYNTAX_VALID_ONLY',
+                classification='Deliverable',
+                failure_reason='',
+                provider='own_system',
+            )
+            continue
+
         domain = normalized.split('@', 1)[1]
         emails_by_domain.setdefault(domain, []).append(normalized)
+
+    if _get_email_validation_syntax_only_mode():
+        ordered_results = []
+        for candidate in unique_emails:
+            normalized = str(candidate or '').strip().lower()
+            item = (
+                invalid_results.get(normalized)
+                or _build_email_validation_error_result(normalized, 'Validation result unavailable.', provider_mode='own_system')
+            )
+            ordered_results.append(item)
+        return ordered_results
 
     domain_snapshots = {}
     domains = list(emails_by_domain.keys())
@@ -1629,8 +1539,6 @@ def _validate_email_list(unique_emails, provider_mode=None):
             'domain_resolves': False,
         }
         typo_suggestion = str(snapshot.get('typo_suggestion') or '').strip().lower()
-        mx_hosts = list(snapshot.get('mx_hosts') or [])
-        mx_error = str(snapshot.get('mx_lookup_error') or '').strip().upper()
         domain_resolves = bool(snapshot.get('domain_resolves'))
 
         for normalized in domain_emails:
@@ -1651,77 +1559,36 @@ def _validate_email_list(unique_emails, provider_mode=None):
                 )
                 continue
 
-            if not mx_hosts:
-                if mx_error == 'DOMAIN_NOT_FOUND' or not domain_resolves:
-                    fast_results[normalized] = _build_validation_result(
-                        normalized,
-                        valid_syntax=True,
-                        valid_mailbox=False,
-                        risky=True,
-                        risk='high',
-                        status='Domain does not exist',
-                        status_code='DOMAIN_NOT_FOUND',
-                        classification='Invalid',
-                        failure_reason='Domain does not exist or cannot be resolved',
-                        provider='own_system',
-                    )
-                elif mx_error in {'DNS_UNAVAILABLE', 'DNS_NO_NAMESERVERS', 'DNS_TIMEOUT', 'DNS_LOOKUP_FAILED'}:
-                    status_code = 'DNS_UNAVAILABLE' if mx_error == 'DNS_UNAVAILABLE' else 'DNS_LOOKUP_FAILED'
-                    fast_results[normalized] = _build_validation_result(
-                        normalized,
-                        valid_syntax=True,
-                        valid_mailbox=False,
-                        risky=True,
-                        risk='medium',
-                        status='Domain DNS lookup unavailable',
-                        status_code=status_code,
-                        classification='Invalid',
-                        failure_reason=f'DNS lookup unavailable: {mx_error}',
-                        provider='own_system',
-                    )
-                else:
-                    fast_results[normalized] = _build_validation_result(
-                        normalized,
-                        valid_syntax=True,
-                        valid_mailbox=False,
-                        risky=True,
-                        risk='high',
-                        status='No MX Record Found',
-                        status_code='NO_MX',
-                        classification='Invalid',
-                        failure_reason='No MX Record Found',
-                        provider='own_system',
-                    )
-                continue
-
-            should_skip_smtp = (not smtp_probe_enabled) or (skip_smtp_for_popular and domain in _POPULAR_MAIL_DOMAINS)
-            if should_skip_smtp:
-                status_text = 'Domain and syntax validated (SMTP probe skipped for fast path)'
-                if smtp_probe_enabled and skip_smtp_for_popular and domain in _POPULAR_MAIL_DOMAINS:
-                    status_text = 'Domain and syntax validated (popular provider SMTP probe skipped)'
-
+            if not domain_resolves:
                 fast_results[normalized] = _build_validation_result(
                     normalized,
                     valid_syntax=True,
                     valid_mailbox=False,
                     risky=True,
-                    risk='medium',
-                    status=status_text,
-                    status_code='DNS_MX_VALID',
-                    classification='Risky',
-                    failure_reason='Mailbox verification skipped',
+                    risk='high',
+                    status='Domain does not exist',
+                    status_code='DOMAIN_NOT_FOUND',
+                    classification='Invalid',
+                    failure_reason='Domain does not exist or cannot be resolved',
                     provider='own_system',
                 )
                 continue
 
-            smtp_fallback_candidates.append(normalized)
+            status_text = 'Valid (syntax + domain exists)'
+            fast_results[normalized] = _build_validation_result(
+                normalized,
+                valid_syntax=True,
+                valid_mailbox=True,
+                risky=False,
+                risk='low',
+                status=status_text,
+                status_code='SYNTAX_DOMAIN_VALID',
+                classification='Deliverable',
+                failure_reason='',
+                provider='own_system',
+            )
 
     smtp_results = {}
-    if smtp_fallback_candidates:
-        smtp_results = {
-            str(item.get('email') or '').strip().lower(): item
-            for item in _validate_email_list_with_parallel_workers(smtp_fallback_candidates, _validate_email_with_own_system, provider_mode='own_system')
-        }
 
     ordered_results = []
     for candidate in unique_emails:
@@ -2172,20 +2039,34 @@ def _to_client_validation_result(item):
     provider_mode_label = _normalize_provider_mode_label(provider_mode)
     if provider_mode == 'own_system':
         status_code_upper = str(status_code or '').strip().upper()
-        clear_invalid_codes = {
-            'INVALID_FORMAT',
-            'INVALID_SYNTAX_DOMAIN_TYPO',
-            'DOMAIN_NOT_FOUND',
-            'NO_MX',
-            'HARD_BOUNCE_MAILBOX_NOT_FOUND',
-        }
-        likely_valid = bool(valid_syntax and not disposable and not role_based)
-        if status_code_upper in clear_invalid_codes:
+        if bool(valid_syntax and valid_mailbox):
+            provider_result_status = 'Valid'
+        elif not valid_syntax:
+            provider_result_status = 'Invalid Syntax'
+        elif status_code_upper == 'HARD_BOUNCE_MAILBOX_NOT_FOUND':
             provider_result_status = 'Invalid'
-        elif likely_valid:
+        elif status_code_upper == 'SMTP_CANNOT_VERIFY_MAILBOX':
+            provider_result_status = 'Invalid'
+        elif status_code_upper == 'SMTP_MAILBOX_BUSY':
+            provider_result_status = 'Invalid'
+        elif status_code_upper == 'SMTP_TEMPORARY_ERROR':
+            provider_result_status = 'Invalid'
+        elif status_code_upper == 'SMTP_MAILBOX_FULL':
+            provider_result_status = 'Invalid'
+        elif status_code_upper == 'NO_MX':
+            provider_result_status = 'Invalid Domain'
+        elif status_code_upper == 'DOMAIN_NOT_FOUND':
+            provider_result_status = 'Invalid Domain'
+        elif status_code_upper in {'DNS_LOOKUP_FAILED', 'DNS_UNAVAILABLE'}:
+            provider_result_status = 'Invalid Domain'
+        elif status_code_upper == 'SMTP_CONNECTION_FAILED':
+            provider_result_status = 'Invalid'
+        elif status_code_upper == 'SMTP_POLICY_REJECTED':
+            provider_result_status = 'Invalid'
+        elif status_code_upper in {'SYNTAX_DOMAIN_VALID', 'SYNTAX_VALID_ONLY'}:
             provider_result_status = 'Valid'
         else:
-            provider_result_status = 'Invalid'
+            provider_result_status = status_text or 'Invalid'
     else:
         provider_result_status = f'{classification}: {status_text}'
 
@@ -2371,12 +2252,15 @@ def _extract_emails_from_uploaded_file(source_file):
     filename = str(getattr(source_file, 'name', '') or '').lower()
     extracted = []
 
-    def _add_candidate(value):
-        if value is None:
-            return
-        normalized = str(value).strip().lower()
-        if normalized:
-            extracted.append(normalized)
+    def _ensure_email_only(value, position_label):
+        normalized = str(value or '').strip().lower()
+        if not normalized:
+            return ''
+        if not re.fullmatch(_EMAIL_REGEX, normalized):
+            raise ValueError(
+                f'The file contains extra data and not able to proceed with the file. Invalid value at {position_label}: {normalized}'
+            )
+        return normalized
 
     if filename.endswith('.txt'):
         source_file.seek(0)
@@ -2394,7 +2278,9 @@ def _extract_emails_from_uploaded_file(source_file):
                             f'Invalid file format at line {line_number}. File must contain only one email column.'
                         )
 
-                extracted.append(stripped.lower())
+                normalized_email = _ensure_email_only(stripped, f'line {line_number}')
+                if normalized_email:
+                    extracted.append(normalized_email)
         finally:
             try:
                 text_wrapper.detach()
@@ -2416,7 +2302,9 @@ def _extract_emails_from_uploaded_file(source_file):
                     raise ValueError(
                         f'Invalid file format at row {row_number}. File must contain only one email column.'
                     )
-                extracted.append(non_empty_cells[0].lower())
+                normalized_email = _ensure_email_only(non_empty_cells[0], f'row {row_number}')
+                if normalized_email:
+                    extracted.append(normalized_email)
         finally:
             try:
                 text_wrapper.detach()
@@ -2447,7 +2335,9 @@ def _extract_emails_from_uploaded_file(source_file):
                             raise ValueError(
                                 f'Invalid file format in sheet "{sheet.name}". File must contain only one email column.'
                             )
-                        _add_candidate(value)
+                        normalized_email = _ensure_email_only(value, f'sheet "{sheet.name}" row {row_index + 1}')
+                        if normalized_email:
+                            extracted.append(normalized_email)
             return extracted
         except ValueError:
             raise
@@ -2465,7 +2355,7 @@ def _extract_emails_from_uploaded_file(source_file):
             workbook = openpyxl.load_workbook(source_file, read_only=True, data_only=True)
             worksheet = workbook.active
             used_columns = set()
-            for row in worksheet.iter_rows(values_only=True):
+            for row_number, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
                 for col_index, cell in enumerate(row):
                     normalized = str(cell).strip().lower() if cell is not None else ''
                     if not normalized:
@@ -2473,7 +2363,9 @@ def _extract_emails_from_uploaded_file(source_file):
                     used_columns.add(col_index)
                     if len(used_columns) > 1:
                         raise ValueError('Invalid file format. File must contain only one email column.')
-                    _add_candidate(cell)
+                    normalized_email = _ensure_email_only(cell, f'row {row_number}')
+                    if normalized_email:
+                        extracted.append(normalized_email)
             workbook.close()
             return extracted
         except ValueError:
@@ -3350,16 +3242,10 @@ def _build_concise_api_validation_response(result_items):
             bhisha = item.get('bhisha_result') if isinstance(item.get('bhisha_result'), dict) else {}
             email = str(bhisha.get('email') or '').strip().lower()
 
-        explicit_status = str(item.get('provider_result_status') or '').strip().lower()
-        if explicit_status in {'valid', 'invalid'}:
-            status_value = explicit_status.title()
-        else:
-            bhisha = item.get('bhisha_result') if isinstance(item.get('bhisha_result'), dict) else {}
-            inbox_ok = bool(bhisha.get('valid_inbox')) if isinstance(bhisha, dict) else False
-            status_value = 'Valid' if inbox_ok else 'Invalid'
-
         valid_syntax = bool(item.get('validSyntax'))
         valid_mailbox = bool(item.get('validMailbox'))
+        # Keep compact API status deterministic from actual mailbox/syntax booleans.
+        status_value = 'Valid' if bool(valid_syntax and valid_mailbox) else 'Invalid'
         risk = 'high' if _is_high_risk_value(item.get('risk')) else 'low'
         safe_to_send = _compute_safe_to_send(
             valid_syntax=valid_syntax,
@@ -3412,8 +3298,7 @@ def _build_email_validation_dlr_report(*, provider_mode, results, history=None):
         valid_count = 0
         invalid_count = 0
         for item in rows:
-            status_text = str(item.get('provider_result_status') or '').strip().lower()
-            if status_text == 'valid':
+            if bool(item.get('validMailbox')):
                 valid_count += 1
             else:
                 invalid_count += 1
@@ -5793,6 +5678,8 @@ class EmailValidationView(generics.GenericAPIView):
 
     def post(self, request):
         source_file = request.FILES.get('source_file') if hasattr(request, 'FILES') else None
+        defer_start_raw = request.data.get('defer_start')
+        defer_start = str(defer_start_raw or '').strip().lower() in {'1', 'true', 'yes', 'on'}
         provider_mode = _get_email_validation_provider_mode()
         available_validation_balance = _get_email_validation_wallet_balance(request.user)
         if available_validation_balance is None:
@@ -5811,6 +5698,8 @@ class EmailValidationView(generics.GenericAPIView):
             return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
         if source_file:
+            initial_control_state = 'paused' if defer_start else 'running'
+            initial_processing_state = 'paused' if defer_start else 'running'
             history = EmailValidationHistory.objects.create(
                 user=request.user,
                 source='dashboard',
@@ -5826,8 +5715,8 @@ class EmailValidationView(generics.GenericAPIView):
                     'provider_message_ids': [],
                     'results': [],
                     'queued': True,
-                    'control_state': 'running',
-                    'processing_state': 'running',
+                    'control_state': initial_control_state,
+                    'processing_state': initial_processing_state,
                     'processed_count': 0,
                     'total_count': len(unique_emails),
                     'progress_percent': 0,
@@ -5841,13 +5730,16 @@ class EmailValidationView(generics.GenericAPIView):
             )
             _assign_email_validation_request_id(history)
             history_payload = EmailValidationHistorySerializer(history).data
-            _start_email_validation_worker(history.id)
+            if not defer_start:
+                _start_email_validation_worker(history.id)
             return Response(
                 {
                     'request_id': history.request_id,
                     'count': len(unique_emails),
                     'wallet_balance': str(remaining_balance),
                     'provider_mode': provider_mode,
+                    'ready_to_start': bool(defer_start),
+                    'auto_started': not bool(defer_start),
                     'source_file_name': file_name,
                     'summary': {
                         'safe_to_send_yes': 0,
