@@ -513,8 +513,14 @@ class EmailValidationHistorySerializer(serializers.ModelSerializer):
     provider_message_id = serializers.SerializerMethodField()
     provider_message_ids = serializers.SerializerMethodField()
 
-    def get_provider_message_id(self, obj):
+    def _get_summary_dict(self, obj):
         summary = getattr(obj, 'results_summary', {}) or {}
+        if isinstance(summary, dict):
+            return summary
+        return {}
+
+    def get_provider_message_id(self, obj):
+        summary = self._get_summary_dict(obj)
         value = summary.get('provider_message_id')
         if value:
             return str(value)
@@ -525,7 +531,7 @@ class EmailValidationHistorySerializer(serializers.ModelSerializer):
         return ''
 
     def get_provider_message_ids(self, obj):
-        summary = getattr(obj, 'results_summary', {}) or {}
+        summary = self._get_summary_dict(obj)
         values = summary.get('provider_message_ids') or []
         if isinstance(values, list):
             return [str(item) for item in values if str(item or '').strip()]
@@ -533,7 +539,7 @@ class EmailValidationHistorySerializer(serializers.ModelSerializer):
 
     def get_dlr_report(self, obj):
         status_value = str(getattr(obj, 'status', '') or '').lower()
-        summary = getattr(obj, 'results_summary', {}) or {}
+        summary = self._get_summary_dict(obj)
         return {
             'request_id': getattr(obj, 'request_id', ''),
             'provider_message_id': self.get_provider_message_id(obj),

@@ -229,66 +229,43 @@ function downloadExcelCompatible(filename, headers, rows, sheetTitle) {
   window.URL.revokeObjectURL(url);
 }
 
-function toBoolText(value) {
-  if (value === true) {
-    return 'yes';
-  }
-  if (value === false) {
-    return 'no';
-  }
-  return 'unknown';
-}
-
-function isSpamLike(result) {
-  const risk = String(result?.risk || '').toLowerCase();
-  return ['high', 'very_high', 'risky', 'spam', 'unknown'].includes(risk);
-}
-
 function flattenMailValidationRows(emailHistoryItems) {
   const rows = [];
 
   emailHistoryItems.forEach((item) => {
+    const baseRequestId = String(item?.request_id || '').trim() || 'mail-request';
     const requestedEmails = Array.isArray(item?.emails_requested) ? item.emails_requested : [];
     const resultRows = Array.isArray(item?.results_summary?.results) ? item.results_summary.results : [];
 
     if (resultRows.length === 0) {
-      requestedEmails.forEach((mail) => {
+      requestedEmails.forEach((mail, idx) => {
+        const rowKey = `${baseRequestId}-${idx + 1}`;
         rows.push({
-          request_id: item?.request_id || '-',
+          row_key: rowKey,
+          request_id: baseRequestId,
           created_at: item?.created_at,
+          validation_timing: item?.completed_at || item?.created_at || null,
+          validation_mode: String(item?.source || '').trim().toLowerCase() || '-',
           status: item?.status || '-',
-          source: item?.source || '-',
-          user_email: item?.user_email || '-',
-          api_key_name: item?.api_key_name || '-',
           requested_mail: mail || '-',
-          validSyntax: null,
-          validMailbox: null,
-          catchAll: null,
-          disposable: null,
-          roleBased: null,
-          spam: null,
-          risk: '-',
+          is_valid: false,
         });
       });
       return;
     }
 
     resultRows.forEach((result, idx) => {
+      const rowKey = `${baseRequestId}-${idx + 1}`;
+      const isValid = result?.validSyntax === true && result?.validMailbox === true;
       rows.push({
-        request_id: item?.request_id || '-',
+        row_key: rowKey,
+        request_id: baseRequestId,
         created_at: item?.created_at,
+        validation_timing: item?.completed_at || item?.created_at || null,
+        validation_mode: String(item?.source || '').trim().toLowerCase() || '-',
         status: item?.status || '-',
-        source: item?.source || '-',
-        user_email: item?.user_email || '-',
-        api_key_name: item?.api_key_name || '-',
         requested_mail: result?.email || requestedEmails[idx] || requestedEmails[0] || '-',
-        validSyntax: result?.validSyntax,
-        validMailbox: result?.validMailbox,
-        catchAll: result?.catchAll,
-        disposable: result?.disposable,
-        roleBased: result?.roleBased,
-        spam: isSpamLike(result),
-        risk: result?.risk || '-',
+        is_valid: isValid,
       });
     });
   });
@@ -352,17 +329,17 @@ export default function Reports() {
     [rangedSmsHistory, smsSearch, smsStatus]
   );
 
-  const filteredEmailHistory = useMemo(
-    () => rangedEmailHistory.filter((item) => {
-      const statusMatch = emailStatus === 'all' || String(item?.status || '').toLowerCase() === emailStatus;
-      return statusMatch && matchesSearch(item, emailSearch, ['request_id', 'status', 'user_email', 'file_name']);
-    }),
-    [rangedEmailHistory, emailSearch, emailStatus]
+  const allMailResultRows = useMemo(
+    () => flattenMailValidationRows(rangedEmailHistory),
+    [rangedEmailHistory]
   );
 
   const filteredMailResultRows = useMemo(
-    () => flattenMailValidationRows(filteredEmailHistory),
-    [filteredEmailHistory]
+    () => allMailResultRows.filter((row) => {
+      const statusMatch = emailStatus === 'all' || String(row?.status || '').toLowerCase() === emailStatus;
+      return statusMatch && matchesSearch(row, emailSearch, ['request_id', 'requested_mail', 'status']);
+    }),
+    [allMailResultRows, emailSearch, emailStatus]
   );
 
   const chartData = useMemo(
@@ -407,26 +384,12 @@ export default function Reports() {
   }, [filteredSmsHistory]);
 
   const emailSummary = useMemo(() => {
-    const counts = {
+    const validCount = filteredMailResultRows.reduce((count, row) => (row.is_valid ? count + 1 : count), 0);
+    return {
       total: filteredMailResultRows.length,
-      validSyntaxYes: 0,
-      validMailboxYes: 0,
-      catchAllYes: 0,
-      disposableYes: 0,
-      spamYes: 0,
-      roleBasedYes: 0,
+      valid: validCount,
+      invalid: Math.max(filteredMailResultRows.length - validCount, 0),
     };
-
-    filteredMailResultRows.forEach((row) => {
-      if (row.validSyntax === true) counts.validSyntaxYes += 1;
-      if (row.validMailbox === true) counts.validMailboxYes += 1;
-      if (row.catchAll === true) counts.catchAllYes += 1;
-      if (row.disposable === true) counts.disposableYes += 1;
-      if (row.spam === true) counts.spamYes += 1;
-      if (row.roleBased === true) counts.roleBasedYes += 1;
-    });
-
-    return counts;
   }, [filteredMailResultRows]);
 
   const exportSmsReportCsv = () => {
@@ -461,20 +424,13 @@ export default function Reports() {
   const exportMailReportCsv = () => {
     downloadCsv(
       'bhisha-mail-validation-report.csv',
-      ['Request ID', 'Requested Mail', 'Result Status', 'ValidSyntax', 'ValidMailbox', 'CatchAll', 'Disposable', 'Spam', 'RoleBased', 'Risk', 'Source', 'Created At'],
+      ['Request ID', 'Entered Mail', 'Valid/Not', 'Timing', 'Mode'],
       filteredMailResultRows.map((row) => [
         row.request_id,
         row.requested_mail,
-        row.status,
-        toBoolText(row.validSyntax),
-        toBoolText(row.validMailbox),
-        toBoolText(row.catchAll),
-        toBoolText(row.disposable),
-        toBoolText(row.spam),
-        toBoolText(row.roleBased),
-        row.risk,
-        row.source,
-        formatDateTime(row.created_at),
+        row.is_valid ? 'valid' : 'not valid',
+        formatDateTime(row.validation_timing),
+        row.validation_mode,
       ])
     );
   };
@@ -482,20 +438,13 @@ export default function Reports() {
   const exportMailReportExcel = () => {
     downloadExcelCompatible(
       'bhisha-mail-validation-report.xls',
-      ['Request ID', 'Requested Mail', 'Result Status', 'ValidSyntax', 'ValidMailbox', 'CatchAll', 'Disposable', 'Spam', 'RoleBased', 'Risk', 'Source', 'Created At'],
+      ['Request ID', 'Entered Mail', 'Valid/Not', 'Timing', 'Mode'],
       filteredMailResultRows.map((row) => [
         row.request_id,
         row.requested_mail,
-        row.status,
-        toBoolText(row.validSyntax),
-        toBoolText(row.validMailbox),
-        toBoolText(row.catchAll),
-        toBoolText(row.disposable),
-        toBoolText(row.spam),
-        toBoolText(row.roleBased),
-        row.risk,
-        row.source,
-        formatDateTime(row.created_at),
+        row.is_valid ? 'valid' : 'not valid',
+        formatDateTime(row.validation_timing),
+        row.validation_mode,
       ]),
       'Mail Validation Report'
     );
@@ -839,12 +788,8 @@ export default function Reports() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '12px' }}>
                 {[
                   ['Filtered Total', emailSummary.total],
-                  ['ValidSyntax Yes', emailSummary.validSyntaxYes],
-                  ['ValidMailbox Yes', emailSummary.validMailboxYes],
-                  ['CatchAll Yes', emailSummary.catchAllYes],
-                  ['Disposable Yes', emailSummary.disposableYes],
-                  ['Spam Yes', emailSummary.spamYes],
-                  ['RoleBased Yes', emailSummary.roleBasedYes],
+                  ['Valid', emailSummary.valid],
+                  ['Not Valid', emailSummary.invalid],
                 ].map(([label, value]) => (
                   <div key={`mail-summary-${label}`} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '10px' }}>
                     <div style={{ fontSize: '12px', fontWeight: 700, color: '#64748b' }}>{label}</div>
@@ -885,43 +830,25 @@ export default function Reports() {
                   <thead>
                     <tr style={{ background: '#f8fafc' }}>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Request ID</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>User</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>API Key</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Requested Mail</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Status</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>ValidSyntax</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>ValidMailbox</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>CatchAll</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Disposable</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Spam</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>RoleBased</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Risk</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Source</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Date</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>Entered Mail</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>Valid/Not</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>Timing</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>Mode</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredMailResultRows.map((row, idx) => (
-                      <tr key={`${row.request_id}-${row.requested_mail}-${idx}`} style={{ borderTop: '1px solid #eef2f7' }}>
+                    {filteredMailResultRows.map((row) => (
+                      <tr key={row.row_key || `${row.request_id}-${row.requested_mail}`} style={{ borderTop: '1px solid #eef2f7' }}>
                         <td style={{ padding: '8px' }}>{row.request_id}</td>
-                        <td style={{ padding: '8px' }}>{row.user_email}</td>
-                        <td style={{ padding: '8px' }}>{row.api_key_name}</td>
                         <td style={{ padding: '8px' }}>{row.requested_mail}</td>
-                        <td style={{ padding: '8px' }}>{row.status}</td>
-                        <td style={{ padding: '8px' }}>{toBoolText(row.validSyntax)}</td>
-                        <td style={{ padding: '8px' }}>{toBoolText(row.validMailbox)}</td>
-                        <td style={{ padding: '8px' }}>{toBoolText(row.catchAll)}</td>
-                        <td style={{ padding: '8px' }}>{toBoolText(row.disposable)}</td>
-                        <td style={{ padding: '8px' }}>{toBoolText(row.spam)}</td>
-                        <td style={{ padding: '8px' }}>{toBoolText(row.roleBased)}</td>
-                        <td style={{ padding: '8px' }}>{row.risk}</td>
-                        <td style={{ padding: '8px' }}>{row.source}</td>
-                        <td style={{ padding: '8px' }}>{formatDateTime(row.created_at)}</td>
+                        <td style={{ padding: '8px' }}>{row.is_valid ? 'valid' : 'not valid'}</td>
+                        <td style={{ padding: '8px' }}>{formatDateTime(row.validation_timing)}</td>
+                        <td style={{ padding: '8px', textTransform: 'lowercase' }}>{row.validation_mode}</td>
                       </tr>
                     ))}
                     {filteredMailResultRows.length === 0 && (
                       <tr>
-                        <td colSpan={14} style={{ padding: '10px', color: '#64748b' }}>No mail validation records found.</td>
+                        <td colSpan={5} style={{ padding: '10px', color: '#64748b' }}>No mail validation records found.</td>
                       </tr>
                     )}
                   </tbody>

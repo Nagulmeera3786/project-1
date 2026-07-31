@@ -43,24 +43,22 @@ Common JWT-protected endpoints:
 5. `GET/POST /api/auth/email-validation/api-keys/`
 6. `PATCH/DELETE /api/auth/email-validation/api-keys/{key_id}/`
 
-### 2.3 External API Access (API Key + User Credentials)
+### 2.3 External API Access (API Key Only)
 
 Endpoint:
 
 `POST /api/auth/email-validation/api/validate/`
 
-Credentials can be passed in JSON body:
+Send only API key and one email in JSON body:
 
 ```json
 {
   "api_key": "<YOUR_API_KEY>",
-  "user_id": "<YOUR_USER_ID>",
-  "password": "<YOUR_PASSWORD>",
   "email": "user@example.com"
 }
 ```
 
-Or pass API key using `X-API-Key` header and keep `user_id`, `password` in body.
+Or pass API key using `X-API-Key` header and keep only `email` in body.
 
 ### 2.4 Real-Time Code Samples (Popular Languages)
 
@@ -388,41 +386,36 @@ Example success response (shortened):
 }
 ```
 
-### 6.2 External/Customer API Validation (Single/Bulk)
+### 6.2 External/Customer API Validation (Single Email)
 - Endpoint: `POST /api/auth/email-validation/api/validate/`
-- Auth: API key + user credentials
+- Auth: API key
 
-Request auth fields:
+Request fields:
 - `api_key`
-- `user_id`
-- `password`
+- `email`
 
-Same payload modes and response contract as dashboard validation.
+Minimal response contract:
+
+```json
+{
+  "request_id": "MeMV00000108ra",
+  "validation_status": "valid"
+}
+```
+
+`validation_status` is either `valid` or `invalid`.
 
 Single request:
 ```json
 {
   "api_key": "<YOUR_API_KEY>",
-  "user_id": "<YOUR_USER_ID>",
-  "password": "<YOUR_PASSWORD>",
   "email": "user@example.com"
 }
 ```
 
-Bulk request:
-```json
-{
-  "api_key": "<YOUR_API_KEY>",
-  "user_id": "<YOUR_USER_ID>",
-  "password": "<YOUR_PASSWORD>",
-  "emails": ["one@example.com", "two@example.com"]
-}
-```
+Bulk (`emails`) and file (`source_file`) are not supported for external API validation.
 
-File request (`multipart/form-data`):
-- fields: `api_key`, `user_id`, `password`, `source_file`
-
-Popular language examples (single, bulk, file):
+Popular language examples (single):
 
 Python (single):
 ```python

@@ -680,8 +680,13 @@ class EmailValidationMediatorTests(TestCase):
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
     @patch('accounts.views._validate_email_list_with_verifalia')
     @patch('accounts.views._get_email_validation_cost_per_request', return_value=Decimal('1.0000'))
-    def test_api_email_validation_returns_compact_bhisha_response_and_history_attribution(self, _mock_cost, mock_validate_list):
+    def test_api_email_validation_returns_minimal_response_and_uses_api_key_only_auth(self, _mock_cost, mock_validate_list):
         from accounts.models import UserAPIKey
+
+        wallet = UserWallet.objects.get(user=self.normal_user)
+        wallet.balance = Decimal('2.0000')
+        wallet.email_validation_balance = Decimal('2.0000')
+        wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
 
         api_key = UserAPIKey.objects.create(user=self.normal_user, name='Bhisha Client', key='a' * 64, is_active=True)
         mock_validate_list.return_value = [
@@ -708,8 +713,6 @@ class EmailValidationMediatorTests(TestCase):
         response = self.client.post(
             '/api/auth/email-validation/api/validate/',
             {
-                'user_id': self.normal_user.id,
-                'password': 'UserPass123!',
                 'api_key': api_key.key,
                 'email': 'yifemat211@fishnone.com',
             },
@@ -717,22 +720,11 @@ class EmailValidationMediatorTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data.get('count'), 1)
-        self.assertEqual(response.data.get('wallet_balance'), '1.0000')
-        self.assertNotIn('simple_results', response.data)
-        self.assertEqual(response.data['results'][0], {
-            'email': 'yifemat211@fishnone.com',
-            'valid_inbox': False,
-            'valid_syntax': True,
-            'disposable': True,
-            'role_based': False,
-            'catch_all': False,
-            'risk_factors': 'None Detected',
-            'raw_status_details': 'do_not_mail (disposable)',
-            'is_free_domain': True,
-        })
-        self.assertEqual(response.data['history']['user_email'], 'normal@example.com')
-        self.assertEqual(response.data['history']['api_key_name'], 'Bhisha Client')
+        self.assertIn('request_id', response.data)
+        self.assertEqual(response.data.get('validation_status'), 'invalid')
+        self.assertNotIn('results', response.data)
+        self.assertNotIn('history', response.data)
+        self.assertNotIn('dlr_report', response.data)
 
         history = self.normal_user.email_validations.latest('created_at')
         self.assertEqual(history.source, 'api')
