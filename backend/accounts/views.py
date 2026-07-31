@@ -3277,20 +3277,23 @@ def _extract_api_result_profiles(result_items):
 
 
 def _build_concise_api_validation_response(result_items, request_id=''):
-    validation_status = 'invalid'
+    validation_status = 'Invalid'
+    requested_email = ''
 
     for item in result_items or []:
         if not isinstance(item, dict):
             continue
 
+        requested_email = str(item.get('email') or '').strip().lower()
         valid_syntax = bool(item.get('validSyntax'))
         valid_mailbox = bool(item.get('validMailbox'))
-        validation_status = 'valid' if bool(valid_syntax and valid_mailbox) else 'invalid'
+        validation_status = 'Valid' if bool(valid_syntax and valid_mailbox) else 'Invalid'
         break
 
     return {
         'request_id': str(request_id or '').strip(),
-        'validation_status': validation_status,
+        'email': requested_email,
+        'status': validation_status,
     }
 
 
@@ -3373,21 +3376,27 @@ def _build_concise_api_status_response(history):
     processing_state = _get_history_processing_state(history)
     summary = _get_history_summary(history)
 
+    requested_email = ''
+    stored_results = summary.get('results') if isinstance(summary.get('results'), list) else []
+    if stored_results:
+        requested_email = str(stored_results[0].get('email') or '').strip().lower()
+    elif isinstance(history.emails_requested, list) and history.emails_requested:
+        requested_email = str(history.emails_requested[0] or '').strip().lower()
+
     if processing_state in {'completed'}:
-        stored_results = summary.get('results') if isinstance(summary.get('results'), list) else []
         return _build_concise_api_validation_response(stored_results, request_id=history.request_id)
 
     if processing_state in {'failed', 'cancelled', 'stopped'}:
-        failure_reason = str(summary.get('failure_reason') or summary.get('error') or processing_state).strip()
         return {
-            'request_id': history.request_id,
-            'status': processing_state,
-            'detail': failure_reason,
+            'request_id': str(history.request_id or '').strip(),
+            'email': requested_email,
+            'status': 'Invalid',
         }
 
     return {
-        'request_id': history.request_id,
-        'status': processing_state,
+        'request_id': str(history.request_id or '').strip(),
+        'email': requested_email,
+        'status': 'Invalid',
     }
 
 
