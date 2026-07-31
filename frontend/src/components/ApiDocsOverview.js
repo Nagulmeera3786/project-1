@@ -169,7 +169,7 @@ print(res.status_code, res.json())`,
   },
 ];
 
-const mailValidationModes = ['single', 'bulk', 'file'];
+const mailValidationModes = ['single'];
 
 const mailValidationSamples = {
   single: {
@@ -177,8 +177,6 @@ const mailValidationSamples = {
   -H "X-API-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "login": "user@example.com",
-    "password": "<YOUR_PASSWORD>",
     "email": "user@example.com"
   }'`,
     JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
@@ -188,14 +186,12 @@ const mailValidationSamples = {
     "X-API-Key": "<YOUR_API_KEY>",
   },
   body: JSON.stringify({
-    login: "user@example.com",
-    password: "<YOUR_PASSWORD>",
     email: "user@example.com"
   })
 });
 
 const data = await response.json();
-console.log(data.results?.[0]);`,
+console.log(data); // { email, status, request_id }`,
     Python: `import requests
 
 base_url = "${BASE_URL}"
@@ -203,17 +199,13 @@ response = requests.post(
     base_url + "${API_PREFIX}${MAIL_VALIDATE_PATH}",
     headers={"X-API-Key": "<YOUR_API_KEY>"},
     json={
-      "login": "user@example.com",
-        "password": "<YOUR_PASSWORD>",
-        "email": "user@example.com",
+      "email": "user@example.com"
     },
 )
 
-print(response.json())`,
+print(response.json())  # {"email": "user@example.com", "status": "Valid", "request_id": "..."}`,
     Java: `String payload = """
 {
-  \"login\": \"user@example.com\",
-  \"password\": \"<YOUR_PASSWORD>\",
   \"email\": \"user@example.com\"
 }
 """;`,
@@ -222,142 +214,36 @@ client.BaseAddress = new Uri("${BASE_URL}");
 client.DefaultRequestHeaders.Add("X-API-Key", "<YOUR_API_KEY>");
 
 var payload = new {
-  login = "user@example.com",
-  password = "<YOUR_PASSWORD>",
   email = "user@example.com"
 };
 
 var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", payload);`,
   },
-  bulk: {
-    cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
-  -H "X-API-Key: <YOUR_API_KEY>" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "login": "user@example.com",
-    "password": "<YOUR_PASSWORD>",
-    "emails": ["one@example.com", "two@example.com", "three@example.com"]
-  }'`,
-    JavaScript: `const payload = {
-  login: "user@example.com",
-  password: "<YOUR_PASSWORD>",
-  emails: ["one@example.com", "two@example.com", "three@example.com"],
-};
-
-const res = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "X-API-Key": "<YOUR_API_KEY>",
-  },
-  body: JSON.stringify(payload),
-});
-
-console.log(await res.json());`,
-    Python: `import requests
-
-payload = {
-  "login": "user@example.com",
-    "password": "<YOUR_PASSWORD>",
-    "emails": ["one@example.com", "two@example.com", "three@example.com"],
-}
-
-print(requests.post(
-    "${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}",
-    headers={"X-API-Key": "<YOUR_API_KEY>"},
-    json=payload
-).json())`,
-    Java: `String payload = """
-{
-  \"login\": \"user@example.com\",
-  \"password\": \"<YOUR_PASSWORD>\",
-  \"emails\": [\"one@example.com\", \"two@example.com\", \"three@example.com\"]
-}
-""";`,
-    'C#': `var payload = new {
-  login = "user@example.com",
-  password = "<YOUR_PASSWORD>",
-  emails = new[] { "one@example.com", "two@example.com", "three@example.com" }
-};`,
-  },
-  file: {
-    cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
-  -H "X-API-Key: <YOUR_API_KEY>" \\
-    -F "login=user@example.com" \\
-  -F "password=<YOUR_PASSWORD>" \\
-  -F "source_file=@emails.xlsx"`,
-    JavaScript: `const formData = new FormData();
-  formData.append("login", "user@example.com");
-formData.append("password", "<YOUR_PASSWORD>");
-formData.append("source_file", fileInput.files[0]);
-
-const res = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
-  method: "POST",
-  headers: { "X-API-Key": "<YOUR_API_KEY>" },
-  body: formData,
-});`,
-    Python: `import requests
-
-with open("emails.xlsx", "rb") as fp:
-    response = requests.post(
-        "${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}",
-        headers={"X-API-Key": "<YOUR_API_KEY>"},
-        data={
-          "login": "user@example.com",
-            "password": "<YOUR_PASSWORD>",
-        },
-        files={"source_file": fp},
-    )
-
-print(response.json())`,
-    Java: `MultipartBodyPublisher mp = new MultipartBodyPublisher()
-    .addPart("login", "user@example.com")
-    .addPart("password", "<YOUR_PASSWORD>")
-    .addFilePart("source_file", Path.of("emails.xlsx"));`,
-    'C#': `using var form = new MultipartFormDataContent();
-  form.Add(new StringContent("user@example.com"), "login");
-form.Add(new StringContent("<YOUR_PASSWORD>"), "password");
-form.Add(new StreamContent(File.OpenRead("emails.xlsx")), "source_file", "emails.xlsx");
-
-using var req = new HttpRequestMessage(HttpMethod.Post, "${API_PREFIX}${MAIL_VALIDATE_PATH}");
-req.Headers.Add("X-API-Key", "<YOUR_API_KEY>");
-req.Content = form;
-var response = await client.SendAsync(req);`,
-  },
 };
 
 const mailTaskControlSample = `# Status
 POST ${BASE_URL}${API_PREFIX}${MAIL_STATUS_PATH}
+Headers:
+  X-API-Key: <YOUR_API_KEY>
+Body:
 {
-  "login": "user@example.com",
-  "password": "<YOUR_PASSWORD>",
   "request_id": "<REQUEST_ID>"
 }
 
 # Control
 POST ${BASE_URL}${API_PREFIX}${MAIL_CONTROL_PATH}
+Headers:
+  X-API-Key: <YOUR_API_KEY>
+Body:
 {
-  "login": "user@example.com",
-  "password": "<YOUR_PASSWORD>",
   "request_id": "<REQUEST_ID>",
   "action": "pause" // start, pause, resume, stop, cancel
 }`;
 
 const compactApiResponseExample = `{
-  "count": 1,
-  "results": [
-    {
-      "email": "user@example.com",
-      "valid_inbox": false,
-      "valid_syntax": true,
-      "disposable": true,
-      "role_based": false,
-      "catch_all": false,
-      "risk_factors": "None Detected",
-      "raw_status_details": "do_not_mail (disposable)",
-      "is_free_domain": true
-    }
-  ]
+  "email": "user@example.com",
+  "status": "Valid",
+  "request_id": "09b27399-2342-4240-bea7-0b29b7f8181c"
 }`;
 
 const sections = [
@@ -398,11 +284,11 @@ const sections = [
   {
     id: 'mail-validation',
     title: 'Mail Validation',
-    description: 'Validate single emails, bulk lists, and file uploads. Long-running jobs support status and control operations.',
+    description: 'Validate single email requests and track request state with status/control APIs.',
     endpoints: [
-      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key + login/email + password', description: 'Validate single, bulk, or file inputs.' },
-      { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key + login/email + password', description: 'Get live progress, elapsed time, ETA, and final status.' },
-      { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key + login/email + password', description: 'Control a running job with start/pause/resume/stop/cancel.' },
+      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key only', description: 'Validate a single email and return email, status, and unique request_id.' },
+      { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key only', description: 'Get request status by request_id.' },
+      { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key only', description: 'Control a running request with start/pause/resume/stop/cancel.' },
     ],
   },
   {
@@ -630,9 +516,9 @@ export default function ApiDocsOverview() {
             </section>
 
             <section style={cardStyle}>
-              <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#1A0E4E' }}>Mail Validation Examples (Single, Bulk, File)</h3>
+              <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#1A0E4E' }}>Mail Validation Examples (API Key Only)</h3>
               <p style={{ marginTop: 0, color: '#6B6B8A', lineHeight: 1.6 }}>
-                Use these request syntaxes for Bhisha mail validation API. Authenticate with API key and login or email plus password.
+                Use these request syntaxes for Bhisha mail validation API. Only the API key is required for auth.
               </p>
 
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
