@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import User, SMSMessage, SMSCredential, SMSContactGroup, UserWallet, EmailValidationHistory, SenderIdRequest
+from .models import User, SMSMessage, SMSCredential, SMSContactGroup, UserWallet, EmailValidationHistory, SenderIdRequest, EmailValidationIPWhitelistRequest
 from .utils import send_admin_promotion_confirmation_email
 import secrets
 from django.utils import timezone
@@ -277,6 +277,14 @@ class SMSMessageAdmin(admin.ModelAdmin):
             obj.status.upper()
         )
     status_badge.short_description = 'Status'
+
+
+@admin.register(EmailValidationIPWhitelistRequest)
+class EmailValidationIPWhitelistRequestAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'requested_ip', 'status', 'reviewed_by', 'reviewed_at', 'created_at')
+    list_filter = ('status', 'created_at', 'reviewed_at')
+    search_fields = ('user__email', 'requested_ip', 'request_note', 'admin_notes')
+    readonly_fields = ('created_at', 'updated_at', 'reviewed_at')
 
 
 @admin.register(SenderIdRequest)

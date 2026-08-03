@@ -6,6 +6,7 @@ from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
+from django.db import DatabaseError
 from django.db import transaction
 from django.db import close_old_connections
 from django.db.models import Q, Count, F
@@ -60,6 +61,8 @@ from .serializers import (
     EmailValidationHistorySerializer,
     SenderIdRequestSerializer,
     SenderIdRequestAdminSerializer,
+    EmailValidationIPWhitelistRequestSerializer,
+    EmailValidationIPWhitelistRequestAdminSerializer,
     EmployeeSignupSerializer,
     EmployeeVerifySerializer,
     EmployeeLoginSerializer,
@@ -85,6 +88,7 @@ from .models import (
     UserAPIKey,
     EmailValidationHistory,
     SenderIdRequest,
+    EmailValidationIPWhitelistRequest,
     Employee,
 )
 
@@ -1371,6 +1375,7 @@ def _validate_email_with_own_system_diagnostics(email):
         failure_reason='',
         provider='own_system',
     )
+
     diagnostics['final_status_code'] = result.get('statusCode', '')
     diagnostics['final_status'] = result.get('status', '')
     return result, diagnostics
@@ -3104,6 +3109,20 @@ def _get_email_validation_ip_whitelist():
     return _parse_ip_whitelist(configured)
 
 
+def _append_email_validation_whitelist_ip(ip_value):
+    normalized_ip = str(ipaddress.ip_address(str(ip_value or '').strip()))
+    ip_whitelist_setting, _ = PlatformSetting.objects.get_or_create(
+        key='email_validation_ip_whitelist',
+        defaults={'value': '', 'description': 'Comma or newline separated whitelisted client IPs for API email validation without API key'},
+    )
+    current_list = _parse_ip_whitelist(ip_whitelist_setting.value)
+    if normalized_ip not in current_list:
+        current_list.append(normalized_ip)
+        ip_whitelist_setting.value = ','.join(current_list)
+        ip_whitelist_setting.save(update_fields=['value', 'updated_at'])
+    return current_list
+
+
 def _get_email_validation_ip_whitelist_user_email():
     setting = PlatformSetting.objects.filter(key='email_validation_ip_whitelist_user_email').first()
     configured = setting.value if setting else getattr(settings, 'EMAIL_VALIDATION_IP_WHITELIST_USER_EMAIL', '')
@@ -3117,6 +3136,25 @@ def _get_email_validation_ip_whitelist_user():
     if not billing_email:
         return None
     return User.objects.filter(email__iexact=billing_email, is_active=True).first()
+
+
+def _get_approved_user_for_whitelisted_ip(ip_value):
+    normalized_ip = str(ip_value or '').strip()
+    if not normalized_ip:
+        return None
+
+    approved_request = (
+        EmailValidationIPWhitelistRequest.objects
+        .select_related('user')
+        .filter(
+            requested_ip=normalized_ip,
+            status=EmailValidationIPWhitelistRequest.STATUS_APPROVED,
+            user__is_active=True,
+        )
+        .order_by('-reviewed_at', '-id')
+        .first()
+    )
+    return approved_request.user if approved_request else None
 
 
 def _authenticate_mail_validation_api_request(request):
@@ -3136,6 +3174,11 @@ def _authenticate_mail_validation_api_request(request):
         return user, api_key, 'api_key', client_ip
 
     normalized_ip = str(client_ip or '').strip()
+    if normalized_ip:
+        mapped_user = _get_approved_user_for_whitelisted_ip(normalized_ip)
+        if mapped_user:
+            return mapped_user, None, 'ip', normalized_ip
+
     whitelist = _get_email_validation_ip_whitelist()
     if normalized_ip and normalized_ip in whitelist:
         user = _get_email_validation_ip_whitelist_user()
@@ -7121,6 +7164,218 @@ class AdminUserWalletCreditsView(generics.GenericAPIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class EmailValidationIPWhitelistRequestView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmailValidationIPWhitelistRequestSerializer
+
+    def get_queryset(self):
+        return EmailValidationIPWhitelistRequest.objects.filter(user=self.request.user).order_by('-created_at')
+
+    def list(self, request, *args, **kwargs):
+        try:
+            return super().list(request, *args, **kwargs)
+        except DatabaseError:
+            return Response(
+                {'detail': 'Whitelist request service is temporarily unavailable. Please try again shortly.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+    def create(self, request, *args, **kwargs):
+        try:
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+
+            requested_ip = str(serializer.validated_data.get('requested_ip') or '').strip()
+            normalized_ip = str(ipaddress.ip_address(requested_ip))
+            existing_pending = EmailValidationIPWhitelistRequest.objects.filter(
+                user=request.user,
+                requested_ip=normalized_ip,
+                status=EmailValidationIPWhitelistRequest.STATUS_PENDING,
+            ).exists()
+            if existing_pending:
+                return Response(
+                    {'detail': 'A pending whitelist request already exists for this IP address.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            whitelist_request = serializer.save()
+            output = self.get_serializer(whitelist_request)
+            return Response(output.data, status=status.HTTP_201_CREATED)
+        except DatabaseError:
+            return Response(
+                {'detail': 'Could not save whitelist request right now due to a temporary server issue. Please retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+
+class AdminEmailValidationIPWhitelistRequestListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmailValidationIPWhitelistRequestAdminSerializer
+
+    def get_queryset(self):
+        if not _has_support_read_access(self.request.user):
+            return EmailValidationIPWhitelistRequest.objects.none()
+
+        queryset = EmailValidationIPWhitelistRequest.objects.select_related('user', 'reviewed_by').all().order_by('-created_at')
+        query = str(self.request.query_params.get('q') or '').strip()
+        status_filter = str(self.request.query_params.get('status') or '').strip().lower()
+        user_id = str(self.request.query_params.get('user_id') or '').strip()
+
+        if query:
+            queryset = queryset.filter(
+                Q(user__email__icontains=query)
+                | Q(requested_ip__icontains=query)
+                | Q(request_note__icontains=query)
+                | Q(admin_notes__icontains=query)
+            )
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if user_id.isdigit():
+            queryset = queryset.filter(user_id=int(user_id))
+
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        try:
+            return super().list(request, *args, **kwargs)
+        except DatabaseError:
+            return Response(
+                {'detail': 'Could not load IP whitelist requests right now. Please try again shortly.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+
+class AdminEmailValidationIPWhitelistRequestDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = EmailValidationIPWhitelistRequestAdminSerializer
+
+    def get_queryset(self):
+        if not _has_support_read_access(self.request.user):
+            return EmailValidationIPWhitelistRequest.objects.none()
+        return EmailValidationIPWhitelistRequest.objects.select_related('user', 'reviewed_by').all()
+
+    def partial_update(self, request, *args, **kwargs):
+        if not _has_admin_access(request.user):
+            return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            instance = self.get_object()
+            serializer = self.get_serializer(instance, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+
+            next_status = serializer.validated_data.get('status', instance.status)
+            updatable_fields = []
+
+            if 'admin_notes' in serializer.validated_data:
+                instance.admin_notes = str(serializer.validated_data.get('admin_notes') or '').strip()
+                updatable_fields.append('admin_notes')
+
+            if next_status != instance.status:
+                instance.status = next_status
+                updatable_fields.append('status')
+
+            if next_status in {
+                EmailValidationIPWhitelistRequest.STATUS_APPROVED,
+                EmailValidationIPWhitelistRequest.STATUS_REJECTED,
+            }:
+                instance.reviewed_by = request.user
+                instance.reviewed_at = timezone.now()
+                if 'reviewed_by' not in updatable_fields:
+                    updatable_fields.append('reviewed_by')
+                if 'reviewed_at' not in updatable_fields:
+                    updatable_fields.append('reviewed_at')
+
+            if next_status == EmailValidationIPWhitelistRequest.STATUS_APPROVED:
+                _append_email_validation_whitelist_ip(instance.requested_ip)
+                ip_whitelist_user_setting, _ = PlatformSetting.objects.get_or_create(
+                    key='email_validation_ip_whitelist_user_email',
+                    defaults={
+                        'value': str(instance.user.email or '').strip().lower(),
+                        'description': 'Active user email charged for IP mode validations',
+                    },
+                )
+                current_global_email = str(ip_whitelist_user_setting.value or '').strip().lower()
+                if not current_global_email:
+                    ip_whitelist_user_setting.value = str(instance.user.email or '').strip().lower()
+                    ip_whitelist_user_setting.save(update_fields=['value', 'updated_at'])
+
+            if updatable_fields:
+                if 'updated_at' not in updatable_fields:
+                    updatable_fields.append('updated_at')
+                instance.save(update_fields=updatable_fields)
+
+            return Response(self.get_serializer(instance).data, status=status.HTTP_200_OK)
+        except DatabaseError:
+            return Response(
+                {'detail': 'Could not update whitelist request due to a temporary server issue. Please retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+
+class AdminEmailValidationAssignWhitelistIPView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if not _has_admin_access(request.user):
+            return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+
+        user_id = request.data.get('user_id')
+        requested_ip = str(request.data.get('requested_ip') or '').strip()
+        if not user_id:
+            return Response({'detail': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not requested_ip:
+            return Response({'detail': 'requested_ip is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            target_user = User.objects.get(id=int(user_id), is_active=True)
+        except (User.DoesNotExist, ValueError, TypeError):
+            return Response({'detail': 'Active user not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            normalized_ip = str(ipaddress.ip_address(requested_ip))
+        except ValueError:
+            return Response({'detail': 'Invalid IP address'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            updated_whitelist = _append_email_validation_whitelist_ip(normalized_ip)
+            ip_whitelist_user_setting, _ = PlatformSetting.objects.get_or_create(
+                key='email_validation_ip_whitelist_user_email',
+                defaults={
+                    'value': str(target_user.email or '').strip().lower(),
+                    'description': 'Active user email charged for IP mode validations',
+                },
+            )
+            current_global_email = str(ip_whitelist_user_setting.value or '').strip().lower()
+            if not current_global_email:
+                ip_whitelist_user_setting.value = str(target_user.email or '').strip().lower()
+                ip_whitelist_user_setting.save(update_fields=['value', 'updated_at'])
+
+            whitelist_request = EmailValidationIPWhitelistRequest.objects.create(
+                user=target_user,
+                requested_ip=normalized_ip,
+                request_note=str(request.data.get('request_note') or '').strip(),
+                status=EmailValidationIPWhitelistRequest.STATUS_APPROVED,
+                admin_notes=str(request.data.get('admin_notes') or 'Approved directly by admin').strip() or 'Approved directly by admin',
+                reviewed_by=request.user,
+                reviewed_at=timezone.now(),
+            )
+
+            return Response(
+                {
+                    'detail': 'IP address whitelisted successfully.',
+                    'ip_whitelist': updated_whitelist,
+                    'ip_whitelist_user_email': str(target_user.email or '').strip().lower(),
+                    'request': EmailValidationIPWhitelistRequestAdminSerializer(whitelist_request).data,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+        except DatabaseError:
+            return Response(
+                {'detail': 'Could not whitelist this IP right now due to a temporary server issue. Please retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
 
 class SenderIdRequestView(generics.ListCreateAPIView):

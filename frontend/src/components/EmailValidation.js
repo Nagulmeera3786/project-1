@@ -142,6 +142,13 @@ export default function EmailValidation() {
     ip_whitelist_user_email: '',
   });
   const [validationProviderMode, setValidationProviderMode] = useState('own_system');
+  const [ipWhitelistRequestDraft, setIpWhitelistRequestDraft] = useState({ requested_ip: '', request_note: '' });
+  const [ipWhitelistRequests, setIpWhitelistRequests] = useState([]);
+  const [ipWhitelistRequestLoading, setIpWhitelistRequestLoading] = useState(false);
+  const [creatingIpWhitelistRequest, setCreatingIpWhitelistRequest] = useState(false);
+  const [adminIpWhitelistRequests, setAdminIpWhitelistRequests] = useState([]);
+  const [savingAdminIpRequestId, setSavingAdminIpRequestId] = useState(null);
+  const [selectedUserIpWhitelistDraft, setSelectedUserIpWhitelistDraft] = useState('');
 
   useEffect(() => {
     const initialize = async () => {
@@ -196,6 +203,8 @@ export default function EmailValidation() {
     const tab = (params.get('tab') || '').trim().toLowerCase();
     if (tab === 'keys') {
       setActiveTab('api-keys');
+    } else if (tab === 'ip-whitelist') {
+      setActiveTab('ip-whitelist');
     } else if (tab === 'endpoints') {
       setActiveTab('api-docs');
     } else if (tab === 'admin') {
@@ -217,6 +226,22 @@ export default function EmailValidation() {
     }
   };
 
+  const fetchUserIpWhitelistRequests = async () => {
+    setIpWhitelistRequestLoading(true);
+    try {
+      const response = await API.get('email-validation/ip-whitelist-requests/');
+      setIpWhitelistRequests(Array.isArray(response.data) ? response.data : []);
+    } catch (err) {
+      setIpWhitelistRequests([]);
+      const statusCode = Number(err?.response?.status || 0);
+      if (statusCode >= 500) {
+        setError('Whitelist request service is temporarily unavailable. Please try again shortly.');
+      }
+    } finally {
+      setIpWhitelistRequestLoading(false);
+    }
+  };
+
   const fetchAdminData = async () => {
     if (!canViewSupportData) {
       return;
@@ -224,24 +249,48 @@ export default function EmailValidation() {
 
     setAdminLoading(true);
     try {
-      const [latestRes, creditRes, usersRes] = await Promise.all([
+      const [latestRes, creditRes, usersRes, ipRequestsRes] = await Promise.allSettled([
         API.get('admin/email-validation/history/latest/'),
         API.get('admin/email-validation/credit-settings/'),
         API.get('admin/users/'),
+        API.get('admin/email-validation/ip-whitelist-requests/'),
       ]);
-      setLatestByUser(Array.isArray(latestRes.data) ? latestRes.data : []);
-      setCreditSetting({
-        value: String(creditRes.data?.value ?? '0'),
-        description: String(creditRes.data?.description ?? ''),
-        provider_mode: String(creditRes.data?.provider_mode ?? 'own_system'),
-        ip_whitelist_text: String(creditRes.data?.ip_whitelist_text ?? ''),
-        ip_whitelist_user_email: String(creditRes.data?.ip_whitelist_user_email ?? ''),
-      });
-      setAdminUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
+
+      if (latestRes.status === 'fulfilled') {
+        setLatestByUser(Array.isArray(latestRes.value.data) ? latestRes.value.data : []);
+      } else {
+        setLatestByUser([]);
+      }
+
+      if (creditRes.status === 'fulfilled') {
+        setCreditSetting({
+          value: String(creditRes.value.data?.value ?? '0'),
+          description: String(creditRes.value.data?.description ?? ''),
+          provider_mode: String(creditRes.value.data?.provider_mode ?? 'own_system'),
+          ip_whitelist_text: String(creditRes.value.data?.ip_whitelist_text ?? ''),
+          ip_whitelist_user_email: String(creditRes.value.data?.ip_whitelist_user_email ?? ''),
+        });
+      }
+
+      if (usersRes.status === 'fulfilled') {
+        setAdminUsers(Array.isArray(usersRes.value.data) ? usersRes.value.data : []);
+      } else {
+        setAdminUsers([]);
+      }
+
+      if (ipRequestsRes.status === 'fulfilled') {
+        setAdminIpWhitelistRequests(Array.isArray(ipRequestsRes.value.data) ? ipRequestsRes.value.data : []);
+      } else {
+        setAdminIpWhitelistRequests([]);
+      }
+
+      const hasCriticalFailure = creditRes.status === 'rejected' || usersRes.status === 'rejected';
+      if (hasCriticalFailure) {
+        const firstError = creditRes.status === 'rejected' ? creditRes.reason : usersRes.reason;
+        setError(`Some admin sections could not load: ${getProfessionalErrorMessage(firstError, 'Please try again.')}`);
+      }
     } catch (err) {
-      console.error('Error fetching admin data:', err);
-      setLatestByUser([]);
-      setAdminUsers([]);
+      console.error('Unexpected admin data error:', err);
       setError(`Admin data load failed: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
     } finally {
       setAdminLoading(false);
@@ -249,6 +298,9 @@ export default function EmailValidation() {
   };
 
   useEffect(() => {
+    if (activeTab === 'ip-whitelist') {
+      fetchUserIpWhitelistRequests();
+    }
     if (activeTab === 'api-keys') {
       fetchApiKeys();
     }
@@ -597,7 +649,7 @@ export default function EmailValidation() {
         return false;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     return false;
@@ -624,7 +676,7 @@ export default function EmailValidation() {
       } catch {
         // Keep polling silently; network hiccups should not stop UI tracking.
       }
-    }, 2000);
+    }, 1000);
 
     return () => {
       if (pollIntervalRef.current) {
@@ -960,6 +1012,99 @@ export default function EmailValidation() {
     }
   };
 
+  const submitIpWhitelistRequest = async () => {
+    const requestedIp = String(ipWhitelistRequestDraft.requested_ip || '').trim();
+    if (!requestedIp) {
+      setError('Please enter an IP address to request whitelist access.');
+      return;
+    }
+
+    setCreatingIpWhitelistRequest(true);
+    setError('');
+    try {
+      await API.post('email-validation/ip-whitelist-requests/', {
+        requested_ip: requestedIp,
+        request_note: String(ipWhitelistRequestDraft.request_note || '').trim(),
+      });
+      setIpWhitelistRequestDraft({ requested_ip: '', request_note: '' });
+      setInfo('IP whitelist request sent to admin successfully.');
+      fetchUserIpWhitelistRequests();
+      if (isAdmin) {
+        fetchAdminData();
+      }
+    } catch (err) {
+      const statusCode = Number(err?.response?.status || 0);
+      const hasNoResponse = !err?.response;
+      if (hasNoResponse) {
+        setError('Connection issue detected while submitting your whitelist request. Please verify network connectivity and retry.');
+      } else if (statusCode >= 500) {
+        setError('Server is temporarily unable to process whitelist requests. Please try again shortly.');
+      } else {
+        setError(getProfessionalErrorMessage(err, 'Could not submit IP whitelist request.'));
+      }
+    } finally {
+      setCreatingIpWhitelistRequest(false);
+    }
+  };
+
+  const updateAdminIpWhitelistRequestStatus = async (requestItem, nextStatus) => {
+    if (!requestItem?.id || !nextStatus || !isAdmin) {
+      return;
+    }
+
+    setSavingAdminIpRequestId(requestItem.id);
+    setError('');
+    try {
+      await API.patch(`admin/email-validation/ip-whitelist-requests/${requestItem.id}/`, {
+        status: nextStatus,
+      });
+      await fetchAdminData();
+      await fetchUserIpWhitelistRequests();
+      setInfo(`IP whitelist request marked as ${nextStatus}.`);
+    } catch (err) {
+      const statusCode = Number(err?.response?.status || 0);
+      if (statusCode === 404) {
+        setError('Whitelist request endpoint is not available on server. Please restart backend and ensure latest routes are deployed.');
+      } else {
+        setError(getProfessionalErrorMessage(err, 'Could not update whitelist request status.'));
+      }
+    } finally {
+      setSavingAdminIpRequestId(null);
+    }
+  };
+
+  const assignSelectedUserIpWhitelist = async () => {
+    if (!isAdmin || !selectedUserDetails) {
+      return;
+    }
+
+    const requestedIp = String(selectedUserIpWhitelistDraft || '').trim();
+    if (!requestedIp) {
+      setError('Enter an IP address to whitelist for the selected user.');
+      return;
+    }
+
+    setError('');
+    try {
+      await API.post('admin/email-validation/ip-whitelist/assign/', {
+        user_id: selectedUserDetails.id,
+        requested_ip: requestedIp,
+        request_note: `Whitelisted from admin center for ${selectedUserDetails.email}`,
+      });
+      setSelectedUserIpWhitelistDraft('');
+      await fetchAdminData();
+      await fetchUserIpWhitelistRequests();
+      setInfo(`IP ${requestedIp} whitelisted for ${selectedUserDetails.email}.`);
+    } catch (err) {
+      const statusCode = Number(err?.response?.status || 0);
+      if (statusCode === 404) {
+        setError('Direct IP whitelist endpoint is not available on server. Please restart backend and apply latest API changes.');
+      } else {
+        setError(getProfessionalErrorMessage(err, 'Could not whitelist IP for selected user.'));
+      }
+    }
+  };
+
   const safeUnsafeRatio = useMemo(() => {
     const total = summary.safe_to_send_yes + summary.safe_to_send_no;
     if (!total) {
@@ -1221,6 +1366,9 @@ export default function EmailValidation() {
         </button>
         <button onClick={() => setActiveTab('api-keys')} style={tabButtonStyle(activeTab === 'api-keys')}>
           <FaKey /> API Keys
+        </button>
+        <button onClick={() => setActiveTab('ip-whitelist')} style={tabButtonStyle(activeTab === 'ip-whitelist')}>
+          <FaKey /> IP Whitelist
         </button>
         <button onClick={() => setActiveTab('api-docs')} style={tabButtonStyle(activeTab === 'api-docs')}>
           <FaServer /> API Endpoints
@@ -1673,6 +1821,59 @@ export default function EmailValidation() {
         </>
       )}
 
+      {activeTab === 'ip-whitelist' && (
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px', marginBottom: '16px' }}>
+          <h3 style={{ marginTop: 0, marginBottom: '10px' }}>Request IP Whitelist Access</h3>
+          <div style={{ color: '#4b5563', fontSize: '12px', marginBottom: '10px' }}>
+            Submit your client IP address for admin approval. Approved requests are auto-added to API IP whitelist.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px', marginBottom: '10px' }}>
+            <input
+              type="text"
+              value={ipWhitelistRequestDraft.requested_ip}
+              onChange={(e) => setIpWhitelistRequestDraft((prev) => ({ ...prev, requested_ip: e.target.value }))}
+              placeholder="Enter your public IP (e.g. 203.0.113.10)"
+              style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db' }}
+            />
+            <input
+              type="text"
+              value={ipWhitelistRequestDraft.request_note}
+              onChange={(e) => setIpWhitelistRequestDraft((prev) => ({ ...prev, request_note: e.target.value }))}
+              placeholder="Optional note for admin"
+              style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db' }}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={submitIpWhitelistRequest}
+            disabled={creatingIpWhitelistRequest}
+            style={{ padding: '10px 12px', borderRadius: '8px', border: 'none', background: '#2563eb', color: '#fff', fontWeight: 700, cursor: creatingIpWhitelistRequest ? 'not-allowed' : 'pointer', marginBottom: '12px' }}
+          >
+            {creatingIpWhitelistRequest ? 'Sending Request...' : 'Send IP Whitelist Request'}
+          </button>
+
+          {ipWhitelistRequestLoading ? (
+            <div style={{ color: '#6b7280', fontSize: '13px' }}>Loading your IP whitelist requests...</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {ipWhitelistRequests.map((item) => (
+                <div key={item.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                    <div style={{ fontWeight: 700, color: '#1f2937' }}>{item.requested_ip}</div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: item.status === 'approved' ? '#166534' : item.status === 'rejected' ? '#991b1b' : '#92400e' }}>
+                      {String(item.status_label || item.status || '').toUpperCase()}
+                    </div>
+                  </div>
+                  {item.request_note && <div style={{ marginTop: '4px', fontSize: '12px', color: '#475569' }}>Note: {item.request_note}</div>}
+                  {item.admin_notes && <div style={{ marginTop: '4px', fontSize: '12px', color: '#334155' }}>Admin notes: {item.admin_notes}</div>}
+                </div>
+              ))}
+              {ipWhitelistRequests.length === 0 && <div style={{ color: '#6b7280', fontSize: '13px' }}>No IP whitelist requests yet.</div>}
+            </div>
+          )}
+        </div>
+      )}
+
       {activeTab === 'api-keys' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '14px' }}>
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px' }}>
@@ -1829,6 +2030,55 @@ export default function EmailValidation() {
           </div>
 
           <div style={{ gridColumn: '1 / -1', background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px' }}>
+            <h3 style={{ marginTop: 0, marginBottom: '10px' }}>IP Whitelist Requests</h3>
+            <div style={{ color: '#4b5563', fontSize: '12px', marginBottom: '10px' }}>
+              Review user-submitted IPs. Approving adds IP to whitelist and sets billing user email to the request owner.
+            </div>
+            {adminLoading ? (
+              <div>Loading IP whitelist requests...</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {adminIpWhitelistRequests.map((item) => (
+                  <div key={item.id} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontWeight: 700, color: '#111827' }}>{item.requested_ip}</div>
+                        <div style={{ fontSize: '12px', color: '#374151' }}>User: {item.user_email || '-'}</div>
+                      </div>
+                      <div style={{ fontSize: '12px', fontWeight: 700, color: item.status === 'approved' ? '#166534' : item.status === 'rejected' ? '#991b1b' : '#92400e' }}>
+                        {String(item.status_label || item.status || '').toUpperCase()}
+                      </div>
+                    </div>
+                    {item.request_note && <div style={{ marginTop: '4px', fontSize: '12px', color: '#475569' }}>Request note: {item.request_note}</div>}
+                    {item.admin_notes && <div style={{ marginTop: '4px', fontSize: '12px', color: '#334155' }}>Admin notes: {item.admin_notes}</div>}
+                    {item.status === 'pending' && (
+                      <div style={{ marginTop: '8px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          onClick={() => updateAdminIpWhitelistRequestStatus(item, 'approved')}
+                          disabled={savingAdminIpRequestId === item.id}
+                          style={{ border: '1px solid #86efac', background: '#f0fdf4', color: '#166534', borderRadius: '6px', padding: '6px 8px', cursor: savingAdminIpRequestId === item.id ? 'not-allowed' : 'pointer', fontWeight: 700 }}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateAdminIpWhitelistRequestStatus(item, 'rejected')}
+                          disabled={savingAdminIpRequestId === item.id}
+                          style={{ border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', borderRadius: '6px', padding: '6px 8px', cursor: savingAdminIpRequestId === item.id ? 'not-allowed' : 'pointer', fontWeight: 700 }}
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {adminIpWhitelistRequests.length === 0 && <div style={{ color: '#6b7280' }}>No IP whitelist requests found.</div>}
+              </div>
+            )}
+          </div>
+
+          <div style={{ gridColumn: '1 / -1', background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px' }}>
             <h3 style={{ marginTop: 0, marginBottom: '10px' }}>Selected User Details</h3>
             {selectedUserDetails && (
               <div style={{ marginBottom: '10px', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
@@ -1836,6 +2086,26 @@ export default function EmailValidation() {
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Email:</strong> {selectedUserDetails.email}</div>
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Unified Wallet Credits (SMS + Email):</strong> {selectedUserDetails.wallet_balance || selectedUserDetails.email_validation_balance || '0'}</div>
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>API Keys:</strong> {selectedUserDetails.api_key_count || 0}</div>
+
+                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: '13px', color: '#1f2937', fontWeight: 700, marginBottom: '6px' }}>IP Whitelisting for Selected User</div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <input
+                      type="text"
+                      value={selectedUserIpWhitelistDraft}
+                      onChange={(e) => setSelectedUserIpWhitelistDraft(e.target.value)}
+                      placeholder="Enter IP to whitelist for this user"
+                      style={{ width: '240px', padding: '8px', borderRadius: '6px', border: '1px solid #d1d5db' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={assignSelectedUserIpWhitelist}
+                      style={{ padding: '8px 10px', border: 'none', borderRadius: '6px', background: '#16a34a', color: '#fff', fontWeight: 700, cursor: 'pointer' }}
+                    >
+                      Whitelist IP
+                    </button>
+                  </div>
+                </div>
 
                 <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   <input

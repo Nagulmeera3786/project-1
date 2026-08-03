@@ -17,6 +17,7 @@ from .models import (
     UserAPIKey,
     EmailValidationHistory,
     SenderIdRequest,
+    EmailValidationIPWhitelistRequest,
     Employee,
 )
 from .utils import calculate_sms_segments
@@ -631,6 +632,81 @@ class SenderIdRequestAdminSerializer(_SenderIdRequestSerializerBase):
             'destination_country', 'primary_use_case', 'company_name', 'industry_sector_type',
             'company_website', 'message_content', 'company_documentation', 'company_documentation_url',
             'status_label', 'created_at', 'updated_at',
+        ]
+
+
+class EmailValidationIPWhitelistRequestSerializer(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = EmailValidationIPWhitelistRequest
+        fields = [
+            'id',
+            'user',
+            'user_email',
+            'requested_ip',
+            'request_note',
+            'status',
+            'status_label',
+            'admin_notes',
+            'reviewed_by',
+            'reviewed_at',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'user',
+            'user_email',
+            'status',
+            'status_label',
+            'admin_notes',
+            'reviewed_by',
+            'reviewed_at',
+            'created_at',
+            'updated_at',
+        ]
+
+    def create(self, validated_data):
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class EmailValidationIPWhitelistRequestAdminSerializer(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    reviewed_by_email = serializers.CharField(source='reviewed_by.email', read_only=True)
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = EmailValidationIPWhitelistRequest
+        fields = [
+            'id',
+            'user',
+            'user_email',
+            'requested_ip',
+            'request_note',
+            'status',
+            'status_label',
+            'admin_notes',
+            'reviewed_by',
+            'reviewed_by_email',
+            'reviewed_at',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'user',
+            'user_email',
+            'requested_ip',
+            'request_note',
+            'status_label',
+            'reviewed_by',
+            'reviewed_by_email',
+            'reviewed_at',
+            'created_at',
+            'updated_at',
         ]
 
 

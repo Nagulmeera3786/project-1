@@ -401,6 +401,39 @@ class EmailValidationHistory(models.Model):
         return f"{self.user.email} validated {self.email_count} email(s) via {self.source}"
 
 
+class EmailValidationIPWhitelistRequest(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_APPROVED, 'Approved'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='ip_whitelist_requests')
+    requested_ip = models.GenericIPAddressField()
+    request_note = models.CharField(max_length=500, blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    admin_notes = models.CharField(max_length=500, blank=True, default='')
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_ip_whitelist_requests',
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user.email} requested {self.requested_ip} ({self.status})"
+
+
 class Employee(models.Model):
     """Employee profile linked to a User account with dual-OTP signup."""
     STATUS_PENDING = 'pending'
