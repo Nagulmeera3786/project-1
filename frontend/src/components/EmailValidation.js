@@ -138,6 +138,8 @@ export default function EmailValidation() {
     value: '0',
     description: '',
     provider_mode: 'own_system',
+    ip_whitelist_text: '',
+    ip_whitelist_user_email: '',
   });
   const [validationProviderMode, setValidationProviderMode] = useState('own_system');
 
@@ -232,6 +234,8 @@ export default function EmailValidation() {
         value: String(creditRes.data?.value ?? '0'),
         description: String(creditRes.data?.description ?? ''),
         provider_mode: String(creditRes.data?.provider_mode ?? 'own_system'),
+        ip_whitelist_text: String(creditRes.data?.ip_whitelist_text ?? ''),
+        ip_whitelist_user_email: String(creditRes.data?.ip_whitelist_user_email ?? ''),
       });
       setAdminUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
     } catch (err) {
@@ -946,6 +950,8 @@ export default function EmailValidation() {
         value: creditSetting.value,
         description: creditSetting.description,
         provider_mode: creditSetting.provider_mode,
+        ip_whitelist_text: creditSetting.ip_whitelist_text,
+        ip_whitelist_user_email: creditSetting.ip_whitelist_user_email,
       });
       setValidationProviderMode(String(creditSetting.provider_mode || 'own_system').toLowerCase());
       fetchAdminData();
@@ -1719,10 +1725,10 @@ export default function EmailValidation() {
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px' }}>
             <h3 style={{ marginTop: 0, marginBottom: '10px' }}>API Auth Requirements</h3>
             <ul style={{ margin: 0, paddingLeft: '18px', color: '#374151', lineHeight: 1.7 }}>
-              <li>Send `api_key`, `user_id`, and `password` in request body or `X-API-Key` header.</li>
+              <li>Use either `X-API-Key` / `api_key`, or call from an admin-whitelisted IP address.</li>
               <li>Use endpoint: `/api/auth/email-validation/api/validate/`</li>
-              <li>Supports `email`, `emails`, or `source_file` (multipart).</li>
-              <li>Returns only the compact Bhisha result fields for each email, plus request metadata.</li>
+              <li>Supports only one `email` per API validate call.</li>
+              <li>DLR report includes mode (`API Key mode` or `IP mode`) and the requested mail id.</li>
             </ul>
           </div>
         </div>
@@ -1773,6 +1779,22 @@ export default function EmailValidation() {
               type="text"
               value={creditSetting.description}
               onChange={(e) => setCreditSetting((prev) => ({ ...prev, description: e.target.value }))}
+              style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db', marginBottom: '10px' }}
+            />
+            <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>IP whitelist (one IP per line)</label>
+            <textarea
+              value={creditSetting.ip_whitelist_text}
+              onChange={(e) => setCreditSetting((prev) => ({ ...prev, ip_whitelist_text: e.target.value }))}
+              placeholder={'203.0.113.10\n198.51.100.22'}
+              rows={4}
+              style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db', marginBottom: '10px', resize: 'vertical' }}
+            />
+            <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>IP mode billing user email</label>
+            <input
+              type="email"
+              value={creditSetting.ip_whitelist_user_email}
+              onChange={(e) => setCreditSetting((prev) => ({ ...prev, ip_whitelist_user_email: e.target.value }))}
+              placeholder="primary@example.com"
               style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #d1d5db', marginBottom: '10px' }}
             />
             <button onClick={saveCreditSetting} style={{ padding: '10px 12px', borderRadius: '8px', border: 'none', background: '#2563eb', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>

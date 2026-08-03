@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient, APITestCase
-from accounts.models import FreeTrialVerifiedNumber, SMSMessage, UserWallet, Employee
+from accounts.models import FreeTrialVerifiedNumber, SMSMessage, UserWallet, Employee, PlatformSetting
 
 
 User = get_user_model()
@@ -721,7 +721,7 @@ class EmailValidationMediatorTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('request_id', response.data)
-        self.assertEqual(response.data.get('validation_status'), 'invalid')
+        self.assertEqual(response.data.get('status'), 'Invalid')
         self.assertNotIn('results', response.data)
         self.assertNotIn('history', response.data)
         self.assertNotIn('dlr_report', response.data)
@@ -729,6 +729,114 @@ class EmailValidationMediatorTests(TestCase):
         history = self.normal_user.email_validations.latest('created_at')
         self.assertEqual(history.source, 'api')
         self.assertEqual(history.api_key_id, api_key.id)
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
+    @patch('accounts.views._validate_email_list_with_verifalia')
+    @patch('accounts.views._get_email_validation_cost_per_request', return_value=Decimal('1.0000'))
+    def test_api_email_validation_accepts_whitelisted_ip_without_api_key_and_sets_ip_mode(self, _mock_cost, mock_validate_list):
+        from accounts.models import EmailValidationHistory
+
+        wallet = UserWallet.objects.get(user=self.normal_user)
+        wallet.balance = Decimal('2.0000')
+        wallet.email_validation_balance = Decimal('2.0000')
+        wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
+
+        PlatformSetting.objects.update_or_create(
+            key='email_validation_ip_whitelist',
+            defaults={'value': '203.0.113.10', 'description': 'Test IP whitelist'},
+        )
+        PlatformSetting.objects.update_or_create(
+            key='email_validation_ip_whitelist_user_email',
+            defaults={'value': self.normal_user.email, 'description': 'Billing user for IP mode'},
+        )
+
+        mock_validate_list.return_value = [
+            {
+                'email': 'trusted@example.com',
+                'validMailbox': True,
+                'validSyntax': True,
+                'catchAll': False,
+                'didYouMean': 'trusted@example.com',
+                'disposable': False,
+                'roleBased': False,
+                'risky': False,
+                'risk': 'low',
+                'providerMessageId': 'provider-job-ip-1',
+                'summary': 'ignored',
+                'report': 'ignored',
+                'status': 'Valid email',
+                'statusCode': 'Success',
+                'classification': 'Deliverable',
+                'failure_reason': '',
+            }
+        ]
+
+        response = self.client.post(
+            '/api/auth/email-validation/api/validate/',
+            {
+                'email': 'trusted@example.com',
+            },
+            format='json',
+            REMOTE_ADDR='203.0.113.10',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('request_id', response.data)
+        self.assertEqual(response.data.get('email'), 'trusted@example.com')
+
+        history = EmailValidationHistory.objects.get(request_id=response.data['request_id'])
+        self.assertEqual(history.source, 'api')
+        self.assertIsNone(history.api_key)
+        self.assertEqual(str(history.results_summary.get('request_mode') or ''), 'ip')
+        self.assertEqual(str(history.results_summary.get('auth_client_ip') or ''), '203.0.113.10')
+
+        status_response = self.client.post(
+            '/api/auth/email-validation/api/status/',
+            {
+                'request_id': response.data['request_id'],
+            },
+            format='json',
+            REMOTE_ADDR='203.0.113.10',
+        )
+        self.assertEqual(status_response.status_code, 200)
+
+        control_response = self.client.post(
+            '/api/auth/email-validation/api/control/',
+            {
+                'request_id': response.data['request_id'],
+                'action': 'pause',
+            },
+            format='json',
+            REMOTE_ADDR='203.0.113.10',
+        )
+        self.assertEqual(control_response.status_code, 400)
+        self.assertIn('Cannot pause a finished request', str(control_response.data.get('detail') or ''))
+
+        dashboard_status = self.client.force_authenticate(user=self.normal_user)
+        _ = dashboard_status
+        detail_response = self.client.get(f"/api/auth/email-validation/history/{response.data['request_id']}/status/")
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(str(detail_response.data.get('dlr_report', {}).get('mode') or ''), 'IP mode')
+        self.assertEqual(str(detail_response.data.get('dlr_report', {}).get('mail_id') or ''), 'trusted@example.com')
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
+    def test_api_email_validation_rejects_request_without_api_key_when_ip_not_whitelisted(self):
+        PlatformSetting.objects.update_or_create(
+            key='email_validation_ip_whitelist',
+            defaults={'value': '198.51.100.5', 'description': 'Another IP'},
+        )
+
+        response = self.client.post(
+            '/api/auth/email-validation/api/validate/',
+            {
+                'email': 'blocked@example.com',
+            },
+            format='json',
+            REMOTE_ADDR='203.0.113.99',
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn('api_key is required unless caller IP is whitelisted', str(response.data.get('detail') or ''))
 
     def test_compact_result_prefers_verifalia_success_deliverable_over_conflicting_flags(self):
         from accounts.views import _build_bhisha_api_validation_result, _build_validation_result_from_verifalia

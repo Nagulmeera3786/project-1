@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COM
 from datetime import datetime, timezone as dt_timezone, timedelta
 from zoneinfo import ZoneInfo, available_timezones
 from urllib.parse import urlparse
+import ipaddress
 
 try:
     import dns.resolver
@@ -3063,22 +3064,86 @@ def _validate_email_list_with_verifalia(unique_emails):
     return _validate_email_list(unique_emails)
 
 
-def _authenticate_api_key_request(request):
+def _extract_client_ip(request):
+    forwarded_for = str(request.META.get('HTTP_X_FORWARDED_FOR') or '').strip()
+    if forwarded_for:
+        first_hop = forwarded_for.split(',')[0].strip()
+        if first_hop:
+            return first_hop
+    return str(request.META.get('REMOTE_ADDR') or '').strip()
+
+
+def _parse_ip_whitelist(raw_value):
+    if raw_value is None:
+        return []
+
+    if isinstance(raw_value, list):
+        candidates = [str(item or '').strip() for item in raw_value]
+    else:
+        candidates = re.split(r'[\n,;\s]+', str(raw_value or '').strip())
+
+    normalized = []
+    seen = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            normalized_ip = str(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+        if normalized_ip in seen:
+            continue
+        seen.add(normalized_ip)
+        normalized.append(normalized_ip)
+    return normalized
+
+
+def _get_email_validation_ip_whitelist():
+    setting = PlatformSetting.objects.filter(key='email_validation_ip_whitelist').first()
+    configured = setting.value if setting else getattr(settings, 'EMAIL_VALIDATION_IP_WHITELIST', '')
+    return _parse_ip_whitelist(configured)
+
+
+def _get_email_validation_ip_whitelist_user_email():
+    setting = PlatformSetting.objects.filter(key='email_validation_ip_whitelist_user_email').first()
+    configured = setting.value if setting else getattr(settings, 'EMAIL_VALIDATION_IP_WHITELIST_USER_EMAIL', '')
+    fallback = getattr(settings, 'PRIMARY_ADMIN_EMAIL', '')
+    email = str(configured or fallback or '').strip().lower()
+    return email
+
+
+def _get_email_validation_ip_whitelist_user():
+    billing_email = _get_email_validation_ip_whitelist_user_email()
+    if not billing_email:
+        return None
+    return User.objects.filter(email__iexact=billing_email, is_active=True).first()
+
+
+def _authenticate_mail_validation_api_request(request):
+    client_ip = _extract_client_ip(request)
     api_key_value = str(request.headers.get('X-API-Key') or request.data.get('api_key') or '').strip()
-    if not api_key_value:
-        raise ValueError('api_key is required')
+    if api_key_value:
+        api_key = UserAPIKey.objects.select_related('user').filter(key=api_key_value, is_active=True).first()
+        if not api_key:
+            raise ValueError('Invalid or inactive API key')
 
-    api_key = UserAPIKey.objects.select_related('user').filter(key=api_key_value, is_active=True).first()
-    if not api_key:
-        raise ValueError('Invalid or inactive API key')
+        user = api_key.user
+        if not user or not user.is_active:
+            raise ValueError('API key owner is inactive')
 
-    user = api_key.user
-    if not user or not user.is_active:
-        raise ValueError('API key owner is inactive')
+        api_key.last_used_at = timezone.now()
+        api_key.save(update_fields=['last_used_at'])
+        return user, api_key, 'api_key', client_ip
 
-    api_key.last_used_at = timezone.now()
-    api_key.save(update_fields=['last_used_at'])
-    return user, api_key
+    normalized_ip = str(client_ip or '').strip()
+    whitelist = _get_email_validation_ip_whitelist()
+    if normalized_ip and normalized_ip in whitelist:
+        user = _get_email_validation_ip_whitelist_user()
+        if not user:
+            raise ValueError('IP mode is enabled, but no active billing user is configured.')
+        return user, None, 'ip', normalized_ip
+
+    raise ValueError('api_key is required unless caller IP is whitelisted')
 
 
 def _collect_validation_emails(request, enforce_request_limit=True):
@@ -3318,6 +3383,20 @@ def _build_email_validation_dlr_report(*, provider_mode, results, history=None):
         'provider_mode': normalized_mode,
         'provider_mode_label': _normalize_provider_mode_label(normalized_mode),
     }
+
+    history_summary = _get_history_summary(history) if history else {}
+    request_mode = str(history_summary.get('request_mode') or 'api_key').strip().lower()
+    if request_mode not in {'api_key', 'ip'}:
+        request_mode = 'api_key'
+    report['request_mode'] = request_mode
+    report['mode'] = 'IP mode' if request_mode == 'ip' else 'API Key mode'
+
+    requested_mail_id = ''
+    if isinstance(history_summary.get('requested_mail_id'), str):
+        requested_mail_id = str(history_summary.get('requested_mail_id') or '').strip().lower()
+    if not requested_mail_id and history and isinstance(history.emails_requested, list) and history.emails_requested:
+        requested_mail_id = str(history.emails_requested[0] or '').strip().lower()
+    report['mail_id'] = requested_mail_id
 
     rows = results if isinstance(results, list) else []
     if normalized_mode == 'own_system':
@@ -6260,7 +6339,7 @@ class APIEmailValidationView(generics.GenericAPIView):
 
         provider_mode = _get_email_validation_provider_mode()
         try:
-            user, api_key = _authenticate_api_key_request(request)
+            user, api_key, request_mode, auth_client_ip = _authenticate_mail_validation_api_request(request)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -6293,6 +6372,10 @@ class APIEmailValidationView(generics.GenericAPIView):
             results_summary={
                 'provider_mode': provider_mode,
                 'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+                'request_mode': request_mode,
+                'request_mode_label': 'IP mode' if request_mode == 'ip' else 'API Key mode',
+                'auth_client_ip': str(auth_client_ip or '').strip(),
+                'requested_mail_id': unique_emails[0] if unique_emails else '',
                 'safe_count': 0,
                 'unsafe_count': 0,
                 'provider_message_id': '',
@@ -6328,6 +6411,10 @@ class APIEmailValidationView(generics.GenericAPIView):
         history.results_summary = {
             'provider_mode': provider_mode,
             'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+            'request_mode': request_mode,
+            'request_mode_label': 'IP mode' if request_mode == 'ip' else 'API Key mode',
+            'auth_client_ip': str(auth_client_ip or '').strip(),
+            'requested_mail_id': unique_emails[0] if unique_emails else '',
             'safe_count': safe_count,
             'unsafe_count': unsafe_count,
             'provider_message_id': provider_request_ids[0] if provider_request_ids else '',
@@ -6552,7 +6639,7 @@ class APIEmailValidationStatusView(generics.GenericAPIView):
 
     def post(self, request):
         try:
-            user, _api_key = _authenticate_api_key_request(request)
+            user, _api_key, _request_mode, _auth_client_ip = _authenticate_mail_validation_api_request(request)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -6573,7 +6660,7 @@ class APIEmailValidationControlView(generics.GenericAPIView):
 
     def post(self, request):
         try:
-            user, _api_key = _authenticate_api_key_request(request)
+            user, _api_key, _request_mode, _auth_client_ip = _authenticate_mail_validation_api_request(request)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -6719,12 +6806,26 @@ class AdminCreditSettingsView(generics.GenericAPIView):
             key='email_validation_provider_mode',
             defaults={'value': 'own_system', 'description': 'Provider used for email validation: own_system or zerobounce'},
         )
+        ip_whitelist_setting, _ = PlatformSetting.objects.get_or_create(
+            key='email_validation_ip_whitelist',
+            defaults={'value': '', 'description': 'Comma or newline separated whitelisted client IPs for API email validation without API key'},
+        )
+        ip_whitelist_user_setting, _ = PlatformSetting.objects.get_or_create(
+            key='email_validation_ip_whitelist_user_email',
+            defaults={'value': str(getattr(settings, 'PRIMARY_ADMIN_EMAIL', '') or '').strip().lower(), 'description': 'Active user email charged for IP mode validations'},
+        )
+        normalized_whitelist = _parse_ip_whitelist(ip_whitelist_setting.value)
         return Response(
             {
                 **PlatformSettingSerializer(setting).data,
                 'provider_mode': str(provider_setting.value or 'own_system').strip().lower(),
                 'provider_mode_description': provider_setting.description,
                 'provider_mode_options': ['own_system', 'zerobounce'],
+                'ip_whitelist': normalized_whitelist,
+                'ip_whitelist_text': '\n'.join(normalized_whitelist),
+                'ip_whitelist_description': ip_whitelist_setting.description,
+                'ip_whitelist_user_email': str(ip_whitelist_user_setting.value or '').strip().lower(),
+                'ip_whitelist_user_description': ip_whitelist_user_setting.description,
             }
         )
 
@@ -6766,13 +6867,75 @@ class AdminCreditSettingsView(generics.GenericAPIView):
                 provider_setting.description = str(request.data.get('provider_mode_description') or '').strip()
             provider_setting.save(update_fields=['value', 'description', 'updated_at'])
 
+        ip_whitelist_input = request.data.get('ip_whitelist', None)
+        if ip_whitelist_input is None:
+            ip_whitelist_input = request.data.get('ip_whitelist_text', None)
+
+        if ip_whitelist_input is not None:
+            if isinstance(ip_whitelist_input, list):
+                candidates = [str(item or '').strip() for item in ip_whitelist_input]
+            else:
+                candidates = re.split(r'[\n,;\s]+', str(ip_whitelist_input or '').strip())
+
+            normalized_whitelist = []
+            seen = set()
+            invalid_ips = []
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                try:
+                    normalized_ip = str(ipaddress.ip_address(candidate))
+                except ValueError:
+                    invalid_ips.append(candidate)
+                    continue
+                if normalized_ip in seen:
+                    continue
+                seen.add(normalized_ip)
+                normalized_whitelist.append(normalized_ip)
+
+            if invalid_ips:
+                invalid_list = ', '.join(invalid_ips)
+                return Response({'detail': f'Invalid IP address(es): {invalid_list}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            ip_whitelist_setting, _ = PlatformSetting.objects.get_or_create(
+                key='email_validation_ip_whitelist',
+                defaults={'value': '', 'description': 'Comma or newline separated whitelisted client IPs for API email validation without API key'},
+            )
+            ip_whitelist_setting.value = ','.join(normalized_whitelist)
+            if 'ip_whitelist_description' in request.data:
+                ip_whitelist_setting.description = str(request.data.get('ip_whitelist_description') or '').strip()
+            ip_whitelist_setting.save(update_fields=['value', 'description', 'updated_at'])
+
+        ip_whitelist_user_email = request.data.get('ip_whitelist_user_email')
+        if ip_whitelist_user_email is not None:
+            normalized_email = str(ip_whitelist_user_email or '').strip().lower()
+            if normalized_email and not User.objects.filter(email__iexact=normalized_email, is_active=True).exists():
+                return Response({'detail': 'ip_whitelist_user_email must belong to an active user'}, status=status.HTTP_400_BAD_REQUEST)
+
+            ip_whitelist_user_setting, _ = PlatformSetting.objects.get_or_create(
+                key='email_validation_ip_whitelist_user_email',
+                defaults={'value': normalized_email, 'description': 'Active user email charged for IP mode validations'},
+            )
+            ip_whitelist_user_setting.value = normalized_email
+            if 'ip_whitelist_user_description' in request.data:
+                ip_whitelist_user_setting.description = str(request.data.get('ip_whitelist_user_description') or '').strip()
+            ip_whitelist_user_setting.save(update_fields=['value', 'description', 'updated_at'])
+
         provider_mode_setting = PlatformSetting.objects.filter(key='email_validation_provider_mode').first()
+        ip_whitelist_setting = PlatformSetting.objects.filter(key='email_validation_ip_whitelist').first()
+        ip_whitelist_user_setting = PlatformSetting.objects.filter(key='email_validation_ip_whitelist_user_email').first()
+        normalized_whitelist = _parse_ip_whitelist(ip_whitelist_setting.value if ip_whitelist_setting else '')
         return Response(
             {
                 **PlatformSettingSerializer(setting).data,
                 'provider_mode': str((provider_mode_setting.value if provider_mode_setting else 'own_system') or 'own_system').strip().lower(),
                 'provider_mode_description': str(provider_mode_setting.description if provider_mode_setting else 'Provider used for email validation: own_system or zerobounce').strip(),
                 'provider_mode_options': ['own_system', 'zerobounce'],
+                'ip_whitelist': normalized_whitelist,
+                'ip_whitelist_text': '\n'.join(normalized_whitelist),
+                'ip_whitelist_description': str(ip_whitelist_setting.description if ip_whitelist_setting else 'Comma or newline separated whitelisted client IPs for API email validation without API key').strip(),
+                'ip_whitelist_user_email': str((ip_whitelist_user_setting.value if ip_whitelist_user_setting else '') or '').strip().lower(),
+                'ip_whitelist_user_description': str(ip_whitelist_user_setting.description if ip_whitelist_user_setting else 'Active user email charged for IP mode validations').strip(),
             }
         )
 

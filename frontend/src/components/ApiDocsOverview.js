@@ -169,10 +169,15 @@ print(res.status_code, res.json())`,
   },
 ];
 
-const mailValidationModes = ['single'];
+const mailValidationModes = ['api_key', 'ip_whitelist'];
+
+const mailModeLabels = {
+  api_key: 'API Key',
+  ip_whitelist: 'IP Whitelist',
+};
 
 const mailValidationSamples = {
-  single: {
+  api_key: {
     cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
   -H "X-API-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
@@ -219,12 +224,58 @@ var payload = new {
 
 var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", payload);`,
   },
+  ip_whitelist: {
+    cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "email": "user@example.com"
+  }'`,
+    JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    email: "user@example.com"
+  })
+});
+
+const data = await response.json();
+console.log(data); // { email, status, request_id }`,
+    Python: `import requests
+
+base_url = "${BASE_URL}"
+response = requests.post(
+    base_url + "${API_PREFIX}${MAIL_VALIDATE_PATH}",
+    json={
+      "email": "user@example.com"
+    },
+)
+
+print(response.json())`,
+    Java: `String payload = """
+{
+  \"email\": \"user@example.com\"
+}
+""";
+
+// Call from a whitelisted public IP configured by admin`,
+    'C#': `using var client = new HttpClient();
+client.BaseAddress = new Uri("${BASE_URL}");
+
+var payload = new {
+  email = "user@example.com"
+};
+
+var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", payload);`,
+  },
 };
 
 const mailTaskControlSample = `# Status
 POST ${BASE_URL}${API_PREFIX}${MAIL_STATUS_PATH}
-Headers:
+Headers (one of these modes):
   X-API-Key: <YOUR_API_KEY>
+  OR no API key when caller IP is whitelisted
 Body:
 {
   "request_id": "<REQUEST_ID>"
@@ -232,8 +283,9 @@ Body:
 
 # Control
 POST ${BASE_URL}${API_PREFIX}${MAIL_CONTROL_PATH}
-Headers:
+Headers (one of these modes):
   X-API-Key: <YOUR_API_KEY>
+  OR no API key when caller IP is whitelisted
 Body:
 {
   "request_id": "<REQUEST_ID>",
@@ -286,9 +338,9 @@ const sections = [
     title: 'Mail Validation',
     description: 'Validate single email requests and track request state with status/control APIs.',
     endpoints: [
-      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key only', description: 'Validate a single email and return email, status, and unique request_id.' },
-      { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key only', description: 'Get request status by request_id.' },
-      { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key only', description: 'Control a running request with start/pause/resume/stop/cancel.' },
+      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key or Whitelisted IP', description: 'Validate a single email and return email, status, and unique request_id.' },
+      { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key or Whitelisted IP', description: 'Get request status by request_id.' },
+      { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key or Whitelisted IP', description: 'Control a running request with start/pause/resume/stop/cancel.' },
     ],
   },
   {
@@ -328,7 +380,7 @@ export default function ApiDocsOverview() {
   const navigationItems = useMemo(() => sections.map((section) => ({ id: section.id, title: section.title })), []);
   const [activeLanguage, setActiveLanguage] = useState('cURL');
   const [activeMailLanguage, setActiveMailLanguage] = useState('Python');
-  const [activeMailMode, setActiveMailMode] = useState('single');
+  const [activeMailMode, setActiveMailMode] = useState('api_key');
 
   return (
     <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #F5F1FF 0%, #F0EFFE 100%)', padding: '24px' }}>
@@ -516,9 +568,9 @@ export default function ApiDocsOverview() {
             </section>
 
             <section style={cardStyle}>
-              <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#1A0E4E' }}>Mail Validation Examples (API Key Only)</h3>
+              <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#1A0E4E' }}>Mail Validation Examples (API Key or IP Whitelist)</h3>
               <p style={{ marginTop: 0, color: '#6B6B8A', lineHeight: 1.6 }}>
-                Use these request syntaxes for Bhisha mail validation API. Only the API key is required for auth.
+                Use API key mode or whitelisted IP mode. In IP mode, admin must configure allowed IPs and billing user in Admin Center.
               </p>
 
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
@@ -536,10 +588,9 @@ export default function ApiDocsOverview() {
                       fontSize: '12px',
                       fontWeight: 700,
                       cursor: 'pointer',
-                      textTransform: 'capitalize',
                     }}
                   >
-                    {mode}
+                    {mailModeLabels[mode] || mode}
                   </button>
                 ))}
               </div>
