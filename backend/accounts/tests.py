@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient, APITestCase
-from accounts.models import FreeTrialVerifiedNumber, SMSMessage, UserWallet, Employee, PlatformSetting
+from accounts.models import FreeTrialVerifiedNumber, SMSMessage, UserWallet, Employee, PlatformSetting, EmailValidationHistory
 
 
 User = get_user_model()
@@ -512,6 +512,33 @@ class EmailValidationMediatorTests(TestCase):
         UserWallet.objects.create(user=self.normal_user, balance=Decimal('0'), email_validation_balance=Decimal('2.0000'))
         UserWallet.objects.create(user=self.primary_admin, balance=Decimal('0'), email_validation_balance=Decimal('0'))
 
+    def test_email_validation_history_auto_assigns_unique_dlr_id_per_request(self):
+        first = EmailValidationHistory.objects.create(
+            user=self.normal_user,
+            request_id='req-1',
+            source=EmailValidationHistory.SOURCE_DASHBOARD,
+            status=EmailValidationHistory.STATUS_PENDING,
+            email_count=1,
+            emails_requested=['first@example.com'],
+            results_summary={},
+        )
+
+        second = EmailValidationHistory.objects.create(
+            user=self.normal_user,
+            request_id='req-2',
+            source=EmailValidationHistory.SOURCE_DASHBOARD,
+            status=EmailValidationHistory.STATUS_PENDING,
+            email_count=1,
+            emails_requested=['second@example.com'],
+            results_summary={},
+        )
+
+        self.assertTrue(bool(str(first.dlr_unique_id or '').strip()))
+        self.assertTrue(bool(str(second.dlr_unique_id or '').strip()))
+        self.assertEqual(len(first.dlr_unique_id), 8)
+        self.assertEqual(len(second.dlr_unique_id), 8)
+        self.assertNotEqual(first.dlr_unique_id, second.dlr_unique_id)
+
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
     @patch('accounts.views._validate_email_with_verifalia')
     @patch('accounts.views._get_email_validation_cost_per_request', return_value=Decimal('1.0000'))
@@ -575,6 +602,10 @@ class EmailValidationMediatorTests(TestCase):
         self.assertTrue(response.data.get('ready_to_start'))
         self.assertFalse(response.data.get('auto_started'))
         self.assertEqual(response.data.get('count'), 2)
+        request_items = response.data.get('request_items') or []
+        self.assertEqual(len(request_items), 2)
+        self.assertEqual(len({str(item.get('request_id') or '').strip() for item in request_items}), 2)
+        self.assertEqual(len({str(item.get('dlr_unique_id') or '').strip() for item in request_items}), 2)
         mock_start_worker.assert_not_called()
 
         request_id = str(response.data.get('request_id') or '')
@@ -584,6 +615,62 @@ class EmailValidationMediatorTests(TestCase):
         summary = history.results_summary or {}
         self.assertEqual(str(summary.get('control_state') or ''), 'paused')
         self.assertEqual(str(summary.get('processing_state') or ''), 'paused')
+        stored_request_items = summary.get('request_items') if isinstance(summary.get('request_items'), list) else []
+        self.assertEqual(len(stored_request_items), 2)
+
+    @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
+    @patch('accounts.views._validate_email_list')
+    @patch('accounts.views._get_email_validation_cost_per_request', return_value=Decimal('1.0000'))
+    @patch('accounts.views._get_email_validation_async_threshold', return_value=9999)
+    def test_bulk_validation_assigns_unique_request_and_dlr_ids_per_email(self, _mock_threshold, _mock_cost, mock_validate_list):
+        wallet = UserWallet.objects.get(user=self.normal_user)
+        wallet.balance = Decimal('50.0000')
+        wallet.email_validation_balance = Decimal('50.0000')
+        wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
+
+        mock_validate_list.return_value = [
+            {
+                'email': 'bulk1@example.com',
+                'validMailbox': True,
+                'validSyntax': True,
+                'catchAll': False,
+                'didYouMean': 'bulk1@example.com',
+                'disposable': False,
+                'roleBased': False,
+                'risk': 'low',
+            },
+            {
+                'email': 'bulk2@example.com',
+                'validMailbox': False,
+                'validSyntax': True,
+                'catchAll': False,
+                'didYouMean': 'bulk2@example.com',
+                'disposable': False,
+                'roleBased': False,
+                'risk': 'high',
+            },
+        ]
+
+        self.client.force_authenticate(user=self.normal_user)
+        response = self.client.post(
+            '/api/auth/email-validation/validate/',
+            {
+                'emails': ['bulk1@example.com', 'bulk2@example.com'],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result_rows = response.data.get('results') or []
+        self.assertEqual(len(result_rows), 2)
+
+        request_ids = [str(item.get('request_id') or '').strip() for item in result_rows]
+        dlr_unique_ids = [str(item.get('dlr_unique_id') or '').strip() for item in result_rows]
+
+        self.assertTrue(all(request_ids))
+        self.assertTrue(all(dlr_unique_ids))
+        self.assertEqual(len(set(request_ids)), 2)
+        self.assertEqual(len(set(dlr_unique_ids)), 2)
 
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
     @patch('accounts.views._get_verifalia_admin_credits', return_value=None)

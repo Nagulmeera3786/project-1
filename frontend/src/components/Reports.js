@@ -236,20 +236,47 @@ function flattenMailValidationRows(emailHistoryItems) {
     const baseRequestId = String(item?.request_id || '').trim() || 'mail-request';
     const dlrUniqueId = String(item?.dlr_report?.dlr_unique_id || item?.dlr_unique_id || '').trim();
     const requestedEmails = Array.isArray(item?.emails_requested) ? item.emails_requested : [];
+    const requestItems = Array.isArray(item?.results_summary?.request_items) ? item.results_summary.request_items : [];
     const resultRows = Array.isArray(item?.results_summary?.results) ? item.results_summary.results : [];
 
+    const requestItemsByEmail = requestItems.reduce((acc, entry) => {
+      const normalizedEmail = String(entry?.email || '').trim().toLowerCase();
+      if (!normalizedEmail) {
+        return acc;
+      }
+
+      if (!acc[normalizedEmail]) {
+        acc[normalizedEmail] = [];
+      }
+      acc[normalizedEmail].push(entry);
+      return acc;
+    }, {});
+
+    const shiftItemForEmail = (email, indexHint = 0) => {
+      const normalizedEmail = String(email || '').trim().toLowerCase();
+      if (normalizedEmail && Array.isArray(requestItemsByEmail[normalizedEmail]) && requestItemsByEmail[normalizedEmail].length > 0) {
+        return requestItemsByEmail[normalizedEmail].shift();
+      }
+      if (Array.isArray(requestItems) && requestItems[indexHint]) {
+        return requestItems[indexHint];
+      }
+      return null;
+    };
+
     if (resultRows.length === 0) {
-      requestedEmails.forEach((mail, idx) => {
+      const pendingRows = requestItems.length > 0 ? requestItems : requestedEmails.map((mail) => ({ email: mail }));
+      pendingRows.forEach((entry, idx) => {
+        const requestedMail = String(entry?.email || requestedEmails[idx] || '').trim().toLowerCase();
         const rowKey = `${baseRequestId}-${idx + 1}`;
         rows.push({
           row_key: rowKey,
-          request_id: baseRequestId,
-          dlr_unique_id: dlrUniqueId || '-',
+          request_id: String(entry?.request_id || '').trim() || baseRequestId,
+          dlr_unique_id: String(entry?.dlr_unique_id || '').trim() || dlrUniqueId || '-',
           created_at: item?.created_at,
           validation_timing: item?.completed_at || item?.created_at || null,
           validation_mode: String(item?.source || '').trim().toLowerCase() || '-',
           status: item?.status || '-',
-          requested_mail: mail || '-',
+          requested_mail: requestedMail || '-',
           is_valid: false,
         });
       });
@@ -257,17 +284,19 @@ function flattenMailValidationRows(emailHistoryItems) {
     }
 
     resultRows.forEach((result, idx) => {
+      const requestedMail = String(result?.email || requestedEmails[idx] || requestedEmails[0] || '').trim().toLowerCase();
+      const requestItem = shiftItemForEmail(requestedMail, idx);
       const rowKey = `${baseRequestId}-${idx + 1}`;
       const isValid = result?.validSyntax === true && result?.validMailbox === true;
       rows.push({
         row_key: rowKey,
-        request_id: baseRequestId,
-        dlr_unique_id: dlrUniqueId || '-',
+        request_id: String(result?.request_id || requestItem?.request_id || '').trim() || baseRequestId,
+        dlr_unique_id: String(result?.dlr_unique_id || requestItem?.dlr_unique_id || '').trim() || dlrUniqueId || '-',
         created_at: item?.created_at,
         validation_timing: item?.completed_at || item?.created_at || null,
         validation_mode: String(item?.source || '').trim().toLowerCase() || '-',
         status: item?.status || '-',
-        requested_mail: result?.email || requestedEmails[idx] || requestedEmails[0] || '-',
+        requested_mail: requestedMail || '-',
         is_valid: isValid,
       });
     });

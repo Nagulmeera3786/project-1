@@ -37,7 +37,7 @@ from urllib.parse import urlparse
 import ipaddress
 
 try:
-    import dns.resolver
+    import dns.resolver  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - optional import in dev
     dns = None
 from .serializers import (
@@ -2162,6 +2162,8 @@ def _to_client_validation_result(item):
     )
 
     return {
+        'request_id': str(item.get('request_id') or '').strip(),
+        'dlr_unique_id': str(item.get('dlr_unique_id') or '').strip(),
         'email': entered_email,
         'provider_mode': provider_mode,
         'provider_mode_label': provider_mode_label,
@@ -3004,6 +3006,98 @@ def _assign_email_validation_dlr_unique_id(history):
     return generated_id
 
 
+def _generate_unique_email_validation_result_ids(used_request_ids=None, used_dlr_ids=None):
+    used_request_ids = used_request_ids or set()
+    used_dlr_ids = used_dlr_ids or set()
+
+    while True:
+        request_id = _generate_unique_uuid(EmailValidationHistory, 'request_id')
+        if request_id in used_request_ids:
+            continue
+
+        dlr_unique_id = _generate_unique_dlr_id(EmailValidationHistory, 'dlr_unique_id', length=8)
+        if dlr_unique_id in used_dlr_ids:
+            continue
+
+        used_request_ids.add(request_id)
+        used_dlr_ids.add(dlr_unique_id)
+        return request_id, dlr_unique_id
+
+
+def _build_email_validation_request_items(email_list):
+    used_request_ids = set()
+    used_dlr_ids = set()
+    request_items = []
+
+    for raw_email in (email_list or []):
+        normalized_email = str(raw_email or '').strip().lower()
+        request_id, dlr_unique_id = _generate_unique_email_validation_result_ids(
+            used_request_ids=used_request_ids,
+            used_dlr_ids=used_dlr_ids,
+        )
+        request_items.append(
+            {
+                'email': normalized_email,
+                'request_id': request_id,
+                'dlr_unique_id': dlr_unique_id,
+            }
+        )
+
+    return request_items
+
+
+def _attach_per_email_unique_ids(result_rows, request_items):
+    rows = result_rows if isinstance(result_rows, list) else []
+    item_rows = request_items if isinstance(request_items, list) else []
+
+    used_request_ids = set()
+    used_dlr_ids = set()
+
+    # Build queue-style lookup by email to support deterministic assignment.
+    request_item_lookup = {}
+    for item in item_rows:
+        normalized_email = str(item.get('email') or '').strip().lower()
+        request_item_lookup.setdefault(normalized_email, []).append(item)
+
+    for row in rows:
+        normalized_email = str(row.get('email') or '').strip().lower()
+        matched_item = None
+        if request_item_lookup.get(normalized_email):
+            matched_item = request_item_lookup[normalized_email].pop(0)
+
+        request_id = str(row.get('request_id') or '').strip()
+        dlr_unique_id = str(row.get('dlr_unique_id') or '').strip()
+
+        if matched_item:
+            if not request_id:
+                request_id = str(matched_item.get('request_id') or '').strip()
+            if not dlr_unique_id:
+                dlr_unique_id = str(matched_item.get('dlr_unique_id') or '').strip()
+
+        if (not request_id) or (request_id in used_request_ids):
+            request_id, _generated_dlr = _generate_unique_email_validation_result_ids(
+                used_request_ids=used_request_ids,
+                used_dlr_ids=used_dlr_ids,
+            )
+            if not dlr_unique_id or dlr_unique_id in used_dlr_ids:
+                dlr_unique_id = _generated_dlr
+
+        if (not dlr_unique_id) or (dlr_unique_id in used_dlr_ids):
+            _generated_request, dlr_unique_id = _generate_unique_email_validation_result_ids(
+                used_request_ids=used_request_ids,
+                used_dlr_ids=used_dlr_ids,
+            )
+            if not request_id or request_id in used_request_ids:
+                request_id = _generated_request
+
+        used_request_ids.add(request_id)
+        used_dlr_ids.add(dlr_unique_id)
+        row['request_id'] = request_id
+        row['dlr_unique_id'] = dlr_unique_id
+
+    return rows
+
+
 def _get_sms_cost_per_request():
     setting = PlatformSetting.objects.filter(key='sms_cost_per_request').first()
     if not setting:
@@ -3052,6 +3146,8 @@ def _build_simple_validation_result(item):
     normalized_risk = 'high' if risk_high else 'low'
 
     return {
+        'request_id': str(item.get('request_id') or '').strip(),
+        'dlr_unique_id': str(item.get('dlr_unique_id') or '').strip(),
         'email': str(item.get('email') or '').strip().lower(),
         'valid_syntax': bool(syntax_ok),
         'valid_mailbox': bool(valid_mailbox),
@@ -3414,19 +3510,28 @@ def _extract_api_result_profiles(result_items):
 def _build_concise_api_validation_response(result_items, request_id=''):
     validation_status = 'Invalid'
     requested_email = ''
+    resolved_request_id = str(request_id or '').strip()
+    resolved_dlr_unique_id = ''
 
     for item in result_items or []:
         if not isinstance(item, dict):
             continue
 
         requested_email = str(item.get('email') or '').strip().lower()
+        per_email_request_id = str(item.get('request_id') or '').strip()
+        per_email_dlr_unique_id = str(item.get('dlr_unique_id') or '').strip()
+        if per_email_request_id:
+            resolved_request_id = per_email_request_id
+        if per_email_dlr_unique_id:
+            resolved_dlr_unique_id = per_email_dlr_unique_id
         valid_syntax = bool(item.get('validSyntax'))
         valid_mailbox = bool(item.get('validMailbox'))
         validation_status = 'Valid' if bool(valid_syntax and valid_mailbox) else 'Invalid'
         break
 
     return {
-        'request_id': str(request_id or '').strip(),
+        'request_id': resolved_request_id,
+        'dlr_unique_id': resolved_dlr_unique_id,
         'email': requested_email,
         'status': validation_status,
     }
@@ -3487,6 +3592,8 @@ def _build_email_validation_dlr_report(*, provider_mode, results, history=None, 
         }
         report['results'] = [
             {
+                'request_id': str(item.get('request_id') or '').strip(),
+                'dlr_unique_id': str(item.get('dlr_unique_id') or '').strip(),
                 'email': str(item.get('email') or '').strip().lower(),
                 'status': str(item.get('provider_result_status') or 'Invalid').strip() or 'Invalid',
             }
@@ -3505,6 +3612,8 @@ def _build_email_validation_dlr_report(*, provider_mode, results, history=None, 
 
         response_rows.append(
             {
+                'request_id': str(item.get('request_id') or '').strip(),
+                'dlr_unique_id': str(item.get('dlr_unique_id') or '').strip(),
                 'email': str(item.get('email') or '').strip().lower(),
                 'status': str(item.get('status') or '').strip(),
                 'status_code': str(item.get('statusCode') or item.get('status_code') or '').strip(),
@@ -3528,9 +3637,13 @@ def _build_concise_api_status_response(history):
     summary = _get_history_summary(history)
 
     requested_email = ''
+    resolved_request_id = str(history.request_id or '').strip()
+    resolved_dlr_unique_id = str(history.dlr_unique_id or '').strip()
     stored_results = summary.get('results') if isinstance(summary.get('results'), list) else []
     if stored_results:
         requested_email = str(stored_results[0].get('email') or '').strip().lower()
+        resolved_request_id = str(stored_results[0].get('request_id') or '').strip() or resolved_request_id
+        resolved_dlr_unique_id = str(stored_results[0].get('dlr_unique_id') or '').strip() or resolved_dlr_unique_id
     elif isinstance(history.emails_requested, list) and history.emails_requested:
         requested_email = str(history.emails_requested[0] or '').strip().lower()
 
@@ -3539,13 +3652,15 @@ def _build_concise_api_status_response(history):
 
     if processing_state in {'failed', 'cancelled', 'stopped'}:
         return {
-            'request_id': str(history.request_id or '').strip(),
+            'request_id': resolved_request_id,
+            'dlr_unique_id': resolved_dlr_unique_id,
             'email': requested_email,
             'status': 'Invalid',
         }
 
     return {
-        'request_id': str(history.request_id or '').strip(),
+        'request_id': resolved_request_id,
+        'dlr_unique_id': resolved_dlr_unique_id,
         'email': requested_email,
         'status': 'Invalid',
     }
@@ -3723,6 +3838,9 @@ def _process_email_validation_history_job(history_id):
         total_count = len(requested_emails)
         started_at = timezone.now()
         summary = _get_history_summary(history)
+        request_items = summary.get('request_items') if isinstance(summary.get('request_items'), list) else _build_email_validation_request_items(requested_emails)
+        if not summary.get('request_items'):
+            summary['request_items'] = request_items
         summary.setdefault('started_at', started_at.isoformat())
         summary.setdefault('processed_count', 0)
         summary.setdefault('total_count', total_count)
@@ -3801,6 +3919,8 @@ def _process_email_validation_history_job(history_id):
                 provider_id = str(client_item.get('providerMessageId') or '').strip()
                 if provider_id:
                     provider_request_ids.append(provider_id)
+
+            _attach_per_email_unique_ids(collected_results, request_items)
 
             processed_count = min(total_count, processed_count + len(current_batch))
             should_publish_progress = processed_count >= total_count or (batch_number % progress_update_interval == 0)
@@ -5897,6 +6017,8 @@ class EmailValidationView(generics.GenericAPIView):
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        request_items = _build_email_validation_request_items(unique_emails)
+
         try:
             cost_deducted, remaining_balance = _deduct_email_validation_credits(request.user, len(unique_emails))
         except ValueError as exc:
@@ -5914,6 +6036,7 @@ class EmailValidationView(generics.GenericAPIView):
                 results_summary={
                     'provider_mode': provider_mode,
                     'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+                    'request_items': request_items,
                     'safe_count': 0,
                     'unsafe_count': 0,
                     'provider_message_id': '',
@@ -5953,6 +6076,7 @@ class EmailValidationView(generics.GenericAPIView):
                     },
                     'results': [],
                     'simple_results': [],
+                    'request_items': request_items,
                     'history': history_payload,
                     'dlr_report': _build_email_validation_dlr_report(
                         provider_mode=provider_mode,
@@ -5975,6 +6099,7 @@ class EmailValidationView(generics.GenericAPIView):
                 results_summary={
                     'provider_mode': provider_mode,
                     'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+                    'request_items': request_items,
                     'safe_count': 0,
                     'unsafe_count': 0,
                     'provider_message_id': '',
@@ -6014,6 +6139,7 @@ class EmailValidationView(generics.GenericAPIView):
                     },
                     'results': [],
                     'simple_results': [],
+                    'request_items': request_items,
                     'history': history_payload,
                     'dlr_report': _build_email_validation_dlr_report(
                         provider_mode=provider_mode,
@@ -6025,6 +6151,7 @@ class EmailValidationView(generics.GenericAPIView):
             )
 
         results = _validate_email_list(unique_emails, provider_mode=provider_mode)
+        results = _attach_per_email_unique_ids(results, request_items)
         client_results = [_to_client_validation_result(item) for item in results]
         safe_count = sum(1 for item in client_results if _is_safe_client_validation_result(item))
         unsafe_count = len(client_results) - safe_count
@@ -6043,6 +6170,7 @@ class EmailValidationView(generics.GenericAPIView):
             results_summary={
                 'provider_mode': provider_mode,
                 'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+                'request_items': request_items,
                 'safe_count': safe_count,
                 'unsafe_count': unsafe_count,
                 'provider_message_id': provider_request_ids[0] if provider_request_ids else '',
@@ -6070,6 +6198,7 @@ class EmailValidationView(generics.GenericAPIView):
                     'safe_to_send_yes': safe_count,
                     'safe_to_send_no': unsafe_count,
                 },
+                'request_items': request_items,
                 'simple_results': simple_results,
                 'results': client_results,
                 'history': history_payload,
@@ -6432,6 +6561,8 @@ class APIEmailValidationView(generics.GenericAPIView):
         if len(unique_emails) != 1:
             return Response({'detail': 'Exactly one email is allowed per API validation request.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        request_items = _build_email_validation_request_items(unique_emails)
+
         try:
             cost_deducted, remaining_balance = _deduct_email_validation_credits(user, len(unique_emails))
         except ValueError as exc:
@@ -6447,6 +6578,7 @@ class APIEmailValidationView(generics.GenericAPIView):
             results_summary={
                 'provider_mode': provider_mode,
                 'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+                'request_items': request_items,
                 'request_mode': request_mode,
                 'request_mode_label': 'IP mode' if request_mode == 'ip' else 'API Key mode',
                 'auth_client_ip': str(auth_client_ip or '').strip(),
@@ -6474,6 +6606,7 @@ class APIEmailValidationView(generics.GenericAPIView):
         _assign_email_validation_dlr_unique_id(history)
 
         results = _validate_email_list(unique_emails, provider_mode=provider_mode)
+        results = _attach_per_email_unique_ids(results, request_items)
         client_results = [_to_client_validation_result(item) for item in results]
         safe_count = sum(1 for item in client_results if _is_safe_client_validation_result(item))
         unsafe_count = len(client_results) - safe_count
@@ -6487,6 +6620,7 @@ class APIEmailValidationView(generics.GenericAPIView):
         history.results_summary = {
             'provider_mode': provider_mode,
             'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+            'request_items': request_items,
             'request_mode': request_mode,
             'request_mode_label': 'IP mode' if request_mode == 'ip' else 'API Key mode',
             'auth_client_ip': str(auth_client_ip or '').strip(),
@@ -7495,6 +7629,7 @@ class RequestStatusSearchView(generics.GenericAPIView):
     def _build_validation_status_rows(self, history):
         summary = history.results_summary if isinstance(history.results_summary, dict) else {}
         result_rows = summary.get('results') if isinstance(summary.get('results'), list) else []
+        request_items = summary.get('request_items') if isinstance(summary.get('request_items'), list) else []
         requested_emails = history.emails_requested if isinstance(history.emails_requested, list) else []
 
         normalized_requested = [str(mail or '').strip().lower() for mail in requested_emails if str(mail or '').strip()]
@@ -7508,11 +7643,27 @@ class RequestStatusSearchView(generics.GenericAPIView):
 
                 rows.append(
                     {
-                        'request_id': str(history.request_id or '').strip(),
-                        'dlr_unique_id': str(history.dlr_unique_id or '').strip(),
+                        'request_id': str(result.get('request_id') or history.request_id or '').strip(),
+                        'dlr_unique_id': str(result.get('dlr_unique_id') or history.dlr_unique_id or '').strip(),
                         'entered_mail': entered_mail,
                         'status': str(history.status or '').strip().lower() or 'pending',
                         'valid': bool(result.get('validSyntax') is True and result.get('validMailbox') is True),
+                        'created_at': history.created_at,
+                        'source': str(history.source or '').strip().lower() or 'dashboard',
+                    }
+                )
+            return rows
+
+        if request_items:
+            for item in request_items:
+                mail = str(item.get('email') or '').strip().lower()
+                rows.append(
+                    {
+                        'request_id': str(item.get('request_id') or history.request_id or '').strip(),
+                        'dlr_unique_id': str(item.get('dlr_unique_id') or history.dlr_unique_id or '').strip(),
+                        'entered_mail': mail,
+                        'status': str(history.status or '').strip().lower() or 'pending',
+                        'valid': None,
                         'created_at': history.created_at,
                         'source': str(history.source or '').strip().lower() or 'dashboard',
                     }

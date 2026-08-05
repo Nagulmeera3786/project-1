@@ -1,9 +1,27 @@
 import secrets
 import uuid
+import string
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.db import IntegrityError
 from django.utils import timezone
 from django.conf import settings
+
+
+def generate_email_validation_dlr_unique_id():
+    """Generate a collision-safe 8-char uppercase alphanumeric DLR ID."""
+    from django.apps import apps
+
+    history_model = apps.get_model('accounts', 'EmailValidationHistory')
+    alphabet = string.ascii_uppercase + string.digits
+
+    for _ in range(50):
+        candidate = ''.join(secrets.choice(alphabet) for _ in range(8))
+        if not history_model.objects.filter(dlr_unique_id=candidate).exists():
+            return candidate
+
+    # Fallback should be practically unreachable, but avoids empty IDs.
+    return uuid.uuid4().hex[:8].upper()
 
 
 class User(AbstractUser):
@@ -381,7 +399,7 @@ class EmailValidationHistory(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='email_validations')
     api_key = models.ForeignKey(UserAPIKey, on_delete=models.SET_NULL, null=True, blank=True, related_name='validations')
     request_id = models.CharField(max_length=80, unique=True, blank=True, default='')
-    dlr_unique_id = models.CharField(max_length=8, unique=True, blank=True, default='')
+    dlr_unique_id = models.CharField(max_length=8, unique=True, blank=True, default=generate_email_validation_dlr_unique_id)
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_DASHBOARD)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     # email(s) requested
@@ -397,6 +415,20 @@ class EmailValidationHistory(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        if not str(self.dlr_unique_id or '').strip():
+            self.dlr_unique_id = generate_email_validation_dlr_unique_id()
+
+        for _ in range(5):
+            try:
+                return super().save(*args, **kwargs)
+            except IntegrityError as exc:
+                if 'dlr_unique_id' not in str(exc).lower():
+                    raise
+                self.dlr_unique_id = generate_email_validation_dlr_unique_id()
+
+        raise IntegrityError('Could not persist a unique DLR ID after retries')
 
     def __str__(self):
         return f"{self.user.email} validated {self.email_count} email(s) via {self.source}"
