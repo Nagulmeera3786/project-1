@@ -107,6 +107,10 @@ const isProductionBuild = process.env.NODE_ENV === 'production';
 const parsedTimeout = Number(process.env.REACT_APP_API_TIMEOUT_MS);
 const defaultTimeoutMs = isProductionBuild ? 60000 : 15000;
 const requestTimeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : defaultTimeoutMs;
+const parsedRetryCount = Number(process.env.REACT_APP_API_RETRY_COUNT);
+const parsedRetryDelayMs = Number(process.env.REACT_APP_API_RETRY_DELAY_MS);
+const maxTransientRetryCount = Number.isFinite(parsedRetryCount) && parsedRetryCount >= 0 ? parsedRetryCount : 2;
+const baseTransientRetryDelayMs = Number.isFinite(parsedRetryDelayMs) && parsedRetryDelayMs > 0 ? parsedRetryDelayMs : 700;
 const allowSameOriginFallbackForBhisha = isProductionBuild && isBhishaDomainBrowserHost;
 
 const resolvedBaseUrl = (() => {
@@ -235,6 +239,54 @@ const sanitizeErrorForUi = (error) => {
   }
 
   return error;
+};
+
+const waitFor = (ms) => new Promise((resolve) => {
+  setTimeout(resolve, ms);
+});
+
+const isTransientNetworkError = (error) => {
+  if (!error || error.response) {
+    return false;
+  }
+
+  const code = String(error.code || '').toUpperCase();
+  if (['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT'].includes(code)) {
+    return true;
+  }
+
+  const message = String(error.message || '').toLowerCase();
+  return /network|timeout|timed out|failed to fetch|connection/.test(message);
+};
+
+const shouldRetryTransientRequest = (error) => {
+  const requestConfig = error?.config;
+  if (!requestConfig || maxTransientRetryCount <= 0) {
+    return false;
+  }
+
+  if (!isTransientNetworkError(error)) {
+    return false;
+  }
+
+  const method = String(requestConfig.method || 'get').toLowerCase();
+  const safeMethod = ['get', 'head', 'options'].includes(method);
+  if (!safeMethod) {
+    return false;
+  }
+
+  const currentRetryCount = Number(requestConfig.__transientRetryCount || 0);
+  return currentRetryCount < maxTransientRetryCount;
+};
+
+const retryRequestAfterDelay = async (error) => {
+  const requestConfig = error.config;
+  const currentRetryCount = Number(requestConfig.__transientRetryCount || 0) + 1;
+  requestConfig.__transientRetryCount = currentRetryCount;
+
+  const delayMs = baseTransientRetryDelayMs * currentRetryCount;
+  await waitFor(delayMs);
+  return API(requestConfig);
 };
 
 const refreshClient = axios.create({ baseURL: resolvedBaseUrl });
@@ -366,6 +418,10 @@ API.interceptors.response.use(
       } finally {
         isRefreshing = false;
       }
+    }
+
+    if (shouldRetryTransientRequest(error)) {
+      return retryRequestAfterDelay(error);
     }
 
     return Promise.reject(sanitizeErrorForUi(error));

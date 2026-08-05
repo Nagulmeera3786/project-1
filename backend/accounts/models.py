@@ -381,6 +381,7 @@ class EmailValidationHistory(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='email_validations')
     api_key = models.ForeignKey(UserAPIKey, on_delete=models.SET_NULL, null=True, blank=True, related_name='validations')
     request_id = models.CharField(max_length=80, unique=True, blank=True, default='')
+    dlr_unique_id = models.CharField(max_length=8, unique=True, blank=True, default='')
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_DASHBOARD)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     # email(s) requested

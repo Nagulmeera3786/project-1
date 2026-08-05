@@ -1,31 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
-import Signup from './components/Signup';
-import VerifyOtp from './components/VerifyOtp';
-import Login from './components/Login';
-import ForgotPassword from './components/ForgotPassword';
-import ResetPassword from './components/ResetPassword';
-import UserProfile from './components/UserProfile';
-import AdminUsers from './components/AdminUsers';
-import MainPage from './components/MainPage';
-import ApiDocsOverview from './components/ApiDocsOverview';
-import TermsAndConditions from './components/TermsAndConditions';
-import PrivacyNotice from './components/PrivacyNotice';
-import TermsOfUse from './components/TermsOfUse';
-import BhishaForStartups from './components/BhishaForStartups';
-
-// SMS components
-import SMSSend from './components/SMSSend';
-import FreeTrialSMS from './components/FreeTrialSMS';
-import SMSHistory from './components/SMSHistory';
-import AdminSMSDashboard from './components/AdminSMSDashboard';
-import AdminSMSCredentials from './components/AdminSMSCredentials';
-import AdminNotifications from './components/AdminNotifications';
-import UserNotifications from './components/UserNotifications';
-import EmailValidation from './components/EmailValidation';
-import Reports from './components/Reports';
-import ContactSupportPage from './dashboard/ContactSupportPage';
-import SenderIdRequestPage from './dashboard/SenderIdRequestPage';
 import { FaChevronDown, FaSearch } from 'react-icons/fa';
 
 const landingMenus = [
@@ -89,11 +63,35 @@ const landingMenus = [
   },
 ];
 
-// dashboard components imported from the integrated Main_Panel
-import DashboardLayout from './dashboard/Layout';
 import RouteErrorBoundary from './components/RouteErrorBoundary';
 import API from './api';
 import './App.css';
+
+const Signup = lazy(() => import('./components/Signup'));
+const VerifyOtp = lazy(() => import('./components/VerifyOtp'));
+const Login = lazy(() => import('./components/Login'));
+const ForgotPassword = lazy(() => import('./components/ForgotPassword'));
+const ResetPassword = lazy(() => import('./components/ResetPassword'));
+const UserProfile = lazy(() => import('./components/UserProfile'));
+const AdminUsers = lazy(() => import('./components/AdminUsers'));
+const MainPage = lazy(() => import('./components/MainPage'));
+const ApiDocsOverview = lazy(() => import('./components/ApiDocsOverview'));
+const TermsAndConditions = lazy(() => import('./components/TermsAndConditions'));
+const PrivacyNotice = lazy(() => import('./components/PrivacyNotice'));
+const TermsOfUse = lazy(() => import('./components/TermsOfUse'));
+const BhishaForStartups = lazy(() => import('./components/BhishaForStartups'));
+const SMSSend = lazy(() => import('./components/SMSSend'));
+const FreeTrialSMS = lazy(() => import('./components/FreeTrialSMS'));
+const SMSHistory = lazy(() => import('./components/SMSHistory'));
+const AdminSMSDashboard = lazy(() => import('./components/AdminSMSDashboard'));
+const AdminSMSCredentials = lazy(() => import('./components/AdminSMSCredentials'));
+const AdminNotifications = lazy(() => import('./components/AdminNotifications'));
+const UserNotifications = lazy(() => import('./components/UserNotifications'));
+const EmailValidation = lazy(() => import('./components/EmailValidation'));
+const Reports = lazy(() => import('./components/Reports'));
+const ContactSupportPage = lazy(() => import('./dashboard/ContactSupportPage'));
+const SenderIdRequestPage = lazy(() => import('./dashboard/SenderIdRequestPage'));
+const DashboardLayout = lazy(() => import('./dashboard/Layout'));
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -126,9 +124,11 @@ function App() {
         return;
       }
 
+      // Render immediately for authenticated users and resolve role flags in background.
+      setLoading(false);
       setProfileLoading(true);
       try {
-        const response = await API.get('profile/');
+        const response = await API.get('profile/', { timeout: 10000 });
         if (mounted) {
           setIsAdmin(Boolean(
             response.data?.is_primary_admin ||
@@ -143,7 +143,6 @@ function App() {
       } finally {
         if (mounted) {
           setProfileLoading(false);
-          setLoading(false);
         }
       }
     };
@@ -174,7 +173,11 @@ function App() {
   const toggleMenu = (menuKey) => setOpenMenu((current) => (current === menuKey ? null : menuKey));
 
   const wrapModule = (moduleName, element) => (
-    <RouteErrorBoundary moduleName={moduleName}>{element}</RouteErrorBoundary>
+    <RouteErrorBoundary moduleName={moduleName}>
+      <Suspense fallback={<div style={{ padding: '20px' }}>Loading module...</div>}>
+        {element}
+      </Suspense>
+    </RouteErrorBoundary>
   );
 
   const privateRoute = (moduleName, element) =>

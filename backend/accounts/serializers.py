@@ -543,6 +543,7 @@ class EmailValidationHistorySerializer(serializers.ModelSerializer):
         summary = self._get_summary_dict(obj)
         return {
             'request_id': getattr(obj, 'request_id', ''),
+            'dlr_unique_id': getattr(obj, 'dlr_unique_id', ''),
             'provider_message_id': self.get_provider_message_id(obj),
             'status': status_value,
             'completed': status_value == 'completed',

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from '../api';
 import { FaHistory, FaArrowLeft, FaRedo } from 'react-icons/fa';
@@ -13,26 +13,50 @@ export default function SMSHistory() {
   const [filterTransport, setFilterTransport] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const navigate = useNavigate();
+  const isFetchingRef = useRef(false);
 
-  useEffect(() => {
-    fetchMessages();
-    // Auto-refresh every 10 seconds
-    const interval = setInterval(fetchMessages, 10000);
-    return () => clearInterval(interval);
-  }, []);
+  const fetchMessages = useCallback(async () => {
+    if (isFetchingRef.current) {
+      return;
+    }
 
-  const fetchMessages = async () => {
+    isFetchingRef.current = true;
     try {
       const response = await API.get('sms/messages/');
-      setMessages(response.data);
+      setMessages(Array.isArray(response.data) ? response.data : []);
       setError('');
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'Failed to load messages'));
       console.error('Error:', err);
     } finally {
+      isFetchingRef.current = false;
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchMessages();
+
+    // Auto-refresh every 10 seconds only when tab is visible.
+    const pollWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchMessages();
+      }
+    };
+
+    const interval = setInterval(pollWhenVisible, 10000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchMessages();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [fetchMessages]);
 
   const getStatusColor = (status) => {
     const colors = {
@@ -54,7 +78,7 @@ export default function SMSHistory() {
     return colors[status] || '#f5f5f5';
   };
 
-  const filteredMessages = messages.filter((msg) => {
+  const filteredMessages = useMemo(() => messages.filter((msg) => {
     const statusMatch = filterStatus === 'all' || msg.status === filterStatus;
     const methodMatch = filterMethod === 'all' || msg.send_mode === filterMethod;
     const transportValue = (msg.transport || 'api').toLowerCase();
@@ -82,7 +106,7 @@ export default function SMSHistory() {
       .toLowerCase();
 
     return statusMatch && methodMatch && transportMatch && searchableText.includes(normalizedQuery);
-  });
+  }), [messages, filterStatus, filterMethod, filterTransport, searchQuery]);
 
   if (loading) {
     return (

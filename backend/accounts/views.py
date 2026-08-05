@@ -2946,6 +2946,22 @@ def _generate_unique_uuid(model_class, field_name, max_attempts=25):
     return generated_id
 
 
+def _generate_unique_dlr_id(model_class, field_name, length=8, max_attempts=50):
+    """Generate a collision-safe uppercase alphanumeric DLR identifier."""
+    alphabet = string.ascii_uppercase + string.digits
+    attempts = 0
+    generated_id = ''.join(secrets.choice(alphabet) for _ in range(int(length)))
+
+    while model_class.objects.filter(**{field_name: generated_id}).exists() and attempts < max_attempts:
+        attempts += 1
+        generated_id = ''.join(secrets.choice(alphabet) for _ in range(int(length)))
+
+    if model_class.objects.filter(**{field_name: generated_id}).exists():
+        raise ValueError(f'Could not generate a unique DLR ID for {field_name}')
+
+    return generated_id
+
+
 def _resolve_sms_service_code(sms_message):
     sms_type = str(getattr(sms_message, 'sms_type', '') or '').strip().lower()
     if sms_type in {'whatsapp', 'wa'}:
@@ -2974,6 +2990,17 @@ def _assign_email_validation_request_id(history):
 
     history.request_id = generated_id
     history.save(update_fields=['request_id'])
+    return generated_id
+
+
+def _assign_email_validation_dlr_unique_id(history):
+    if not history or history.dlr_unique_id:
+        return history.dlr_unique_id
+
+    generated_id = _generate_unique_dlr_id(EmailValidationHistory, 'dlr_unique_id', length=8)
+
+    history.dlr_unique_id = generated_id
+    history.save(update_fields=['dlr_unique_id'])
     return generated_id
 
 
@@ -3405,7 +3432,7 @@ def _build_concise_api_validation_response(result_items, request_id=''):
     }
 
 
-def _build_email_validation_dlr_report(*, provider_mode, results, history=None):
+def _build_email_validation_dlr_report(*, provider_mode, results, history=None, include_dlr_unique_id=True):
     normalized_mode = str(provider_mode or 'own_system').strip().lower()
     if normalized_mode not in {'own_system', 'zerobounce'}:
         normalized_mode = 'own_system'
@@ -3426,6 +3453,8 @@ def _build_email_validation_dlr_report(*, provider_mode, results, history=None):
         'provider_mode': normalized_mode,
         'provider_mode_label': _normalize_provider_mode_label(normalized_mode),
     }
+    if include_dlr_unique_id:
+        report['dlr_unique_id'] = getattr(history, 'dlr_unique_id', '') if history else ''
 
     history_summary = _get_history_summary(history) if history else {}
     request_mode = str(history_summary.get('request_mode') or 'api_key').strip().lower()
@@ -5905,6 +5934,7 @@ class EmailValidationView(generics.GenericAPIView):
                 completed_at=None,
             )
             _assign_email_validation_request_id(history)
+            _assign_email_validation_dlr_unique_id(history)
             history_payload = EmailValidationHistorySerializer(history).data
             if not defer_start:
                 _start_email_validation_worker(history.id)
@@ -5965,6 +5995,7 @@ class EmailValidationView(generics.GenericAPIView):
                 completed_at=None,
             )
             _assign_email_validation_request_id(history)
+            _assign_email_validation_dlr_unique_id(history)
             history_payload = EmailValidationHistorySerializer(history).data
             if not defer_start:
                 _start_email_validation_worker(history.id)
@@ -6023,6 +6054,7 @@ class EmailValidationView(generics.GenericAPIView):
             completed_at=timezone.now(),
         )
         _assign_email_validation_request_id(history)
+        _assign_email_validation_dlr_unique_id(history)
         history_payload = EmailValidationHistorySerializer(history).data
 
         simple_results = [_build_simple_validation_result(item) for item in client_results]
@@ -6439,6 +6471,7 @@ class APIEmailValidationView(generics.GenericAPIView):
             completed_at=timezone.now(),
         )
         _assign_email_validation_request_id(history)
+        _assign_email_validation_dlr_unique_id(history)
 
         results = _validate_email_list(unique_emails, provider_mode=provider_mode)
         client_results = [_to_client_validation_result(item) for item in results]
@@ -6485,7 +6518,7 @@ class ValidationHistoryListView(generics.ListAPIView):
         if source in {'dashboard', 'api'}:
             queryset = queryset.filter(source=source)
         if query:
-            filters = Q(request_id__icontains=query) | Q(status__icontains=query) | Q(file_name__icontains=query) | Q(user__email__icontains=query)
+            filters = Q(request_id__icontains=query) | Q(dlr_unique_id__icontains=query) | Q(status__icontains=query) | Q(file_name__icontains=query) | Q(user__email__icontains=query)
             if query.isdigit():
                 filters |= Q(user__id=int(query))
             queryset = queryset.filter(filters)
@@ -6687,10 +6720,19 @@ class APIEmailValidationStatusView(generics.GenericAPIView):
             return Response({'detail': str(exc)}, status=status.HTTP_401_UNAUTHORIZED)
 
         request_id = str(request.data.get('request_id') or '').strip()
-        if not request_id:
-            return Response({'detail': 'request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        dlr_unique_id = str(request.data.get('dlr_unique_id') or '').strip()
+        if not request_id and not dlr_unique_id:
+            return Response({'detail': 'request_id or dlr_unique_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        history = EmailValidationHistory.objects.select_related('api_key', 'user').filter(request_id=request_id, user=user).first()
+        filters = Q(user=user)
+        if request_id and dlr_unique_id:
+            filters &= Q(request_id=request_id) | Q(dlr_unique_id=dlr_unique_id)
+        elif request_id:
+            filters &= Q(request_id=request_id)
+        else:
+            filters &= Q(dlr_unique_id=dlr_unique_id)
+
+        history = EmailValidationHistory.objects.select_related('api_key', 'user').filter(filters).first()
         if not history:
             return Response({'detail': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -6745,6 +6787,7 @@ class APIEmailValidationControlView(generics.GenericAPIView):
             provider_mode=provider_mode,
             results=summary.get('results') if isinstance(summary.get('results'), list) else [],
             history=history,
+            include_dlr_unique_id=False,
         )
         payload['last_action'] = action
         return Response(payload)
@@ -6783,7 +6826,7 @@ class AdminUserValidationHistoryView(generics.ListAPIView):
         queryset = EmailValidationHistory.objects.filter(user_id=user_id).select_related('api_key', 'user').order_by('-created_at')
         query = str(self.request.query_params.get('q') or '').strip()
         if query:
-            filters = Q(request_id__icontains=query) | Q(status__icontains=query) | Q(file_name__icontains=query)
+            filters = Q(request_id__icontains=query) | Q(dlr_unique_id__icontains=query) | Q(status__icontains=query) | Q(file_name__icontains=query)
             if query.isdigit():
                 filters |= Q(user__id=int(query))
             queryset = queryset.filter(filters)
@@ -7466,6 +7509,7 @@ class RequestStatusSearchView(generics.GenericAPIView):
                 rows.append(
                     {
                         'request_id': str(history.request_id or '').strip(),
+                        'dlr_unique_id': str(history.dlr_unique_id or '').strip(),
                         'entered_mail': entered_mail,
                         'status': str(history.status or '').strip().lower() or 'pending',
                         'valid': bool(result.get('validSyntax') is True and result.get('validMailbox') is True),
@@ -7479,6 +7523,7 @@ class RequestStatusSearchView(generics.GenericAPIView):
             rows.append(
                 {
                     'request_id': str(history.request_id or '').strip(),
+                    'dlr_unique_id': str(history.dlr_unique_id or '').strip(),
                     'entered_mail': mail,
                     'status': str(history.status or '').strip().lower() or 'pending',
                     'valid': None,
@@ -7493,6 +7538,7 @@ class RequestStatusSearchView(generics.GenericAPIView):
         return [
             {
                 'request_id': str(history.request_id or '').strip(),
+                'dlr_unique_id': str(history.dlr_unique_id or '').strip(),
                 'entered_mail': '',
                 'status': str(history.status or '').strip().lower() or 'pending',
                 'valid': None,
@@ -7527,12 +7573,13 @@ class RequestStatusSearchView(generics.GenericAPIView):
             validation_base_queryset = validation_base_queryset.filter(user=request.user)
 
         exact_request_match = validation_base_queryset.filter(
-            Q(request_id__iexact=query) | Q(request_id__iexact=normalized_request_query)
+            Q(request_id__iexact=query) | Q(request_id__iexact=normalized_request_query) | Q(dlr_unique_id__iexact=query)
         ).order_by('-created_at').first()
 
         validation_queryset = validation_base_queryset.filter(
             Q(request_id__icontains=query)
             | Q(request_id__icontains=normalized_request_query)
+            | Q(dlr_unique_id__icontains=query)
             | Q(file_name__icontains=query)
             | Q(user__email__icontains=query)
         )
@@ -7569,6 +7616,7 @@ class RequestStatusSearchView(generics.GenericAPIView):
             request_status_results.extend(
                 row for row in status_rows
                 if normalized_query in str(row.get('request_id') or '').lower()
+                or normalized_query in str(row.get('dlr_unique_id') or '').lower()
                 or normalized_request_query.lower() in str(row.get('request_id') or '').lower()
                 or normalized_query in str(row.get('entered_mail') or '').lower()
             )

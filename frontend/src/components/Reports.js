@@ -234,6 +234,7 @@ function flattenMailValidationRows(emailHistoryItems) {
 
   emailHistoryItems.forEach((item) => {
     const baseRequestId = String(item?.request_id || '').trim() || 'mail-request';
+    const dlrUniqueId = String(item?.dlr_report?.dlr_unique_id || item?.dlr_unique_id || '').trim();
     const requestedEmails = Array.isArray(item?.emails_requested) ? item.emails_requested : [];
     const resultRows = Array.isArray(item?.results_summary?.results) ? item.results_summary.results : [];
 
@@ -243,6 +244,7 @@ function flattenMailValidationRows(emailHistoryItems) {
         rows.push({
           row_key: rowKey,
           request_id: baseRequestId,
+          dlr_unique_id: dlrUniqueId || '-',
           created_at: item?.created_at,
           validation_timing: item?.completed_at || item?.created_at || null,
           validation_mode: String(item?.source || '').trim().toLowerCase() || '-',
@@ -260,6 +262,7 @@ function flattenMailValidationRows(emailHistoryItems) {
       rows.push({
         row_key: rowKey,
         request_id: baseRequestId,
+        dlr_unique_id: dlrUniqueId || '-',
         created_at: item?.created_at,
         validation_timing: item?.completed_at || item?.created_at || null,
         validation_mode: String(item?.source || '').trim().toLowerCase() || '-',
@@ -292,12 +295,27 @@ export default function Reports() {
     setLoading(true);
     setError('');
     try {
-      const [smsRes, emailRes] = await Promise.all([
-        API.get('sms/messages/'),
-        API.get('email-validation/history/'),
+      const [smsResult, emailResult] = await Promise.allSettled([
+        API.get('sms/messages/', { timeout: 90000 }),
+        API.get('email-validation/history/', { timeout: 90000 }),
       ]);
-      setSmsHistory(Array.isArray(smsRes.data) ? smsRes.data : []);
-      setEmailHistory(Array.isArray(emailRes.data) ? emailRes.data : []);
+
+      const smsLoaded = smsResult.status === 'fulfilled';
+      const emailLoaded = emailResult.status === 'fulfilled';
+
+      setSmsHistory(smsLoaded && Array.isArray(smsResult.value?.data) ? smsResult.value.data : []);
+      setEmailHistory(emailLoaded && Array.isArray(emailResult.value?.data) ? emailResult.value.data : []);
+
+      if (!smsLoaded || !emailLoaded) {
+        const failures = [];
+        if (!smsLoaded) {
+          failures.push(`SMS reports: ${getProfessionalErrorMessage(smsResult.reason, 'Failed to load SMS reports')}`);
+        }
+        if (!emailLoaded) {
+          failures.push(`Mail validation reports: ${getProfessionalErrorMessage(emailResult.reason, 'Failed to load mail validation reports')}`);
+        }
+        setError(failures.join(' | '));
+      }
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'Failed to load reports data'));
       setSmsHistory([]);
@@ -337,7 +355,7 @@ export default function Reports() {
   const filteredMailResultRows = useMemo(
     () => allMailResultRows.filter((row) => {
       const statusMatch = emailStatus === 'all' || String(row?.status || '').toLowerCase() === emailStatus;
-      return statusMatch && matchesSearch(row, emailSearch, ['request_id', 'requested_mail', 'status']);
+      return statusMatch && matchesSearch(row, emailSearch, ['request_id', 'dlr_unique_id', 'requested_mail', 'status']);
     }),
     [allMailResultRows, emailSearch, emailStatus]
   );
@@ -424,9 +442,10 @@ export default function Reports() {
   const exportMailReportCsv = () => {
     downloadCsv(
       'bhisha-mail-validation-report.csv',
-      ['Request ID', 'Entered Mail', 'Valid/Not', 'Timing', 'Mode'],
+      ['Request ID', 'DLR Unique ID', 'Entered Mail', 'Valid/Not', 'Timing', 'Mode'],
       filteredMailResultRows.map((row) => [
         row.request_id,
+        row.dlr_unique_id,
         row.requested_mail,
         row.is_valid ? 'valid' : 'not valid',
         formatDateTime(row.validation_timing),
@@ -438,9 +457,10 @@ export default function Reports() {
   const exportMailReportExcel = () => {
     downloadExcelCompatible(
       'bhisha-mail-validation-report.xls',
-      ['Request ID', 'Entered Mail', 'Valid/Not', 'Timing', 'Mode'],
+      ['Request ID', 'DLR Unique ID', 'Entered Mail', 'Valid/Not', 'Timing', 'Mode'],
       filteredMailResultRows.map((row) => [
         row.request_id,
+        row.dlr_unique_id,
         row.requested_mail,
         row.is_valid ? 'valid' : 'not valid',
         formatDateTime(row.validation_timing),
@@ -768,7 +788,7 @@ export default function Reports() {
                   type="search"
                   value={emailSearch}
                   onChange={(e) => setEmailSearch(e.target.value)}
-                  placeholder="Search Mail validations by request ID, status, user, file..."
+                  placeholder="Search Mail validations by request ID, DLR Unique ID, status, user, file..."
                   style={{ flex: '1 1 320px', padding: '9px 10px', borderRadius: '8px', border: '1px solid #d1d5db' }}
                 />
                 <button
@@ -830,6 +850,7 @@ export default function Reports() {
                   <thead>
                     <tr style={{ background: '#f8fafc' }}>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Request ID</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>DLR Unique ID</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Entered Mail</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Valid/Not</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Timing</th>
@@ -840,6 +861,7 @@ export default function Reports() {
                     {filteredMailResultRows.map((row) => (
                       <tr key={row.row_key || `${row.request_id}-${row.requested_mail}`} style={{ borderTop: '1px solid #eef2f7' }}>
                         <td style={{ padding: '8px' }}>{row.request_id}</td>
+                        <td style={{ padding: '8px' }}>{row.dlr_unique_id}</td>
                         <td style={{ padding: '8px' }}>{row.requested_mail}</td>
                         <td style={{ padding: '8px' }}>{row.is_valid ? 'valid' : 'not valid'}</td>
                         <td style={{ padding: '8px' }}>{formatDateTime(row.validation_timing)}</td>
@@ -848,7 +870,7 @@ export default function Reports() {
                     ))}
                     {filteredMailResultRows.length === 0 && (
                       <tr>
-                        <td colSpan={5} style={{ padding: '10px', color: '#64748b' }}>No mail validation records found.</td>
+                        <td colSpan={6} style={{ padding: '10px', color: '#64748b' }}>No mail validation records found.</td>
                       </tr>
                     )}
                   </tbody>
