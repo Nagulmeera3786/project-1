@@ -252,6 +252,11 @@ CORS_ALLOWED_ORIGINS = _env_csv_list('CORS_ALLOWED_ORIGINS')
 CORS_ALLOW_ALL_ORIGINS = False if CORS_ALLOWED_ORIGINS else DEBUG
 
 if not DEBUG:
+    # Temporary HTTP-first production fallback for bhisha.com.
+    # Keep both schemes while SSL is intentionally bypassed.
+    for _origin in ['http://bhisha.com', 'http://www.bhisha.com']:
+        if _origin not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(_origin)
     for _origin in ['https://bhisha.com', 'https://www.bhisha.com']:
         if _origin not in CORS_ALLOWED_ORIGINS:
             CORS_ALLOWED_ORIGINS.append(_origin)
@@ -297,6 +302,9 @@ if cors_allowed_origin_regexes_env.strip():
 
 CSRF_TRUSTED_ORIGINS = _env_csv_list('CSRF_TRUSTED_ORIGINS')
 if not DEBUG:
+    for _origin in ['http://bhisha.com', 'http://www.bhisha.com']:
+        if _origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(_origin)
     for _origin in ['https://bhisha.com', 'https://www.bhisha.com']:
         if _origin not in CSRF_TRUSTED_ORIGINS:
             CSRF_TRUSTED_ORIGINS.append(_origin)
@@ -426,6 +434,13 @@ X_FRAME_OPTIONS = _env_text('X_FRAME_OPTIONS', 'DENY')
 CORS_ALLOW_CREDENTIALS = _env_bool('CORS_ALLOW_CREDENTIALS', False)
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
+
+# Enforce HTTP compatibility for bhisha.com while SSL is intentionally bypassed.
+if not DEBUG and ('bhisha.com' in ALLOWED_HOSTS or 'www.bhisha.com' in ALLOWED_HOSTS):
+    SECURE_SSL_REDIRECT = False
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SECURE = False
+    SECURE_HSTS_SECONDS = 0
 
 # Avoid silent OTP email failures in production.
 # Fall back to console backend when SMTP credentials are missing so the
