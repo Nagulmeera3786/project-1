@@ -182,7 +182,8 @@ const mailValidationSamples = {
   -H "X-API-Key: <YOUR_API_KEY>" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "email": "user@example.com"
+    "email": "user@example.com",
+    "DLR unique id": "CUSTOMDLR123"
   }'`,
     JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
   method: "POST",
@@ -191,12 +192,13 @@ const mailValidationSamples = {
     "X-API-Key": "<YOUR_API_KEY>",
   },
   body: JSON.stringify({
-    email: "user@example.com"
+    email: "user@example.com",
+    "DLR unique id": "CUSTOMDLR123"
   })
 });
 
 const data = await response.json();
-console.log(data); // { email, status, request_id }`,
+console.log(data); // { response_code, request_id, dlr_unique_id, entered_mail, validation_status }`,
     Python: `import requests
 
 base_url = "${BASE_URL}"
@@ -204,14 +206,16 @@ response = requests.post(
     base_url + "${API_PREFIX}${MAIL_VALIDATE_PATH}",
     headers={"X-API-Key": "<YOUR_API_KEY>"},
     json={
-      "email": "user@example.com"
+      "email": "user@example.com",
+      "DLR unique id": "CUSTOMDLR123"
     },
 )
 
-print(response.json())  # {"email": "user@example.com", "status": "Valid", "request_id": "..."}`,
+print(response.json())  # {"response_code": 200, "request_id": "...", "dlr_unique_id": "CUSTOMDLR123", "entered_mail": "user@example.com", "validation_status": "Valid"}`,
     Java: `String payload = """
 {
-  \"email\": \"user@example.com\"
+  \"email\": \"user@example.com\",
+  \"DLR unique id\": \"CUSTOMDLR123\"
 }
 """;`,
     'C#': `using var client = new HttpClient();
@@ -219,7 +223,8 @@ client.BaseAddress = new Uri("${BASE_URL}");
 client.DefaultRequestHeaders.Add("X-API-Key", "<YOUR_API_KEY>");
 
 var payload = new {
-  email = "user@example.com"
+  email = "user@example.com",
+  dlr_unique_id = "CUSTOMDLR123"
 };
 
 var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", payload);`,
@@ -228,7 +233,8 @@ var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}"
     cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
   -H "Content-Type: application/json" \\
   -d '{
-    "email": "user@example.com"
+    "email": "user@example.com",
+    "DLR unique id": "CUSTOMDLR123"
   }'`,
     JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
   method: "POST",
@@ -236,26 +242,29 @@ var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}"
     "Content-Type": "application/json",
   },
   body: JSON.stringify({
-    email: "user@example.com"
+    email: "user@example.com",
+    "DLR unique id": "CUSTOMDLR123"
   })
 });
 
 const data = await response.json();
-console.log(data); // { email, status, request_id }`,
+console.log(data); // { response_code, request_id, dlr_unique_id, entered_mail, validation_status }`,
     Python: `import requests
 
 base_url = "${BASE_URL}"
 response = requests.post(
     base_url + "${API_PREFIX}${MAIL_VALIDATE_PATH}",
     json={
-      "email": "user@example.com"
+      "email": "user@example.com",
+      "DLR unique id": "CUSTOMDLR123"
     },
 )
 
 print(response.json())`,
     Java: `String payload = """
 {
-  \"email\": \"user@example.com\"
+  \"email\": \"user@example.com\",
+  \"DLR unique id\": \"CUSTOMDLR123\"
 }
 """;
 
@@ -264,7 +273,8 @@ print(response.json())`,
 client.BaseAddress = new Uri("${BASE_URL}");
 
 var payload = new {
-  email = "user@example.com"
+  email = "user@example.com",
+  dlr_unique_id = "CUSTOMDLR123"
 };
 
 var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", payload);`,
@@ -293,9 +303,11 @@ Body:
 }`;
 
 const compactApiResponseExample = `{
-  "email": "user@example.com",
-  "status": "Valid",
-  "request_id": "09b27399-2342-4240-bea7-0b29b7f8181c"
+  "response_code": 200,
+  "request_id": "09b27399-2342-4240-bea7-0b29b7f8181c",
+  "dlr_unique_id": "CUSTOMDLR123",
+  "entered_mail": "user@example.com",
+  "validation_status": "Valid"
 }`;
 
 const sections = [
@@ -338,7 +350,7 @@ const sections = [
     title: 'Mail Validation',
     description: 'Validate single email requests and track request state with status/control APIs.',
     endpoints: [
-      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key or Whitelisted IP', description: 'Validate a single email and return email, status, and unique request_id.' },
+      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key or Whitelisted IP', description: 'Validate a single email. Optional JSON key: "DLR unique id" as string (alphanumeric only, max length 10). Response includes response_code, request_id, dlr_unique_id, entered_mail, validation_status. If DLR is omitted, dlr_unique_id is "UNKNOWN".' },
       { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key or Whitelisted IP', description: 'Get request status by request_id.' },
       { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key or Whitelisted IP', description: 'Control a running request with start/pause/resume/stop/cancel.' },
     ],
