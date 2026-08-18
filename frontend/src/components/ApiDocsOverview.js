@@ -169,11 +169,13 @@ print(res.status_code, res.json())`,
   },
 ];
 
-const mailValidationModes = ['api_key', 'ip_whitelist'];
+const mailValidationModes = ['api_key', 'ip_whitelist', 'bulk', 'file'];
 
 const mailModeLabels = {
   api_key: 'API Key',
   ip_whitelist: 'IP Whitelist',
+  bulk: 'Bulk Emails',
+  file: 'File Upload',
 };
 
 const mailValidationSamples = {
@@ -183,7 +185,7 @@ const mailValidationSamples = {
   -H "Content-Type: application/json" \\
   -d '{
     "email": "user@example.com",
-    "DLR unique id": "CUSTOMDLR123"
+    "dlr_unique_id": "CUSTOMDLR123"
   }'`,
     JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
   method: "POST",
@@ -193,12 +195,12 @@ const mailValidationSamples = {
   },
   body: JSON.stringify({
     email: "user@example.com",
-    "DLR unique id": "CUSTOMDLR123"
+    "dlr_unique_id": "CUSTOMDLR123"
   })
 });
 
 const data = await response.json();
-console.log(data); // { response_code, request_id, dlr_unique_id, entered_mail, validation_status }`,
+console.log(data); // { response_code, request_id, dlr_unique_id, email, status }`,
     Python: `import requests
 
 base_url = "${BASE_URL}"
@@ -207,15 +209,15 @@ response = requests.post(
     headers={"X-API-Key": "<YOUR_API_KEY>"},
     json={
       "email": "user@example.com",
-      "DLR unique id": "CUSTOMDLR123"
+      "dlr_unique_id": "CUSTOMDLR123"
     },
 )
 
-print(response.json())  # {"response_code": 200, "request_id": "...", "dlr_unique_id": "CUSTOMDLR123", "entered_mail": "user@example.com", "validation_status": "Valid"}`,
+print(response.json())  # {"response_code": 200, "request_id": "...", "dlr_unique_id": "CUSTOMDLR123", "email": "user@example.com", "status": "Valid"}`,
     Java: `String payload = """
 {
   \"email\": \"user@example.com\",
-  \"DLR unique id\": \"CUSTOMDLR123\"
+  \"dlr_unique_id\": \"CUSTOMDLR123\"
 }
 """;`,
     'C#': `using var client = new HttpClient();
@@ -234,7 +236,7 @@ var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}"
   -H "Content-Type: application/json" \\
   -d '{
     "email": "user@example.com",
-    "DLR unique id": "CUSTOMDLR123"
+    "dlr_unique_id": "CUSTOMDLR123"
   }'`,
     JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
   method: "POST",
@@ -243,12 +245,12 @@ var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}"
   },
   body: JSON.stringify({
     email: "user@example.com",
-    "DLR unique id": "CUSTOMDLR123"
+    "dlr_unique_id": "CUSTOMDLR123"
   })
 });
 
 const data = await response.json();
-console.log(data); // { response_code, request_id, dlr_unique_id, entered_mail, validation_status }`,
+console.log(data); // { response_code, request_id, dlr_unique_id, email, status }`,
     Python: `import requests
 
 base_url = "${BASE_URL}"
@@ -256,7 +258,7 @@ response = requests.post(
     base_url + "${API_PREFIX}${MAIL_VALIDATE_PATH}",
     json={
       "email": "user@example.com",
-      "DLR unique id": "CUSTOMDLR123"
+      "dlr_unique_id": "CUSTOMDLR123"
     },
 )
 
@@ -264,7 +266,7 @@ print(response.json())`,
     Java: `String payload = """
 {
   \"email\": \"user@example.com\",
-  \"DLR unique id\": \"CUSTOMDLR123\"
+  \"dlr_unique_id\": \"CUSTOMDLR123\"
 }
 """;
 
@@ -278,6 +280,83 @@ var payload = new {
 };
 
 var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", payload);`,
+  },
+  bulk: {
+    cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
+  -H "X-API-Key: <YOUR_API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"emails":["one@example.com","two@example.com"],"dlr_unique_id":"BULK123"}'`,
+    JavaScript: `const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-API-Key": "<YOUR_API_KEY>",
+  },
+  body: JSON.stringify({
+    emails: ["one@example.com", "two@example.com"],
+    dlr_unique_id: "BULK123",
+  }),
+});
+
+console.log(await response.json());`,
+    Python: `import requests
+
+response = requests.post(
+    "${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}",
+    headers={"X-API-Key": "<YOUR_API_KEY>"},
+    json={
+        "emails": ["one@example.com", "two@example.com"],
+        "dlr_unique_id": "BULK123",
+    },
+)
+print(response.json())`,
+    Java: `// POST ${API_PREFIX}${MAIL_VALIDATE_PATH}
+// Header: X-API-Key: <YOUR_API_KEY>
+// JSON: {"emails":["one@example.com","two@example.com"],"dlr_unique_id":"BULK123"}`,
+    'C#': `using var client = new HttpClient();
+client.DefaultRequestHeaders.Add("X-API-Key", "<YOUR_API_KEY>");
+var response = await client.PostAsJsonAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", new {
+  emails = new[] { "one@example.com", "two@example.com" },
+  dlr_unique_id = "BULK123"
+});`,
+  },
+  file: {
+    cURL: `curl -X POST ${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH} \\
+  -H "X-API-Key: <YOUR_API_KEY>" \\
+  -F "dlr_unique_id=FILE123" \\
+  -F "source_file=@emails.xlsx"`,
+    JavaScript: `const formData = new FormData();
+formData.append("source_file", fileInput.files[0]);
+formData.append("dlr_unique_id", "FILE123");
+
+const response = await fetch("${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}", {
+  method: "POST",
+  headers: { "X-API-Key": "<YOUR_API_KEY>" },
+  body: formData,
+});
+
+console.log(await response.json());`,
+    Python: `import requests
+
+file_path = r"C:\\path\\to\\emails.xlsx"
+with open(file_path, "rb") as file_handle:
+    response = requests.post(
+        "${BASE_URL}${API_PREFIX}${MAIL_VALIDATE_PATH}",
+        headers={"X-API-Key": "<YOUR_API_KEY>"},
+        data={"dlr_unique_id": "FILE123"},
+        files={"source_file": ("emails.xlsx", file_handle)},
+        timeout=900,
+    )
+print(response.json())`,
+    Java: `// POST ${API_PREFIX}${MAIL_VALIDATE_PATH} as multipart/form-data
+// Header: X-API-Key: <YOUR_API_KEY>
+// Fields: source_file=emails.xlsx, dlr_unique_id=FILE123`,
+    'C#': `using var client = new HttpClient();
+client.DefaultRequestHeaders.Add("X-API-Key", "<YOUR_API_KEY>");
+using var form = new MultipartFormDataContent();
+form.Add(new StringContent("FILE123"), "dlr_unique_id");
+form.Add(new StreamContent(File.OpenRead("emails.xlsx")), "source_file", "emails.xlsx");
+var response = await client.PostAsync("${API_PREFIX}${MAIL_VALIDATE_PATH}", form);`,
   },
 };
 
@@ -306,8 +385,8 @@ const compactApiResponseExample = `{
   "response_code": 200,
   "request_id": "09b27399-2342-4240-bea7-0b29b7f8181c",
   "dlr_unique_id": "CUSTOMDLR123",
-  "entered_mail": "user@example.com",
-  "validation_status": "Valid"
+  "email": "user@example.com",
+  "status": "Valid"
 }`;
 
 const sections = [
@@ -348,9 +427,9 @@ const sections = [
   {
     id: 'mail-validation',
     title: 'Mail Validation',
-    description: 'Validate single email requests and track request state with status/control APIs.',
+    description: 'Validate single emails, bulk email lists, or uploaded files and track each email result with status/control APIs.',
     endpoints: [
-      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key or Whitelisted IP', description: 'Validate a single email. Optional JSON key: "DLR unique id" as string (alphanumeric only, max length 10). Response includes response_code, request_id, dlr_unique_id, entered_mail, validation_status. If DLR is omitted, dlr_unique_id is "UNKNOWN".' },
+      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key or Whitelisted IP', description: 'Send exactly one of email, emails, or source_file. Optional dlr_unique_id is an alphanumeric string up to 10 characters and is returned on every result. No login or JWT is required.' },
       { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key or Whitelisted IP', description: 'Get request status by request_id.' },
       { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key or Whitelisted IP', description: 'Control a running request with start/pause/resume/stop/cancel.' },
     ],
@@ -582,7 +661,7 @@ export default function ApiDocsOverview() {
             <section style={cardStyle}>
               <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#1A0E4E' }}>Mail Validation Examples (API Key or IP Whitelist)</h3>
               <p style={{ marginTop: 0, color: '#6B6B8A', lineHeight: 1.6 }}>
-                Use API key mode or whitelisted IP mode. In IP mode, admin must configure allowed IPs and billing user in Admin Center.
+                Use an API key or a whitelisted caller IP. Send exactly one of email, emails, or source_file. Bulk and file requests return each email result one by one with its own request ID.
               </p>
 
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
@@ -656,8 +735,7 @@ export default function ApiDocsOverview() {
                   Response Format Notes
                 </div>
                 <div style={{ padding: '12px', color: '#4B4B6B', background: '#ffffff', fontSize: '13px', lineHeight: 1.6 }}>
-                  Each response item in <strong>results</strong> represents one email with explicit JSON fields.
-                  This supports one-by-one processing cleanly in UI and backend integrations.
+                  Every result uses exactly response_code, request_id, dlr_unique_id, email, and status. Bulk and file responses are processed one email at a time, so each email has its own request ID and status.
                 </div>
               </div>
             </section>
