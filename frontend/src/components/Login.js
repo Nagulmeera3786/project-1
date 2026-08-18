@@ -109,6 +109,14 @@ export default function Login() {
         return;
       }
 
+      if (err.response?.data?.account_locked) {
+        const retrySeconds = Number(err.response.data.retry_after_seconds || 0);
+        const retryMinutes = Math.max(1, Math.ceil(retrySeconds / 60));
+        setError(`Too many wrong attempts. Please try again after ${retryMinutes} minute${retryMinutes === 1 ? '' : 's'}.`);
+        setDiagnostics(null);
+        return;
+      }
+
       const parsed = parseApiError(err, 'Login failed. Please try again.');
       setShowBufferingImage(Boolean(parsed.isBuffering));
       if (parsed.isBuffering) {

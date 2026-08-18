@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import API from '../api';
 import { parseApiError } from '../errorHelpers';
+import { getPasswordRequirements, getPasswordStrengthMessage, isPasswordStrong } from '../passwordStrength';
 
 export default function ResetPassword() {
   const loc = useLocation();
@@ -15,6 +16,7 @@ export default function ResetPassword() {
   const [diagnostics, setDiagnostics] = useState(null);
   const [success, setSuccess] = useState(false);
   const nav = useNavigate();
+  const passwordRequirements = useMemo(() => getPasswordRequirements(newPass), [newPass]);
 
   if (!email) {
     return (
@@ -52,6 +54,11 @@ export default function ResetPassword() {
 
     if (newPass.length < 8) {
       setError('Password must be at least 8 characters');
+      return;
+    }
+
+    if (!isPasswordStrong(newPass)) {
+      setError(getPasswordStrengthMessage(newPass));
       return;
     }
 
@@ -177,6 +184,13 @@ export default function ResetPassword() {
             onFocus={e => e.target.style.borderColor = '#7C5DC7'}
             onBlur={e => e.target.style.borderColor = '#DDD4F8'}
           />
+          {newPass && (
+            <ul style={{ margin: '8px 0 0', paddingLeft: '18px', fontSize: '12px', lineHeight: '1.6' }}>
+              <li style={{ color: passwordRequirements.minLength ? '#16A34A' : '#9B9BB4' }}>At least 8 characters</li>
+              <li style={{ color: passwordRequirements.hasNumber ? '#16A34A' : '#9B9BB4' }}>At least one number</li>
+              <li style={{ color: passwordRequirements.hasSpecial ? '#16A34A' : '#9B9BB4' }}>At least one special character</li>
+            </ul>
+          )}
         </div>
 
         <div style={{ marginBottom: '24px' }}>

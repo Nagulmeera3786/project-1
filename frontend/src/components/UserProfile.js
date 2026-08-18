@@ -22,6 +22,9 @@ export default function UserProfile() {
   const [saveMessage, setSaveMessage] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [twoFactorSaving, setTwoFactorSaving] = useState(false);
+  const [twoFactorMessage, setTwoFactorMessage] = useState('');
 
   const navigate = useNavigate();
 
@@ -42,6 +45,7 @@ export default function UserProfile() {
       setPhoneNumber(response.data.phone_number || '');
       setSenderIdType(response.data.sender_id_type || 'alphanumeric');
       setSenderId(response.data.sender_id || '');
+      setTwoFactorEnabled(Boolean(response.data.two_factor_enabled));
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'Failed to load profile'));
     } finally {
@@ -54,6 +58,25 @@ export default function UserProfile() {
     setIsDarkMode(next);
     localStorage.setItem(THEME_STORAGE_KEY, next ? 'dark' : 'light');
     document.body.classList.toggle('dark-theme', next);
+  };
+
+  const toggleTwoFactor = async () => {
+    const next = !twoFactorEnabled;
+    setTwoFactorSaving(true);
+    setTwoFactorMessage('');
+    try {
+      const response = await API.patch('profile/', { two_factor_enabled: next });
+      setTwoFactorEnabled(Boolean(response.data.two_factor_enabled));
+      setTwoFactorMessage(
+        response.data.two_factor_enabled
+          ? 'Two-factor authentication enabled. You will receive an OTP every time you log in.'
+          : 'Two-factor authentication disabled.'
+      );
+    } catch (err) {
+      setTwoFactorMessage(getProfessionalErrorMessage(err, 'Failed to update two-factor authentication.'));
+    } finally {
+      setTwoFactorSaving(false);
+    }
   };
 
   const saveProfileSettings = async () => {
@@ -225,6 +248,55 @@ export default function UserProfile() {
                 style={inputStyle}
               />
             </div>
+          </div>
+
+          <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid #f0eef8' }}>
+            <h3 style={{ marginTop: 0, marginBottom: 6, color: '#1c1748' }}>Security</h3>
+            <p style={{ marginTop: 0, marginBottom: 14, color: '#6B6B8A', fontSize: 13 }}>
+              When two-factor authentication is enabled, an OTP will be sent to your email and required every time you log in.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <div>
+                <div style={{ fontWeight: 700, color: '#1c1748', fontSize: 14 }}>Two-Factor Authentication</div>
+                <div style={{ fontSize: 12, color: '#6B6B8A' }}>{twoFactorEnabled ? 'Enabled' : 'Disabled'}</div>
+              </div>
+              <button
+                type="button"
+                onClick={toggleTwoFactor}
+                disabled={twoFactorSaving}
+                aria-pressed={twoFactorEnabled}
+                style={{
+                  width: 52,
+                  height: 28,
+                  borderRadius: 999,
+                  border: 'none',
+                  cursor: twoFactorSaving ? 'not-allowed' : 'pointer',
+                  background: twoFactorEnabled ? '#5B3FA8' : '#d9d5ec',
+                  position: 'relative',
+                  transition: 'background 0.2s',
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: 3,
+                    left: twoFactorEnabled ? 27 : 3,
+                    width: 22,
+                    height: 22,
+                    borderRadius: '50%',
+                    background: '#fff',
+                    transition: 'left 0.2s',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                  }}
+                />
+              </button>
+            </div>
+            {twoFactorMessage && (
+              <p style={{ marginTop: '10px', color: twoFactorMessage.toLowerCase().includes('failed') ? '#d32f2f' : '#2e7d32', fontSize: '13px' }}>
+                {twoFactorMessage}
+              </p>
+            )}
           </div>
 
           <button

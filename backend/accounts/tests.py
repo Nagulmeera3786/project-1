@@ -601,11 +601,9 @@ class EmailValidationMediatorTests(TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertTrue(response.data.get('ready_to_start'))
         self.assertFalse(response.data.get('auto_started'))
-        self.assertEqual(response.data.get('count'), 2)
+        self.assertEqual(response.data.get('count'), 0)
         request_items = response.data.get('request_items') or []
-        self.assertEqual(len(request_items), 2)
-        self.assertEqual(len({str(item.get('request_id') or '').strip() for item in request_items}), 2)
-        self.assertEqual(len({str(item.get('dlr_unique_id') or '').strip() for item in request_items}), 2)
+        self.assertEqual(len(request_items), 0)
         mock_start_worker.assert_not_called()
 
         request_id = str(response.data.get('request_id') or '')
@@ -616,7 +614,8 @@ class EmailValidationMediatorTests(TestCase):
         self.assertEqual(str(summary.get('control_state') or ''), 'paused')
         self.assertEqual(str(summary.get('processing_state') or ''), 'paused')
         stored_request_items = summary.get('request_items') if isinstance(summary.get('request_items'), list) else []
-        self.assertEqual(len(stored_request_items), 2)
+        self.assertEqual(len(stored_request_items), 0)
+        self.assertTrue(bool(str(summary.get('source_file_path') or '').strip()))
 
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
     @patch('accounts.views._validate_email_list')
@@ -799,11 +798,9 @@ class EmailValidationMediatorTests(TestCase):
 
         response = self.client.post(
             '/api/auth/email-validation/api/validate/',
-            {
-                'api_key': api_key.key,
-                'email': 'yifemat211@fishnone.com',
-            },
+            {'email': 'yifemat211@fishnone.com'},
             format='json',
+            HTTP_X_API_KEY=api_key.key,
         )
 
         self.assertEqual(response.status_code, 200)

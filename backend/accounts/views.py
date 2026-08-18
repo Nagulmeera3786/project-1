@@ -7,6 +7,8 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import DatabaseError
+from django.db import OperationalError
+from django.db import connection
 from django.db import transaction
 from django.db import close_old_connections
 from django.db.models import Q, Count, F
@@ -18,9 +20,12 @@ from django.views import View
 import requests
 import time
 import re
+import json
 import difflib
 import io
 import csv
+import os
+import tempfile
 import smtplib
 import hmac
 import hashlib
@@ -87,6 +92,7 @@ from .models import (
     PlatformSetting,
     UserAPIKey,
     EmailValidationHistory,
+    EmailValidationResult,
     SenderIdRequest,
     EmailValidationIPWhitelistRequest,
     Employee,
@@ -590,6 +596,9 @@ def _format_utc_offset(offset_delta):
 
 FREE_TRIAL_MESSAGE_LIMIT = 3
 FREE_TRIAL_OTP_EXPIRY_MINUTES = 10
+
+LOGIN_MAX_FAILED_ATTEMPTS = 3
+LOGIN_LOCKOUT_MINUTES = 10
 _PROVIDER_BALANCE_CACHE = {'value': None, 'expires_at': None}
 _EMAIL_PROVIDER_CREDITS_CACHE = {'value': None, 'expires_at': None}
 
@@ -742,6 +751,30 @@ def _get_email_validation_progress_store_results_limit():
         configured = int(getattr(settings, 'EMAIL_VALIDATION_PROGRESS_STORE_RESULTS_LIMIT', 2000) or 2000)
     except (TypeError, ValueError):
         configured = 2000
+    return max(0, configured)
+
+
+def _get_email_validation_live_results_limit():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_LIVE_RESULTS_LIMIT', 1000) or 1000)
+    except (TypeError, ValueError):
+        configured = 1000
+    return max(0, configured)
+
+
+def _get_email_validation_final_results_store_limit():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_FINAL_RESULTS_STORE_LIMIT', 10000) or 10000)
+    except (TypeError, ValueError):
+        configured = 10000
+    return max(0, configured)
+
+
+def _get_email_validation_request_items_store_limit():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_REQUEST_ITEMS_STORE_LIMIT', 10000) or 10000)
+    except (TypeError, ValueError):
+        configured = 10000
     return max(0, configured)
 
 
@@ -2190,6 +2223,32 @@ def _to_client_validation_result(item):
     }
 
 
+def _to_history_validation_result(item):
+    payload = _to_client_validation_result(item)
+
+    # Keep persisted rows compact for large jobs. Full report text is omitted from history.
+    payload['summary'] = str(payload.get('summary') or '').strip()[:240]
+    payload['report'] = ''
+
+    bhisha_result = payload.get('bhisha_result') if isinstance(payload.get('bhisha_result'), dict) else {}
+    payload['bhisha_result'] = {
+        'provider_mode': str(bhisha_result.get('provider_mode') or payload.get('provider_mode') or '').strip().lower(),
+        'provider_mode_label': str(bhisha_result.get('provider_mode_label') or payload.get('provider_mode_label') or '').strip(),
+        'valid_inbox': bool(bhisha_result.get('valid_inbox')),
+        'valid_syntax': bool(bhisha_result.get('valid_syntax')),
+        'domain_related_mail': bool(bhisha_result.get('domain_related_mail')),
+        'disposable': bool(bhisha_result.get('disposable')),
+        'role_based': bool(bhisha_result.get('role_based')),
+        'spam': bool(bhisha_result.get('spam')),
+        'catch_all': bool(bhisha_result.get('catch_all')),
+        'risk_factors': str(bhisha_result.get('risk_factors') or 'None Detected'),
+        'raw_status_details': str(bhisha_result.get('raw_status_details') or ''),
+        'is_free_domain': bool(bhisha_result.get('is_free_domain')),
+        'result_profile': str(bhisha_result.get('result_profile') or '').strip()[:240],
+    }
+    return payload
+
+
 def _is_high_risk_value(value):
     risk = str(value or '').strip().lower()
     return risk in {'high', 'very_high', 'medium', 'risky', 'unknown'}
@@ -2459,6 +2518,55 @@ def _extract_emails_from_uploaded_file(source_file):
             raise ValueError(f'Unable to parse XLSX file: {exc}') from exc
 
     raise ValueError('Unsupported file type. Allowed types: .txt, .csv, .xlsv, .xls, .xlsx')
+
+
+def _persist_email_validation_source_file(source_file):
+    if not source_file:
+        raise ValueError('source_file is required')
+
+    file_name = str(getattr(source_file, 'name', '') or '').strip()
+    lower_name = file_name.lower()
+    supported_extensions = ('.txt', '.csv', '.xlsv', '.xls', '.xlsx')
+    if not any(lower_name.endswith(ext) for ext in supported_extensions):
+        raise ValueError('Unsupported file type. Allowed types: .txt, .csv, .xlsv, .xls, .xlsx')
+
+    max_file_size_bytes = _get_email_validation_max_file_size_bytes()
+    file_size = int(getattr(source_file, 'size', 0) or 0)
+    if file_size > max_file_size_bytes:
+        raise ValueError(f'Uploaded file is too large. Max {max_file_size_bytes // (1024 * 1024)}MB allowed.')
+
+    suffix = os.path.splitext(lower_name)[1] or '.txt'
+    temp_file = tempfile.NamedTemporaryFile(prefix='email-validation-', suffix=suffix, delete=False)
+    temp_path = temp_file.name
+    try:
+        if hasattr(source_file, 'chunks'):
+            for chunk in source_file.chunks():
+                temp_file.write(chunk)
+        else:
+            source_file.seek(0)
+            temp_file.write(source_file.read())
+        temp_file.flush()
+    finally:
+        temp_file.close()
+        try:
+            source_file.seek(0)
+        except Exception:
+            pass
+
+    return temp_path, file_name, file_size
+
+
+def _cleanup_persisted_email_validation_source_file(file_path):
+    normalized = str(file_path or '').strip()
+    if not normalized:
+        return
+
+    try:
+        os.remove(normalized)
+    except FileNotFoundError:
+        return
+    except Exception:
+        return
 
 
 def _submit_verifalia_validation_job(emails):
@@ -2996,6 +3104,71 @@ def _assign_email_validation_request_id(history):
     return generated_id
 
 
+def _resolve_email_validation_history(request_id, user=None):
+    """Resolve a parent request ID or a generated per-mail request ID."""
+    normalized_request_id = str(request_id or '').strip()
+    if not normalized_request_id:
+        return None
+
+    queryset = EmailValidationHistory.objects.select_related('api_key', 'user')
+    if user is not None and not _has_support_read_access(user):
+        queryset = queryset.filter(user_id=user.id)
+
+    history = queryset.filter(request_id=normalized_request_id).first()
+    if history:
+        return history
+
+    result_row = EmailValidationResult.objects.select_related('history').filter(request_id=normalized_request_id).first()
+    if result_row:
+        if user is None or _has_support_read_access(user) or result_row.history.user_id == user.id:
+            return result_row.history
+
+    # Per-mail IDs live in compact metadata so the existing batch history
+    # remains the only worker/database control unit.
+    for candidate in queryset.order_by('-created_at')[:200]:
+        summary = _get_history_summary(candidate)
+        for key in ('request_items', 'results'):
+            items = summary.get(key) if isinstance(summary.get(key), list) else []
+            if any(
+                str(item.get('request_id') or '').strip() == normalized_request_id
+                for item in items
+                if isinstance(item, dict)
+            ):
+                return candidate
+
+    return None
+
+
+def _get_email_validation_request_ids(history, limit=200):
+    if not history:
+        return []
+
+    summary = _get_history_summary(history)
+    request_ids = []
+    seen = set()
+    for key in ('request_items', 'results'):
+        items = summary.get(key) if isinstance(summary.get(key), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            request_id = str(item.get('request_id') or '').strip()
+            if request_id and request_id not in seen:
+                seen.add(request_id)
+                request_ids.append(request_id)
+                if len(request_ids) >= limit:
+                    return request_ids
+
+    if len(request_ids) < limit:
+        for request_id in EmailValidationResult.objects.filter(
+            history=history,
+        ).exclude(request_id='').values_list('request_id', flat=True).distinct()[:limit - len(request_ids)]:
+            if request_id not in seen:
+                seen.add(request_id)
+                request_ids.append(request_id)
+
+    return request_ids
+
+
 def _assign_email_validation_dlr_unique_id(history):
     if not history:
         return _DLR_UNKNOWN
@@ -3528,7 +3701,7 @@ def _build_concise_api_validation_response(result_items, request_id='', dlr_uniq
         requested_email = str(item.get('email') or '').strip().lower()
         per_email_request_id = str(item.get('request_id') or '').strip()
         per_email_dlr_unique_id = str(item.get('dlr_unique_id') or '').strip()
-        if per_email_request_id:
+        if per_email_request_id and not resolved_request_id:
             resolved_request_id = per_email_request_id
         if per_email_dlr_unique_id and allow_result_dlr_fallback:
             resolved_dlr_unique_id = per_email_dlr_unique_id
@@ -3541,8 +3714,8 @@ def _build_concise_api_validation_response(result_items, request_id='', dlr_uniq
         'response_code': int(response_code),
         'request_id': resolved_request_id,
         'dlr_unique_id': resolved_dlr_unique_id,
-        'entered_mail': requested_email,
-        'validation_status': validation_status,
+        'email': requested_email,
+        'status': validation_status,
     }
 
 
@@ -3653,6 +3826,22 @@ def _build_concise_api_status_response(history):
     if not resolved_dlr_unique_id:
         resolved_dlr_unique_id = _DLR_UNKNOWN
     stored_results = summary.get('results') if isinstance(summary.get('results'), list) else []
+    if not stored_results:
+        stored_results = [
+            {
+                'email': row.email,
+                'request_id': row.request_id,
+                'dlr_unique_id': resolved_dlr_unique_id,
+                'status': row.status,
+                'statusCode': row.status_code,
+                'classification': row.classification,
+                'validSyntax': bool(row.valid_syntax),
+                'validMailbox': bool(row.valid_mailbox),
+                'result': 'valid' if row.valid_syntax and row.valid_mailbox else 'not valid',
+                'providerMessageId': row.provider_message_id,
+            }
+            for row in EmailValidationResult.objects.filter(history_id=history.id).order_by('id')
+        ]
     if stored_results:
         requested_email = str(stored_results[0].get('email') or '').strip().lower()
         resolved_request_id = str(stored_results[0].get('request_id') or '').strip() or resolved_request_id
@@ -3661,25 +3850,41 @@ def _build_concise_api_status_response(history):
         requested_email = str(history.emails_requested[0] or '').strip().lower()
 
     if processing_state in {'completed'}:
+        response_rows = []
+        for item in stored_results:
+            response_rows.append(
+                _build_concise_api_validation_response(
+                    [item],
+                    request_id=str(item.get('request_id') or '').strip() or history.request_id,
+                    dlr_unique_id=str(item.get('dlr_unique_id') or '').strip() or resolved_dlr_unique_id,
+                )
+            )
+        if len(response_rows) > 1:
+            return response_rows
+        if response_rows:
+            return response_rows[0]
         return _build_concise_api_validation_response(
-            stored_results,
+            [],
             request_id=history.request_id,
             dlr_unique_id=resolved_dlr_unique_id,
+            response_code=200,
         )
 
     if processing_state in {'failed', 'cancelled', 'stopped'}:
         return {
+            'response_code': 200,
             'request_id': resolved_request_id,
             'dlr_unique_id': resolved_dlr_unique_id,
-            'entered_mail': requested_email,
-            'validation_status': 'Invalid',
+            'email': requested_email,
+            'status': 'Invalid',
         }
 
     return {
+        'response_code': 202,
         'request_id': resolved_request_id,
         'dlr_unique_id': resolved_dlr_unique_id,
-        'entered_mail': requested_email,
-        'validation_status': 'Invalid',
+        'email': requested_email,
+        'status': 'queued',
     }
 
 
@@ -3695,6 +3900,365 @@ def _get_history_control_state(history):
     return str(summary.get('control_state') or 'running').strip().lower() or 'running'
 
 
+def _parse_history_timestamp(value):
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+
+    normalized = raw.replace('Z', '+00:00') if raw.endswith('Z') else raw
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+
+    if timezone.is_naive(parsed):
+        return timezone.make_aware(parsed, timezone.get_current_timezone())
+    return parsed
+
+
+def _get_email_validation_worker_recovery_timeout_seconds():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_WORKER_RECOVERY_TIMEOUT_SECONDS', 90) or 90)
+    except (TypeError, ValueError):
+        configured = 90
+    return max(15, min(configured, 900))
+
+
+def _touch_history_worker_heartbeat(history, summary=None, processing_state=None):
+    payload = summary if isinstance(summary, dict) else _get_history_summary(history)
+    if processing_state:
+        payload['processing_state'] = str(processing_state).strip().lower()
+    payload['worker_heartbeat_at'] = timezone.now().isoformat()
+    history.results_summary = payload
+    history.save(update_fields=['results_summary'])
+    return payload
+
+
+def _attempt_history_worker_recovery(history):
+    if not history or history.status != EmailValidationHistory.STATUS_PENDING:
+        return False
+
+    summary = _get_history_summary(history)
+    processing_state = str(summary.get('processing_state') or '').strip().lower()
+    control_state = _get_history_control_state(history)
+
+    if control_state != 'running':
+        return False
+
+    if processing_state not in {'queued', 'extracting', 'running'}:
+        return False
+
+    if _is_worker_active(history.id):
+        return False
+
+    heartbeat_at = _parse_history_timestamp(summary.get('worker_heartbeat_at'))
+    if heartbeat_at is None:
+        heartbeat_at = _parse_history_timestamp(summary.get('started_at')) or getattr(history, 'created_at', None)
+
+    timeout_seconds = _get_email_validation_worker_recovery_timeout_seconds()
+    if heartbeat_at is not None:
+        elapsed = max(0, int((timezone.now() - heartbeat_at).total_seconds()))
+        if elapsed < timeout_seconds:
+            return False
+
+    restart_attempts = int(summary.get('worker_restart_attempts') or 0)
+    max_restarts = 3
+
+    if restart_attempts >= max_restarts:
+        _set_history_failed_with_reason(
+            history,
+            'Validation worker stopped unexpectedly during extraction/processing. Please re-upload and retry.',
+        )
+        return False
+
+    # Avoid rewriting large JSON blobs during status polling; just restart worker.
+    _start_email_validation_worker(history.id)
+    return True
+
+
+def _compact_history_summary_in_db(history_id):
+    if not history_id:
+        return
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE accounts_emailvalidationhistory
+            SET results_summary = jsonb_strip_nulls(
+                jsonb_build_object(
+                    'provider_mode', COALESCE(results_summary->>'provider_mode', 'own_system'),
+                    'provider_mode_label', COALESCE(results_summary->>'provider_mode_label', 'Own System (SMTP + DNS)'),
+                    'safe_count', COALESCE((results_summary->>'safe_count')::int, 0),
+                    'unsafe_count', COALESCE((results_summary->>'unsafe_count')::int, 0),
+                    'processed_count', COALESCE((results_summary->>'processed_count')::int, 0),
+                    'total_count', COALESCE((results_summary->>'total_count')::int, 0),
+                    'progress_percent', COALESCE((results_summary->>'progress_percent')::int, 0),
+                    'elapsed_seconds', COALESCE((results_summary->>'elapsed_seconds')::int, 0),
+                    'eta_seconds', COALESCE((results_summary->>'eta_seconds')::int, 0),
+                    'processing_state', COALESCE(results_summary->>'processing_state', CASE WHEN status='completed' THEN 'completed' ELSE 'running' END),
+                    'control_state', COALESCE(results_summary->>'control_state', 'running'),
+                    'failure_reason', COALESCE(results_summary->>'failure_reason', ''),
+                    'error', COALESCE(results_summary->>'error', ''),
+                    'results', '[]'::jsonb,
+                    'results_compacted', true
+                )
+            )
+            WHERE id = %s
+            """,
+            [int(history_id)],
+        )
+
+
+def _get_history_snapshot_queryset():
+    return EmailValidationHistory.objects.select_related('api_key', 'user').values(
+        'id',
+        'request_id',
+        'user_id',
+        'user__email',
+        'api_key_id',
+        'api_key__name',
+        'source',
+        'status',
+        'email_count',
+        'cost_deducted',
+        'file_name',
+        'dlr_unique_id',
+        'completed_at',
+        'created_at',
+        'results_summary__provider_mode',
+        'results_summary__provider_mode_label',
+        'results_summary__processed_count',
+        'results_summary__total_count',
+        'results_summary__progress_percent',
+        'results_summary__elapsed_seconds',
+        'results_summary__eta_seconds',
+        'results_summary__processing_state',
+        'results_summary__control_state',
+        'results_summary__safe_count',
+        'results_summary__unsafe_count',
+        'results_summary__failure_reason',
+        'results_summary__error',
+        'results_summary__started_at',
+        'results_summary__worker_heartbeat_at',
+        'results_summary__provider_message_id',
+        'results_summary__request_mode',
+        'results_summary__requested_mail_id',
+        'results_summary__results_preview',
+        'results_summary__results_total_count',
+        'results_summary__results_compacted',
+    )
+
+
+def _build_history_payload_from_snapshot(snapshot, worker_active=False, preview_rows=None):
+    provider_mode = str(snapshot.get('results_summary__provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
+    provider_mode_label = str(snapshot.get('results_summary__provider_mode_label') or _normalize_provider_mode_label(provider_mode))
+    status_value = str(snapshot.get('status') or '').strip().lower() or 'pending'
+    processing_state = str(snapshot.get('results_summary__processing_state') or ('completed' if status_value == 'completed' else 'running')).strip().lower()
+    if status_value == 'failed' and processing_state not in {'cancelled', 'stopped'}:
+        processing_state = 'failed'
+
+    safe_count = int(snapshot.get('results_summary__safe_count') or 0)
+    unsafe_count = int(snapshot.get('results_summary__unsafe_count') or 0)
+    processed_count = int(snapshot.get('results_summary__processed_count') or 0)
+    total_count = int(snapshot.get('results_summary__total_count') or snapshot.get('email_count') or 0)
+    progress_percent = int(snapshot.get('results_summary__progress_percent') or 0)
+    elapsed_seconds = int(snapshot.get('results_summary__elapsed_seconds') or 0)
+    eta_seconds = int(snapshot.get('results_summary__eta_seconds') or 0)
+    failure_reason = str(snapshot.get('results_summary__failure_reason') or snapshot.get('results_summary__error') or '').strip()
+    request_mode = str(snapshot.get('results_summary__request_mode') or 'api_key').strip().lower()
+    requested_mail_id = str(snapshot.get('results_summary__requested_mail_id') or '').strip().lower()
+    results_total_count = int(snapshot.get('results_summary__results_total_count') or 0)
+    results_preview = bool(snapshot.get('results_summary__results_preview'))
+    results_compacted = bool(snapshot.get('results_summary__results_compacted'))
+    preview_list = preview_rows if isinstance(preview_rows, list) else []
+
+    payload = {
+        'id': snapshot.get('id'),
+        'request_id': snapshot.get('request_id'),
+        'user': snapshot.get('user_id'),
+        'user_email': snapshot.get('user__email') or '',
+        'api_key': snapshot.get('api_key_id'),
+        'api_key_name': snapshot.get('api_key__name') or '',
+        'source': snapshot.get('source') or 'dashboard',
+        'status': status_value,
+        'email_count': int(snapshot.get('email_count') or 0),
+        'emails_requested': [],
+        'results_summary': {
+            'provider_mode': provider_mode,
+            'provider_mode_label': provider_mode_label,
+            'safe_count': safe_count,
+            'unsafe_count': unsafe_count,
+            'processed_count': processed_count,
+            'total_count': total_count,
+            'progress_percent': max(0, min(100, progress_percent if progress_percent > 0 else (int((processed_count * 100) / max(1, total_count)) if total_count > 0 else 0))),
+            'elapsed_seconds': elapsed_seconds,
+            'eta_seconds': eta_seconds,
+            'processing_state': processing_state,
+            'control_state': str(snapshot.get('results_summary__control_state') or 'running').strip().lower() or 'running',
+            'failure_reason': failure_reason,
+            'error': failure_reason,
+            'started_at': str(snapshot.get('results_summary__started_at') or ''),
+            'worker_heartbeat_at': str(snapshot.get('results_summary__worker_heartbeat_at') or ''),
+            'provider_message_id': str(snapshot.get('results_summary__provider_message_id') or ''),
+            'provider_message_ids': [],
+            'results': preview_list,
+            'results_compacted': results_compacted,
+            'results_preview': results_preview,
+            'results_total_count': results_total_count,
+        },
+        'cost_deducted': str(snapshot.get('cost_deducted') or '0'),
+        'file_name': snapshot.get('file_name') or '',
+        'provider_message_id': str(snapshot.get('results_summary__provider_message_id') or ''),
+        'provider_message_ids': [],
+        'completed_at': snapshot.get('completed_at'),
+        'created_at': snapshot.get('created_at'),
+        'worker_active': bool(worker_active),
+        'processing_state': processing_state,
+        'provider_mode': provider_mode,
+        'provider_mode_label': provider_mode_label,
+    }
+
+    payload['dlr_report'] = {
+        'provider_mode': provider_mode,
+        'provider_mode_label': provider_mode_label,
+        'request_id': snapshot.get('request_id') or '',
+        'dlr_unique_id': snapshot.get('dlr_unique_id') or _DLR_UNKNOWN,
+        'provider_message_id': str(snapshot.get('results_summary__provider_message_id') or ''),
+        'status': status_value,
+        'completed': status_value == 'completed',
+        'delivery_time': snapshot.get('completed_at'),
+        'failure_reason': failure_reason,
+        'request_mode': request_mode,
+        'mode': 'IP mode' if request_mode == 'ip' else 'API Key mode',
+        'mail_id': requested_mail_id,
+        'summary': {
+            'deliverable': safe_count,
+            'risky': 0,
+            'invalid': unsafe_count,
+            'unknown': 0,
+            'total': safe_count + unsafe_count,
+        },
+        'results': preview_list,
+    }
+    return payload
+
+
+def _attempt_history_worker_recovery_from_snapshot(snapshot):
+    if not isinstance(snapshot, dict):
+        return False
+
+    status_value = str(snapshot.get('status') or '').strip().lower()
+    if status_value != EmailValidationHistory.STATUS_PENDING:
+        return False
+
+    control_state = str(snapshot.get('results_summary__control_state') or 'running').strip().lower() or 'running'
+    if control_state != 'running':
+        return False
+
+    processing_state = str(snapshot.get('results_summary__processing_state') or 'running').strip().lower() or 'running'
+    if processing_state not in {'queued', 'extracting', 'running'}:
+        return False
+
+    history_id = int(snapshot.get('id') or 0)
+    if history_id <= 0:
+        return False
+
+    if _is_worker_active(history_id):
+        return False
+
+    _start_email_validation_worker(history_id)
+    return True
+
+
+def _get_email_validation_status_results_limit():
+    try:
+        configured = int(getattr(settings, 'EMAIL_VALIDATION_STATUS_RESULTS_LIMIT', 200) or 200)
+    except (TypeError, ValueError):
+        configured = 200
+    return max(0, min(configured, 2000))
+
+
+def _fetch_history_results_preview(history_id):
+    if not history_id:
+        return []
+
+    max_items = _get_email_validation_status_results_limit()
+    if max_items <= 0:
+        return []
+
+    # Guardrail: avoid loading huge json blobs for old records that can OOM PostgreSQL.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_column_size(results_summary) FROM accounts_emailvalidationhistory WHERE id = %s",
+            [int(history_id)],
+        )
+        row = cursor.fetchone()
+        summary_size = int(row[0]) if row and row[0] is not None else 0
+
+    max_safe_bytes = 8 * 1024 * 1024
+    if summary_size > max_safe_bytes:
+        return []
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT COALESCE(results_summary->'results', '[]'::jsonb) FROM accounts_emailvalidationhistory WHERE id = %s",
+            [int(history_id)],
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        return []
+
+    values = row[0]
+    if isinstance(values, str):
+        try:
+            values = json.loads(values)
+        except Exception:
+            values = []
+    if not isinstance(values, list):
+        return []
+
+    return values[:max_items]
+
+
+def _fetch_history_results_from_summary(history_id):
+    if not history_id:
+        return []
+
+    # Guardrail: skip fallback extraction for oversized json summaries.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_column_size(results_summary) FROM accounts_emailvalidationhistory WHERE id = %s",
+            [int(history_id)],
+        )
+        row = cursor.fetchone()
+        summary_size = int(row[0]) if row and row[0] is not None else 0
+
+    max_safe_bytes = 8 * 1024 * 1024
+    if summary_size > max_safe_bytes:
+        return []
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT COALESCE(results_summary->'results', '[]'::jsonb) FROM accounts_emailvalidationhistory WHERE id = %s",
+            [int(history_id)],
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        return []
+
+    values = row[0]
+    if isinstance(values, str):
+        try:
+            values = json.loads(values)
+        except Exception:
+            values = []
+    if not isinstance(values, list):
+        return []
+    return values
+
+
 def _get_history_processing_state(history):
     status_value = str(getattr(history, 'status', '') or '').strip().lower()
     if status_value == EmailValidationHistory.STATUS_COMPLETED:
@@ -3708,7 +4272,7 @@ def _get_history_processing_state(history):
 
     summary = _get_history_summary(history)
     progress_state = str(summary.get('processing_state') or '').strip().lower()
-    if progress_state in {'running', 'paused', 'cancelled', 'stopped', 'completed', 'failed'}:
+    if progress_state in {'queued', 'extracting', 'running', 'paused', 'cancelled', 'stopped', 'completed', 'failed'}:
         return progress_state
     return 'running'
 
@@ -3744,6 +4308,10 @@ def _set_history_control_state(history, control_state):
 
 def _set_history_failed_with_reason(history, reason):
     summary = _get_history_summary(history)
+    persisted_file_path = str(summary.get('source_file_path') or '').strip()
+    if persisted_file_path:
+        _cleanup_persisted_email_validation_source_file(persisted_file_path)
+        summary.pop('source_file_path', None)
     safe_count = int(summary.get('safe_count') or 0)
     unsafe_count = int(summary.get('unsafe_count') or 0)
     results = summary.get('results') if isinstance(summary.get('results'), list) else []
@@ -3803,14 +4371,60 @@ def _update_history_progress(
         'elapsed_seconds': elapsed_seconds,
         'eta_seconds': eta_seconds,
         'processing_state': 'running',
+        'worker_heartbeat_at': timezone.now().isoformat(),
     }
-    if persist_results and isinstance(results, list):
-        summary_payload['results'] = results
+    if isinstance(results, list):
+        live_results_limit = _get_email_validation_live_results_limit()
+        results_total_count = len(results)
+        if persist_results:
+            summary_payload['results'] = results
+            summary_payload['results_preview'] = False
+            summary_payload['results_total_count'] = results_total_count
+        elif live_results_limit > 0:
+            summary_payload['results'] = results[:live_results_limit]
+            summary_payload['results_preview'] = True
+            summary_payload['results_total_count'] = results_total_count
     summary.update(summary_payload)
     if not summary.get('started_at'):
         summary['started_at'] = started_at.isoformat() if started_at else timezone.now().isoformat()
     history.results_summary = summary
     history.save(update_fields=['results_summary'])
+
+
+def _persist_history_result_rows(history, rows, *, clear_existing=False):
+    if not history or not isinstance(rows, list):
+        return
+
+    history_id = int(getattr(history, 'id', 0) or 0)
+    if history_id <= 0:
+        return
+
+    if clear_existing:
+        EmailValidationResult.objects.filter(history_id=history_id).delete()
+
+    records = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        email = str(item.get('email') or '').strip().lower()
+        if not email:
+            continue
+        records.append(
+            EmailValidationResult(
+                history_id=history_id,
+                email=email,
+                request_id=str(item.get('request_id') or '').strip(),
+                status=str(item.get('status') or '').strip()[:40],
+                status_code=str(item.get('statusCode') or '').strip()[:80],
+                classification=str(item.get('classification') or '').strip()[:80],
+                valid_syntax=bool(item.get('validSyntax')),
+                valid_mailbox=bool(item.get('validMailbox')),
+                provider_message_id=str(item.get('providerMessageId') or '').strip()[:150],
+            )
+        )
+
+    if records:
+        EmailValidationResult.objects.bulk_create(records, batch_size=2000)
 
 
 def _start_email_validation_worker(history_id):
@@ -3829,6 +4443,7 @@ def _start_email_validation_worker(history_id):
             summary['celery_task_id'] = str(async_result.id)
             summary['processing_state'] = 'running'
             summary['control_state'] = 'running'
+            summary['worker_heartbeat_at'] = timezone.now().isoformat()
             history.results_summary = summary
             history.save(update_fields=['results_summary'])
             return str(async_result.id)
@@ -3852,21 +4467,81 @@ def _process_email_validation_history_job(history_id):
     try:
         history = EmailValidationHistory.objects.select_related('user', 'api_key').get(id=history_id)
         requested_emails = [str(item or '').strip().lower() for item in (history.emails_requested or []) if str(item or '').strip()]
-        total_count = len(requested_emails)
         started_at = timezone.now()
         summary = _get_history_summary(history)
         request_items = summary.get('request_items') if isinstance(summary.get('request_items'), list) else []
         client_dlr_unique_id = str(summary.get('client_dlr_unique_id') or '').strip() or _DLR_UNKNOWN
-        if not isinstance(summary.get('request_items'), list):
-            request_items = _build_email_validation_request_items(requested_emails, dlr_unique_id=client_dlr_unique_id)
-        if not summary.get('request_items'):
-            summary['request_items'] = request_items
-        summary.setdefault('started_at', started_at.isoformat())
-        summary.setdefault('processed_count', 0)
-        summary.setdefault('total_count', total_count)
-        summary.setdefault('progress_percent', 0)
+
+        source_file_path = str(summary.get('source_file_path') or '').strip()
+        if not requested_emails and source_file_path:
+            summary['processing_state'] = 'extracting'
+            summary['worker_heartbeat_at'] = timezone.now().isoformat()
+            history.results_summary = summary
+            history.save(update_fields=['results_summary'])
+
+            try:
+                with open(source_file_path, 'rb') as stored_file:
+                    extracted_emails = _extract_emails_from_uploaded_file(stored_file)
+            finally:
+                _cleanup_persisted_email_validation_source_file(source_file_path)
+
+            unique_emails = []
+            seen = set()
+            for candidate in extracted_emails:
+                normalized = str(candidate or '').strip().lower()
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    unique_emails.append(normalized)
+
+            if not unique_emails:
+                raise ValueError('Provide at least one email to validate')
+
+            request_items_limit = _get_email_validation_request_items_store_limit()
+            should_store_request_items = request_items_limit > 0 and len(unique_emails) <= request_items_limit
+
+            cost_deducted, _remaining_balance = _deduct_email_validation_credits(history.user, len(unique_emails))
+            requested_emails = unique_emails
+            request_items = _build_email_validation_request_items(requested_emails, dlr_unique_id=client_dlr_unique_id) if should_store_request_items else []
+
+            if should_store_request_items:
+                summary['request_items'] = request_items
+            else:
+                summary.pop('request_items', None)
+            summary.pop('source_file_path', None)
+            summary['source_file_name'] = str(summary.get('source_file_name') or history.file_name or '').strip()
+            summary['source_file_size_bytes'] = int(summary.get('source_file_size_bytes') or 0)
+
+            history.email_count = len(requested_emails)
+            history.emails_requested = requested_emails
+            history.cost_deducted = cost_deducted
+            summary['worker_heartbeat_at'] = timezone.now().isoformat()
+            history.results_summary = summary
+            history.save(update_fields=['email_count', 'emails_requested', 'cost_deducted', 'results_summary'])
+
+        total_count = len(requested_emails)
+        if total_count <= 0:
+            raise ValueError('Provide at least one email to validate')
+
+        request_items_limit = _get_email_validation_request_items_store_limit()
+        should_store_request_items = request_items_limit > 0 and total_count <= request_items_limit
+
+        if should_store_request_items:
+            if not isinstance(summary.get('request_items'), list):
+                request_items = _build_email_validation_request_items(requested_emails, dlr_unique_id=client_dlr_unique_id)
+            if not summary.get('request_items'):
+                summary['request_items'] = request_items
+        else:
+            request_items = []
+            summary.pop('request_items', None)
+        summary['started_at'] = str(summary.get('started_at') or started_at.isoformat())
+        summary['processed_count'] = int(summary.get('processed_count') or 0)
+        summary['total_count'] = int(total_count)
+        summary['progress_percent'] = int(summary.get('progress_percent') or 0)
+        summary['elapsed_seconds'] = int(summary.get('elapsed_seconds') or 0)
+        summary['eta_seconds'] = int(summary.get('eta_seconds') or 0)
         summary['processing_state'] = 'running'
         summary['control_state'] = str(summary.get('control_state') or 'running').strip().lower() or 'running'
+        summary['worker_heartbeat_at'] = timezone.now().isoformat()
         history.results_summary = summary
         history.save(update_fields=['results_summary'])
 
@@ -3877,6 +4552,7 @@ def _process_email_validation_history_job(history_id):
         if provider_mode not in {'own_system', 'zerobounce'}:
             provider_mode = 'own_system'
         collected_results = []
+        _persist_history_result_rows(history, [], clear_existing=True)
         provider_request_ids = []
         processed_count = 0
         safe_count = 0
@@ -3907,6 +4583,7 @@ def _process_email_validation_history_job(history_id):
             batch_number += 1
             batch_provider_candidates = []
             batch_results = []
+            batch_client_results = []
             for candidate in current_batch:
                 if '@' not in candidate:
                     batch_results.append(
@@ -3930,8 +4607,9 @@ def _process_email_validation_history_job(history_id):
             for candidate in current_batch:
                 normalized = str(candidate or '').strip().lower()
                 item = result_map.get(normalized) or _build_email_validation_error_result(normalized, 'Validation result unavailable.', provider_mode=provider_mode)
-                client_item = _to_client_validation_result(item)
+                client_item = _to_history_validation_result(item)
                 collected_results.append(client_item)
+                batch_client_results.append(client_item)
                 if _is_safe_client_validation_result(client_item):
                     safe_count += 1
                 else:
@@ -3941,6 +4619,7 @@ def _process_email_validation_history_job(history_id):
                     provider_request_ids.append(provider_id)
 
             _attach_per_email_unique_ids(collected_results, request_items)
+            _persist_history_result_rows(history, batch_client_results)
 
             processed_count = min(total_count, processed_count + len(current_batch))
             should_publish_progress = processed_count >= total_count or (batch_number % progress_update_interval == 0)
@@ -3966,7 +4645,6 @@ def _process_email_validation_history_job(history_id):
                 'unsafe_count': unsafe_count,
                 'provider_message_id': provider_request_ids[0] if provider_request_ids else '',
                 'provider_message_ids': provider_request_ids,
-                'results': collected_results,
                 'processed_count': total_count,
                 'total_count': total_count,
                 'progress_percent': 100,
@@ -3976,6 +4654,19 @@ def _process_email_validation_history_job(history_id):
                 'control_state': 'running',
             }
         )
+
+        final_results_store_limit = _get_email_validation_final_results_store_limit()
+        if final_results_store_limit <= 0 or len(collected_results) <= final_results_store_limit:
+            summary['results'] = collected_results
+            summary['results_truncated'] = False
+            summary['results_total_count'] = len(collected_results)
+        else:
+            summary['results'] = collected_results[:final_results_store_limit]
+            summary['results_truncated'] = True
+            summary['results_total_count'] = len(collected_results)
+
+        summary.pop('source_file_path', None)
+        summary['worker_heartbeat_at'] = timezone.now().isoformat()
         history.status = EmailValidationHistory.STATUS_COMPLETED
         history.results_summary = summary
         history.completed_at = timezone.now()
@@ -4130,8 +4821,49 @@ class LoginView(generics.GenericAPIView):
 
         _promote_primary_admin(user)
 
+        if user.login_locked_until:
+            if timezone.now() < user.login_locked_until:
+                remaining_seconds = max(1, int((user.login_locked_until - timezone.now()).total_seconds()))
+                return Response(
+                    {
+                        'detail': 'Too many wrong attempts. Please try again after some time.',
+                        'account_locked': True,
+                        'retry_after_seconds': remaining_seconds,
+                        'locked_until': user.login_locked_until.isoformat(),
+                    },
+                    status=429,
+                )
+            user.failed_login_attempts = 0
+            user.login_locked_until = None
+            user.save(update_fields=['failed_login_attempts', 'login_locked_until'])
+
         if not user.check_password(password):
-            return Response({'detail': 'Invalid credentials'}, status=401)
+            user.failed_login_attempts = int(user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= LOGIN_MAX_FAILED_ATTEMPTS:
+                user.login_locked_until = timezone.now() + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+                user.save(update_fields=['failed_login_attempts', 'login_locked_until'])
+                return Response(
+                    {
+                        'detail': 'Too many wrong attempts. Please try again after some time.',
+                        'account_locked': True,
+                        'retry_after_seconds': LOGIN_LOCKOUT_MINUTES * 60,
+                        'locked_until': user.login_locked_until.isoformat(),
+                    },
+                    status=429,
+                )
+            user.save(update_fields=['failed_login_attempts'])
+            return Response(
+                {
+                    'detail': 'Invalid credentials',
+                    'attempts_remaining': max(0, LOGIN_MAX_FAILED_ATTEMPTS - user.failed_login_attempts),
+                },
+                status=401,
+            )
+
+        if user.failed_login_attempts or user.login_locked_until:
+            user.failed_login_attempts = 0
+            user.login_locked_until = None
+            user.save(update_fields=['failed_login_attempts', 'login_locked_until'])
 
         if not user.is_active:
             return Response(
@@ -4141,6 +4873,26 @@ class LoginView(generics.GenericAPIView):
                     'email': user.email,
                 },
                 status=403,
+            )
+
+        if user.two_factor_enabled:
+            otp = generate_otp()
+            user.otp_code = otp
+            user.otp_created = timezone.now()
+            user.save(update_fields=['otp_code', 'otp_created'])
+            email_sent = send_otp_via_email(user, otp)
+            diagnostics = _otp_email_diagnostics(email_sent)
+            headers = {'X-OTP-Email-Sent': 'true' if email_sent else 'false'}
+            return Response(
+                {
+                    'requires_otp_login': True,
+                    'email': user.email,
+                    'detail': 'Two-factor authentication is enabled. OTP sent to your email.',
+                    'email_sent': email_sent,
+                    **diagnostics,
+                },
+                status=200,
+                headers=headers,
             )
 
         refresh = RefreshToken.for_user(user)
@@ -4271,6 +5023,7 @@ class UserProfileView(generics.GenericAPIView):
             'is_sms_enabled': user.is_sms_enabled,
             'sender_id_type': user.sender_id_type,
             'sender_id': user.sender_id,
+            'two_factor_enabled': user.two_factor_enabled,
             'free_trial_sender_id': user.free_trial_sender_id,
             'date_joined': user.date_joined,
             'last_login': user.last_login,
@@ -4337,8 +5090,14 @@ class UserProfileView(generics.GenericAPIView):
         user.sender_id_type = normalized_type
         user.sender_id = normalized_sender_id or None
 
+        update_fields = ['first_name', 'last_name', 'phone_number', 'sender_id_type', 'sender_id']
+        if 'two_factor_enabled' in request.data:
+            two_factor_raw = request.data.get('two_factor_enabled')
+            user.two_factor_enabled = str(two_factor_raw).strip().lower() in {'1', 'true', 'yes', 'on'} if not isinstance(two_factor_raw, bool) else two_factor_raw
+            update_fields.append('two_factor_enabled')
+
         try:
-            user.save(update_fields=['first_name', 'last_name', 'phone_number', 'sender_id_type', 'sender_id'])
+            user.save(update_fields=update_fields)
         except IntegrityError:
             suggestions = _build_sender_id_suggestions(
                 normalized_sender_id,
@@ -6022,6 +6781,10 @@ class EmailValidationView(generics.GenericAPIView):
 
     def post(self, request):
         source_file = request.FILES.get('source_file') if hasattr(request, 'FILES') else None
+        try:
+            client_dlr_unique_id = _extract_client_dlr_unique_id(request)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         defer_start_raw = request.data.get('defer_start')
         defer_start = str(defer_start_raw or '').strip().lower() in {'1', 'true', 'yes', 'on'}
         provider_mode = _get_email_validation_provider_mode()
@@ -6032,48 +6795,45 @@ class EmailValidationView(generics.GenericAPIView):
         if available_validation_balance <= 0:
             return Response({'detail': 'No email validation credits available.'}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
-        try:
-            unique_emails, file_name = _collect_validation_emails_from_file(request, enforce_request_limit=not bool(source_file))
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        request_items = _build_email_validation_request_items(unique_emails, dlr_unique_id=_DLR_UNKNOWN)
-
-        try:
-            cost_deducted, remaining_balance = _deduct_email_validation_credits(request.user, len(unique_emails))
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
-
         if source_file:
+            try:
+                persisted_file_path, file_name, file_size = _persist_email_validation_source_file(source_file)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
             initial_control_state = 'paused' if defer_start else 'running'
-            initial_processing_state = 'paused' if defer_start else 'running'
+            initial_processing_state = 'paused' if defer_start else 'queued'
             history = EmailValidationHistory.objects.create(
                 user=request.user,
-                dlr_unique_id=_DLR_UNKNOWN,
+                dlr_unique_id=client_dlr_unique_id,
                 source='dashboard',
                 status=EmailValidationHistory.STATUS_PENDING,
-                email_count=len(unique_emails),
-                emails_requested=unique_emails,
+                email_count=0,
+                emails_requested=[],
                 results_summary={
                     'provider_mode': provider_mode,
                     'provider_mode_label': _normalize_provider_mode_label(provider_mode),
-                    'request_items': request_items,
+                    'request_items': [],
                     'safe_count': 0,
                     'unsafe_count': 0,
                     'provider_message_id': '',
                     'provider_message_ids': [],
+                    'client_dlr_unique_id': client_dlr_unique_id,
                     'results': [],
                     'queued': True,
                     'control_state': initial_control_state,
                     'processing_state': initial_processing_state,
                     'processed_count': 0,
-                    'total_count': len(unique_emails),
+                    'total_count': 0,
                     'progress_percent': 0,
                     'elapsed_seconds': 0,
                     'eta_seconds': 0,
                     'started_at': timezone.now().isoformat(),
+                    'source_file_path': persisted_file_path,
+                    'source_file_name': file_name,
+                    'source_file_size_bytes': int(file_size or 0),
                 },
-                cost_deducted=cost_deducted,
+                cost_deducted=Decimal('0.0000'),
                 file_name=file_name,
                 completed_at=None,
             )
@@ -6082,12 +6842,16 @@ class EmailValidationView(generics.GenericAPIView):
             history_payload = EmailValidationHistorySerializer(history).data
             if not defer_start:
                 _start_email_validation_worker(history.id)
+
             return Response(
                 {
                     'request_id': history.request_id,
-                    'count': len(unique_emails),
-                    'wallet_balance': str(remaining_balance),
+                    'batch_id': history.request_id,
+                    'request_ids': [],
+                    'count': 0,
+                    'wallet_balance': str(available_validation_balance),
                     'provider_mode': provider_mode,
+                    'dlr_unique_id': client_dlr_unique_id,
                     'ready_to_start': bool(defer_start),
                     'auto_started': not bool(defer_start),
                     'source_file_name': file_name,
@@ -6097,7 +6861,7 @@ class EmailValidationView(generics.GenericAPIView):
                     },
                     'results': [],
                     'simple_results': [],
-                    'request_items': request_items,
+                    'request_items': [],
                     'history': history_payload,
                     'dlr_report': _build_email_validation_dlr_report(
                         provider_mode=provider_mode,
@@ -6108,12 +6872,24 @@ class EmailValidationView(generics.GenericAPIView):
                 status=status.HTTP_202_ACCEPTED,
             )
 
+        try:
+            unique_emails, file_name = _collect_validation_emails_from_file(request, enforce_request_limit=True)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        request_items = _build_email_validation_request_items(unique_emails, dlr_unique_id=_DLR_UNKNOWN)
+
+        try:
+            cost_deducted, remaining_balance = _deduct_email_validation_credits(request.user, len(unique_emails))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
         if async_threshold > 0 and len(unique_emails) >= async_threshold:
             initial_control_state = 'paused' if defer_start else 'running'
             initial_processing_state = 'paused' if defer_start else 'running'
             history = EmailValidationHistory.objects.create(
                 user=request.user,
-                dlr_unique_id=_DLR_UNKNOWN,
+                dlr_unique_id=client_dlr_unique_id,
                 source='dashboard',
                 status=EmailValidationHistory.STATUS_PENDING,
                 email_count=len(unique_emails),
@@ -6126,6 +6902,7 @@ class EmailValidationView(generics.GenericAPIView):
                     'unsafe_count': 0,
                     'provider_message_id': '',
                     'provider_message_ids': [],
+                    'client_dlr_unique_id': client_dlr_unique_id,
                     'results': [],
                     'queued': True,
                     'control_state': initial_control_state,
@@ -6148,7 +6925,9 @@ class EmailValidationView(generics.GenericAPIView):
                 _start_email_validation_worker(history.id)
             return Response(
                 {
-                    'request_id': history.request_id,
+                    'request_id': request_items[0]['request_id'] if request_items else '',
+                    'batch_id': history.request_id,
+                    'request_ids': [item['request_id'] for item in request_items],
                     'count': len(unique_emails),
                     'wallet_balance': str(remaining_balance),
                     'provider_mode': provider_mode,
@@ -6212,7 +6991,9 @@ class EmailValidationView(generics.GenericAPIView):
 
         return Response(
             {
-                'request_id': history.request_id,
+                'request_id': client_results[0].get('request_id', '') if len(client_results) > 1 else history.request_id,
+                'batch_id': history.request_id if len(client_results) > 1 else '',
+                'request_ids': [item.get('request_id', '') for item in client_results if item.get('request_id')],
                 'count': len(client_results),
                 'wallet_balance': str(remaining_balance),
                 'provider_mode': provider_mode,
@@ -6562,11 +7343,18 @@ class APIEmailValidationView(generics.GenericAPIView):
             client_dlr_unique_id = _extract_client_dlr_unique_id(request)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        if source_file:
-            return Response({'detail': 'source_file is not supported for API validation. Send a single email.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if request.data.get('emails') not in [None, '']:
-            return Response({'detail': 'emails list is not supported for API validation. Send a single email.'}, status=status.HTTP_400_BAD_REQUEST)
+        raw_email = str(request.data.get('email') or '').strip()
+        raw_emails = request.data.get('emails')
+        has_bulk_emails = isinstance(raw_emails, list) and bool(raw_emails)
+        if isinstance(raw_emails, str):
+            has_bulk_emails = bool(raw_emails.strip())
+        input_modes = int(bool(raw_email)) + int(has_bulk_emails) + int(bool(source_file))
+        if input_modes != 1:
+            return Response(
+                {'detail': 'Send exactly one of email, emails, or source_file.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         provider_mode = _get_email_validation_provider_mode()
         try:
@@ -6585,15 +7373,62 @@ class APIEmailValidationView(generics.GenericAPIView):
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        if len(unique_emails) != 1:
-            return Response({'detail': 'Exactly one email is allowed per API validation request.'}, status=status.HTTP_400_BAD_REQUEST)
-
         request_items = _build_email_validation_request_items(unique_emails, dlr_unique_id=client_dlr_unique_id)
 
         try:
             cost_deducted, remaining_balance = _deduct_email_validation_credits(user, len(unique_emails))
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        if len(unique_emails) > 1 or source_file:
+            history = EmailValidationHistory.objects.create(
+                user=user,
+                api_key=api_key,
+                dlr_unique_id=client_dlr_unique_id,
+                source='api',
+                status=EmailValidationHistory.STATUS_PENDING,
+                email_count=len(unique_emails),
+                emails_requested=unique_emails,
+                results_summary={
+                    'provider_mode': provider_mode,
+                    'provider_mode_label': _normalize_provider_mode_label(provider_mode),
+                    'request_items': request_items,
+                    'request_mode': request_mode,
+                    'request_mode_label': 'IP mode' if request_mode == 'ip' else 'API Key mode',
+                    'auth_client_ip': str(auth_client_ip or '').strip(),
+                    'client_dlr_unique_id': client_dlr_unique_id,
+                    'safe_count': 0,
+                    'unsafe_count': 0,
+                    'provider_message_id': '',
+                    'provider_message_ids': [],
+                    'results': [],
+                    'queued': True,
+                    'control_state': 'running',
+                    'processing_state': 'queued',
+                    'processed_count': 0,
+                    'total_count': len(unique_emails),
+                    'progress_percent': 0,
+                    'elapsed_seconds': 0,
+                    'eta_seconds': 0,
+                    'started_at': timezone.now().isoformat(),
+                },
+                cost_deducted=cost_deducted,
+                file_name=file_name,
+                completed_at=None,
+            )
+            _assign_email_validation_request_id(history)
+            _assign_email_validation_dlr_unique_id(history)
+            _start_email_validation_worker(history.id)
+            return Response(
+                {
+                    'response_code': status.HTTP_202_ACCEPTED,
+                    'request_id': history.request_id,
+                    'dlr_unique_id': client_dlr_unique_id,
+                    'email': '',
+                    'status': 'queued',
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
 
         history = EmailValidationHistory.objects.create(
             user=user,
@@ -6673,17 +7508,19 @@ class APIEmailValidationView(generics.GenericAPIView):
         return Response(concise_response, status=status.HTTP_200_OK)
 
 
-class ValidationHistoryListView(generics.ListAPIView):
+class ValidationHistoryListView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
-    serializer_class = EmailValidationHistorySerializer
 
-    def get_queryset(self):
+    def get(self, request):
         source = str(self.request.query_params.get('source') or '').strip().lower()
         query = str(self.request.query_params.get('q') or '').strip()
+
+        queryset = _get_history_snapshot_queryset().order_by('-created_at')
         if _has_support_read_access(self.request.user):
-            queryset = EmailValidationHistory.objects.all().select_related('api_key', 'user').order_by('-created_at')
+            pass
         else:
-            queryset = EmailValidationHistory.objects.filter(user=self.request.user).select_related('api_key', 'user').order_by('-created_at')
+            queryset = queryset.filter(user_id=self.request.user.id)
+
         if source in {'dashboard', 'api'}:
             queryset = queryset.filter(source=source)
         if query:
@@ -6691,33 +7528,213 @@ class ValidationHistoryListView(generics.ListAPIView):
             if query.isdigit():
                 filters |= Q(user__id=int(query))
             queryset = queryset.filter(filters)
-        return queryset
+
+        rows = list(queryset[:200])
+        payload = []
+        for row in rows:
+            payload.append(_build_history_payload_from_snapshot(row, worker_active=False))
+        return Response(payload)
 
 
 class EmailValidationStatusView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, request_id):
-        history = EmailValidationHistory.objects.select_related('api_key', 'user').filter(request_id=request_id).first()
+        history = _resolve_email_validation_history(request_id, request.user)
         if not history:
             return Response({'detail': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        if not (_has_support_read_access(request.user) or history.user_id == request.user.id):
+        snapshot = _get_history_snapshot_queryset().filter(id=history.id).first()
+
+        if not (_has_support_read_access(request.user) or int(snapshot.get('user_id') or 0) == request.user.id):
             return Response({'detail': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
 
-        payload = EmailValidationHistorySerializer(history).data
-        payload['worker_active'] = _is_worker_active(history.id)
-        payload['processing_state'] = _get_history_processing_state(history)
-        summary = _get_history_summary(history)
-        provider_mode = str(summary.get('provider_mode') or _get_email_validation_provider_mode() or 'own_system').strip().lower()
-        payload['provider_mode'] = provider_mode
-        payload['provider_mode_label'] = _normalize_provider_mode_label(provider_mode)
-        payload['dlr_report'] = _build_email_validation_dlr_report(
-            provider_mode=provider_mode,
-            results=summary.get('results') if isinstance(summary.get('results'), list) else [],
-            history=history,
-        )
+        history_id = int(snapshot.get('id') or 0)
+        worker_active = _is_worker_active(history_id) if history_id > 0 else False
+
+        try:
+            if not worker_active:
+                _attempt_history_worker_recovery_from_snapshot(snapshot)
+                worker_active = _is_worker_active(history_id) if history_id > 0 else False
+        except OperationalError:
+            # If the row is too large to update safely, compact summary in place and continue with lightweight payload.
+            if history_id > 0:
+                try:
+                    _compact_history_summary_in_db(history_id)
+                except Exception:
+                    pass
+
+        preview_rows = []
+        if history_id > 0:
+            try:
+                preview_rows = _fetch_history_results_preview(history_id)
+            except Exception:
+                preview_rows = []
+
+        payload = _build_history_payload_from_snapshot(snapshot, worker_active=worker_active, preview_rows=preview_rows)
+        history = EmailValidationHistory.objects.filter(id=history_id).first()
+        payload['batch_id'] = snapshot.get('request_id') or ''
+        payload['request_ids'] = _get_email_validation_request_ids(history) if history else []
+        if payload['request_ids']:
+            payload['request_id'] = payload['request_ids'][0]
         return Response(payload)
+
+
+class EmailValidationResultsListView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, request_id):
+        history = _resolve_email_validation_history(request_id, request.user)
+        if not history:
+            return Response({'detail': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        snapshot = _get_history_snapshot_queryset().filter(id=history.id).first()
+
+        if not (_has_support_read_access(request.user) or int(snapshot.get('user_id') or 0) == request.user.id):
+            return Response({'detail': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            page = int(request.query_params.get('page') or 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get('page_size') or 200)
+        except (TypeError, ValueError):
+            page_size = 200
+
+        page = max(1, page)
+        page_size = max(1, min(500, page_size))
+        offset = (page - 1) * page_size
+        order = str(request.query_params.get('order') or '').strip().lower()
+        if order not in {'latest', 'oldest'}:
+            order = 'oldest'
+        query = str(request.query_params.get('q') or '').strip()
+
+        history_id = int(snapshot.get('id') or 0)
+        detail_queryset = EmailValidationResult.objects.filter(history_id=history_id)
+        if query:
+            detail_queryset = detail_queryset.filter(
+                Q(request_id__icontains=query)
+                | Q(email__icontains=query)
+                | Q(status__icontains=query)
+                | Q(status_code__icontains=query)
+                | Q(classification__icontains=query)
+            )
+        detail_queryset = detail_queryset.order_by('-id' if order == 'latest' else 'id')
+        total_rows = detail_queryset.count()
+        worker_active = _is_worker_active(history_id) if history_id > 0 else False
+        processing_state = str(snapshot.get('results_summary__processing_state') or ('completed' if str(snapshot.get('status') or '').strip().lower() == 'completed' else 'running')).strip().lower()
+        results_compacted = bool(snapshot.get('results_summary__results_compacted'))
+        processed_count = int(snapshot.get('results_summary__processed_count') or 0)
+        safe_count = int(snapshot.get('results_summary__safe_count') or 0)
+        unsafe_count = int(snapshot.get('results_summary__unsafe_count') or 0)
+        total_count = int(snapshot.get('results_summary__total_count') or snapshot.get('email_count') or 0)
+        progress_percent = int(snapshot.get('results_summary__progress_percent') or 0)
+        if total_count > 0 and processed_count > 0:
+            progress_percent = max(progress_percent, int((processed_count * 100) / max(1, total_count)))
+
+        if history_id > 0 and not worker_active:
+            try:
+                recovered = _attempt_history_worker_recovery_from_snapshot(snapshot)
+                if recovered:
+                    worker_active = _is_worker_active(history_id)
+                    if processing_state in {'queued', 'extracting'}:
+                        processing_state = 'running'
+            except Exception:
+                pass
+
+        rows = []
+        rows_source = 'detail_table'
+        if total_rows > 0:
+            for item in detail_queryset[offset:offset + page_size]:
+                rows.append(
+                    {
+                        'id': item.id,
+                        'email': item.email,
+                        'request_id': item.request_id,
+                        'dlr_unique_id': snapshot.get('dlr_unique_id') or _DLR_UNKNOWN,
+                        'status': item.status,
+                        'status_code': item.status_code,
+                        'classification': item.classification,
+                        'valid_syntax': bool(item.valid_syntax),
+                        'valid_mailbox': bool(item.valid_mailbox),
+                        'result': 'valid' if (item.valid_syntax and item.valid_mailbox) else 'not valid',
+                        'provider_message_id': item.provider_message_id,
+                    }
+                )
+        else:
+            # Backward compatibility: for old completed non-compacted rows, serve persisted summary results.
+            summary_rows = []
+            if history_id > 0 and not results_compacted:
+                try:
+                    summary_rows = _fetch_history_results_from_summary(history_id)
+                except Exception:
+                    summary_rows = []
+
+            if summary_rows:
+                total_rows = len(summary_rows)
+                rows_source = 'summary_fallback'
+                selected_rows = summary_rows
+                if order == 'latest':
+                    selected_rows = list(reversed(summary_rows))
+                for idx, item in enumerate(selected_rows[offset:offset + page_size], start=offset + 1):
+                    if not isinstance(item, dict):
+                        continue
+                    valid_syntax = bool(item.get('validSyntax'))
+                    valid_mailbox = bool(item.get('validMailbox'))
+                    rows.append(
+                        {
+                            'id': idx,
+                            'email': str(item.get('email') or '').strip().lower(),
+                            'request_id': str(item.get('request_id') or '').strip(),
+                            'dlr_unique_id': str(item.get('dlr_unique_id') or snapshot.get('dlr_unique_id') or _DLR_UNKNOWN).strip() or _DLR_UNKNOWN,
+                            'status': str(item.get('status') or '').strip(),
+                            'status_code': str(item.get('statusCode') or '').strip(),
+                            'classification': str(item.get('classification') or '').strip(),
+                            'valid_syntax': valid_syntax,
+                            'valid_mailbox': valid_mailbox,
+                            'result': 'valid' if (valid_syntax and valid_mailbox) else 'not valid',
+                            'provider_message_id': str(item.get('providerMessageId') or '').strip(),
+                        }
+                    )
+
+        summary_total = int(snapshot.get('results_summary__results_total_count') or snapshot.get('email_count') or 0)
+        detail_available = total_rows > 0
+
+        message = ''
+        if not detail_available:
+            if str(snapshot.get('status') or '').strip().lower() == 'pending':
+                message = 'Request is pending. Detailed rows will appear as processing progresses.'
+                if processing_state == 'queued' and not worker_active:
+                    message = 'Request is queued but worker is not active. Please resume/start the request.'
+            else:
+                message = 'Detailed per-email rows are not available for this request yet. Re-run processing to build detailed rows.'
+
+        return Response(
+            {
+                'request_id': snapshot.get('request_id') or '',
+                'dlr_unique_id': snapshot.get('dlr_unique_id') or _DLR_UNKNOWN,
+                'status': str(snapshot.get('status') or '').strip().lower() or 'pending',
+                'processing_state': processing_state,
+                'worker_active': bool(worker_active),
+                'page': page,
+                'page_size': page_size,
+                'order': order,
+                'query': query,
+                'total': total_rows,
+                'summary_total': summary_total,
+                'processed_count': processed_count,
+                'safe_count': safe_count,
+                'unsafe_count': unsafe_count,
+                'total_count': total_count,
+                'progress_percent': max(0, min(100, progress_percent)),
+                'detail_available': detail_available,
+                'results_compacted': results_compacted,
+                'rows_source': rows_source,
+                'message': message,
+                'rows': rows,
+            }
+        )
 
 
 class EmailValidationControlView(generics.GenericAPIView):
@@ -6728,7 +7745,7 @@ class EmailValidationControlView(generics.GenericAPIView):
         if action not in {'start', 'pause', 'resume', 'stop', 'cancel'}:
             return Response({'detail': 'action must be one of start, pause, resume, stop, cancel'}, status=status.HTTP_400_BAD_REQUEST)
 
-        history = EmailValidationHistory.objects.select_related('api_key', 'user').filter(request_id=request_id).first()
+        history = _resolve_email_validation_history(request_id, request.user)
         if not history:
             return Response({'detail': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -6764,6 +7781,10 @@ class EmailValidationControlView(generics.GenericAPIView):
             history=history,
         )
         payload['last_action'] = action
+        payload['batch_id'] = history.request_id
+        payload['request_ids'] = _get_email_validation_request_ids(history)
+        if payload['request_ids']:
+            payload['request_id'] = payload['request_ids'][0]
         return Response(payload)
 
 
@@ -6905,6 +7926,9 @@ class APIEmailValidationStatusView(generics.GenericAPIView):
         if not history:
             return Response({'detail': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
 
+        _attempt_history_worker_recovery(history)
+        history.refresh_from_db()
+
         concise_response = _build_concise_api_status_response(history)
         return Response(concise_response)
 
@@ -6925,7 +7949,7 @@ class APIEmailValidationControlView(generics.GenericAPIView):
         if action not in {'start', 'pause', 'resume', 'stop', 'cancel'}:
             return Response({'detail': 'action must be one of start, pause, resume, stop, cancel'}, status=status.HTTP_400_BAD_REQUEST)
 
-        history = EmailValidationHistory.objects.select_related('api_key', 'user').filter(request_id=request_id, user=user).first()
+        history = _resolve_email_validation_history(request_id, user)
         if not history:
             return Response({'detail': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -6959,6 +7983,10 @@ class APIEmailValidationControlView(generics.GenericAPIView):
             include_dlr_unique_id=False,
         )
         payload['last_action'] = action
+        payload['batch_id'] = history.request_id
+        payload['request_ids'] = _get_email_validation_request_ids(history)
+        if payload['request_ids']:
+            payload['request_id'] = payload['request_ids'][0]
         return Response(payload)
 
 

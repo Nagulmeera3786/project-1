@@ -150,6 +150,24 @@ export default function EmailValidation() {
   const [savingAdminIpRequestId, setSavingAdminIpRequestId] = useState(null);
   const [selectedUserIpWhitelistDraft, setSelectedUserIpWhitelistDraft] = useState('');
 
+  const formatDuration = (seconds) => {
+    const value = Math.max(0, Number(seconds || 0));
+    if (!Number.isFinite(value)) {
+      return '0s';
+    }
+    if (value < 60) {
+      return `${Math.round(value)}s`;
+    }
+    const totalSeconds = Math.round(value);
+    const hrs = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+    if (hrs > 0) {
+      return `${hrs}h ${mins}m ${secs}s`;
+    }
+    return `${mins}m ${secs}s`;
+  };
+
   useEffect(() => {
     const initialize = async () => {
       try {
@@ -414,7 +432,8 @@ export default function EmailValidation() {
     setResults(effectiveResults);
     setSummary({ safe_to_send_yes: safeCount, safe_to_send_no: unsafeCount });
     setLastFileName(data?.source_file_name || history?.file_name || '');
-    setLatestRequestId(data?.request_id || history?.request_id || '');
+    const publicRequestId = data?.request_ids?.[0] || data?.request_id || history?.request_items?.[0]?.request_id || history?.request_id || '';
+    setLatestRequestId(publicRequestId);
     const modeFromPayload = String(
       data?.provider_mode
       || historySummary?.provider_mode
@@ -440,13 +459,36 @@ export default function EmailValidation() {
 
   const hydrateFromHistoryRow = (current = {}) => {
     const rs = current?.results_summary || {};
-    const progressPercent = Number(rs?.progress_percent || 0);
+    const rawProgressPercent = Number(rs?.progress_percent || 0);
     const processedCount = Number(rs?.processed_count || 0);
     const totalCount = Number(rs?.total_count || current?.email_count || 0);
-    const elapsedSeconds = Number(rs?.elapsed_seconds || 0);
+    const computedProgressFromCounts = totalCount > 0
+      ? Math.min(100, Math.round((Math.max(0, processedCount) / Math.max(1, totalCount)) * 100))
+      : 0;
+    const progressPercent = Math.max(rawProgressPercent, computedProgressFromCounts);
+    const startedAtRaw = String(rs?.started_at || '').trim();
+    const derivedElapsedSeconds = (() => {
+      if (!startedAtRaw) {
+        return 0;
+      }
+      const startedMs = new Date(startedAtRaw).getTime();
+      if (!Number.isFinite(startedMs)) {
+        return 0;
+      }
+      return Math.max(0, Math.round((Date.now() - startedMs) / 1000));
+    })();
+    const elapsedSeconds = Number(rs?.elapsed_seconds || derivedElapsedSeconds || 0);
     const etaSeconds = Number(rs?.eta_seconds || 0);
     const processingState = String(current?.processing_state || rs?.processing_state || current?.status || 'pending').toLowerCase();
     const modeFromRow = String(current?.provider_mode || rs?.provider_mode || validationProviderMode || 'own_system').toLowerCase();
+    const liveRows = Array.isArray(rs?.results) ? rs.results : [];
+    if (liveRows.length > 0) {
+      setResults(liveRows);
+    }
+    setSummary({
+      safe_to_send_yes: Number(rs?.safe_count || 0),
+      safe_to_send_no: Number(rs?.unsafe_count || 0),
+    });
 
     if (current?.dlr_report && typeof current.dlr_report === 'object') {
       setDlrReport(current.dlr_report);
@@ -463,6 +505,7 @@ export default function EmailValidation() {
 
     setActiveRequestMeta({
       requestId: current?.request_id || '',
+      batchId: current?.batch_id || current?.request_id || '',
       status: String(current?.status || 'pending').toLowerCase(),
       processingState,
       progressPercent,
@@ -554,7 +597,7 @@ export default function EmailValidation() {
   };
 
   const runRequestAction = async (action) => {
-    const requestId = activeRequestMeta?.requestId || latestRequestId;
+    const requestId = activeRequestMeta?.batchId || activeRequestMeta?.requestId || latestRequestId;
     if (!requestId) {
       setError('No active request found.');
       return;
@@ -656,7 +699,7 @@ export default function EmailValidation() {
   };
 
   useEffect(() => {
-    if (!activeRequestMeta?.requestId || keepInBackground) {
+    if (!activeRequestMeta?.requestId) {
       return undefined;
     }
 
@@ -684,7 +727,7 @@ export default function EmailValidation() {
         pollIntervalRef.current = null;
       }
     };
-  }, [activeRequestMeta?.requestId, keepInBackground]);
+  }, [activeRequestMeta?.requestId]);
 
   useEffect(() => {
     const persistedRequestId = localStorage.getItem('emailValidationActiveRequestId');
@@ -702,10 +745,6 @@ export default function EmailValidation() {
 
     if (mode === 'file') {
       const requestId = activeRequestMeta?.requestId || latestRequestId;
-      if (!sourceFile) {
-        setError('Please upload a file first.');
-        return;
-      }
       if (!requestId || !fileUploadReady) {
         setError('Please click Proceed Upload first.');
         return;
@@ -764,7 +803,7 @@ export default function EmailValidation() {
       response = await API.post('email-validation/validate/', payload, { timeout: 900000 });
 
       const isQueuedFileValidation = mode === 'file' && String(response?.status || '').toLowerCase() === '202';
-      const pendingRequestId = response.data?.request_id || response.data?.history?.request_id || '';
+      const pendingRequestId = response.data?.request_id || response.data?.batch_id || response.data?.history?.request_id || '';
 
       if (isQueuedFileValidation || String(response.data?.status || '').toLowerCase() === 'pending') {
         setStatusMessage('File accepted. Validation is running in the background...');
@@ -880,12 +919,12 @@ export default function EmailValidation() {
           if (total > 0) {
             const percent = Math.min(100, Math.round((loaded / total) * 100));
             setProgressPercent(percent);
-            setStatusMessage(percent < 100 ? `Uploading file... ${percent}%` : 'Upload complete. Extracting file on server...');
+            setStatusMessage(percent < 100 ? `Uploading file... ${percent}%` : 'Upload complete. Queuing file for background extraction...');
           }
         },
       });
 
-      const requestId = String(response?.data?.request_id || '');
+      const requestId = String(response?.data?.request_id || response?.data?.batch_id || '');
       if (!requestId) {
         throw new Error('Upload succeeded but request ID is missing.');
       }
@@ -896,8 +935,8 @@ export default function EmailValidation() {
       setFileUploadReady(true);
       setProgressStage('idle');
       setProgressPercent(100);
-      setStatusMessage('File uploaded and extracted. Click Start Mail Validation.');
-      setInfo('File uploaded and extracted successfully. Click Start Mail Validation to begin parallel processing.');
+      setStatusMessage('File upload completed. Click Start Mail Validation.');
+      setInfo('File upload completed successfully. Mail extraction and validation will run in background after Start.');
       await refreshWalletBalance(response.data?.wallet_balance);
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'File upload/extraction failed.'));
@@ -1360,6 +1399,40 @@ export default function EmailValidation() {
         Dashboard + API validation, key management, source history, and admin credits.
       </p>
 
+      {activeRequestMeta?.requestId && !['completed', 'failed', 'cancelled', 'stopped'].includes(String(activeRequestMeta.processingState || '').toLowerCase()) && (
+        <div style={{
+          marginBottom: '16px',
+          border: '1px solid #bbf7d0',
+          background: '#f0fdf4',
+          borderRadius: '10px',
+          padding: '12px',
+          position: 'sticky',
+          top: '10px',
+          zIndex: 5,
+        }}>
+          <div style={{ fontSize: '13px', fontWeight: 800, color: '#14532d', marginBottom: '6px' }}>
+            Active Mail Validation: {activeRequestMeta.processingState || activeRequestMeta.status}
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '12px', color: '#14532d', marginBottom: '8px' }}>
+            <span><strong>Request:</strong> {activeRequestMeta.requestId}</span>
+            <span><strong>Progress:</strong> {activeRequestMeta.progressPercent || 0}%</span>
+            <span><strong>Processed:</strong> {activeRequestMeta.processedCount || 0}/{activeRequestMeta.totalCount || 0}</span>
+            <span><strong>Elapsed:</strong> {formatDuration(activeRequestMeta.elapsedSeconds || 0)}</span>
+            <span><strong>ETA:</strong> {formatDuration(activeRequestMeta.etaSeconds || 0)}</span>
+          </div>
+          <div style={{ height: '8px', width: '100%', background: '#dcfce7', borderRadius: '999px', overflow: 'hidden' }}>
+            <div
+              style={{
+                width: `${Math.max(0, Math.min(100, Number(activeRequestMeta.progressPercent || 0)))}%`,
+                height: '100%',
+                background: '#16a34a',
+                transition: 'width 0.3s ease',
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
         <button onClick={() => setActiveTab('validate')} style={tabButtonStyle(activeTab === 'validate')}>
           <FaEnvelopeOpenText /> Validate
@@ -1520,7 +1593,7 @@ export default function EmailValidation() {
                     {loading ? 'Uploading...' : 'Proceed Upload'}
                   </button>
                   <div style={{ fontSize: '12px', color: '#334155', alignSelf: 'center' }}>
-                    {fileUploadReady ? 'Upload complete. You can start mail validation now.' : 'Proceed uploads and extracts the file on server.'}
+                    {fileUploadReady ? 'Upload complete. You can start mail validation now.' : 'Proceed uploads the file and queues extraction in background.'}
                   </div>
                 </div>
               </div>
@@ -1559,9 +1632,14 @@ export default function EmailValidation() {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '12px', color: '#1f2937', marginBottom: '8px' }}>
                   <span><strong>Progress:</strong> {activeRequestMeta.progressPercent || 0}%</span>
                   <span><strong>Processed:</strong> {activeRequestMeta.processedCount || 0}/{activeRequestMeta.totalCount || 0}</span>
-                  <span><strong>Elapsed:</strong> {activeRequestMeta.elapsedSeconds || 0}s</span>
-                  <span><strong>ETA:</strong> {activeRequestMeta.etaSeconds || 0}s</span>
+                  <span><strong>Elapsed:</strong> {formatDuration(activeRequestMeta.elapsedSeconds || 0)}</span>
+                  <span><strong>ETA:</strong> {formatDuration(activeRequestMeta.etaSeconds || 0)}</span>
                 </div>
+                {Boolean((activeRequestMeta.totalCount || 0) > 0 && (results.length || 0) < (activeRequestMeta.processedCount || 0)) && (
+                  <div style={{ marginBottom: '8px', fontSize: '11px', color: '#1e3a8a' }}>
+                    Showing live preview of completed validations while processing continues.
+                  </div>
+                )}
 
                 <div style={{ display: 'flex', alignItems: 'end', gap: '2px', height: '36px', marginBottom: '8px' }}>
                   {(progressTimeline.length ? progressTimeline : [{ value: activeRequestMeta.progressPercent || 0 }]).map((point, index) => (

@@ -263,21 +263,65 @@ function flattenMailValidationRows(emailHistoryItems) {
       return null;
     };
 
+    const sourceLabel = String(item?.source || '').trim().toLowerCase() || '-';
+    const statusLabel = String(item?.status || '-').trim().toLowerCase() || '-';
+    const totalMailCount = Number(item?.email_count || requestedEmails.length || resultRows.length || 0);
+    const isFileValidation = Boolean(String(item?.file_name || '').trim());
+    const isBulkOrFile = totalMailCount > 1 || isFileValidation;
+    const validationKind = isFileValidation ? 'file' : isBulkOrFile ? 'bulk' : 'single';
+    const normalizedDlr = (value) => {
+      const text = String(value || '').trim();
+      return text ? text.toUpperCase() : 'UNKNOWN';
+    };
+
+    if (isBulkOrFile) {
+      const validCount = Number(item?.results_summary?.safe_count || 0);
+      const invalidCount = Number(item?.results_summary?.unsafe_count || 0);
+      rows.push({
+        row_key: `${baseRequestId}-parent`,
+        request_id: baseRequestId,
+        dlr_unique_id: normalizedDlr(dlrUniqueId),
+        created_at: item?.created_at,
+        validation_timing: item?.completed_at || item?.created_at || null,
+        validation_mode: sourceLabel,
+        status: statusLabel,
+        requested_mail: String(item?.file_name || '').trim() || `${totalMailCount} emails`,
+        is_valid: null,
+        row_type: 'bulk',
+          validation_kind: validationKind,
+        valid_count: validCount,
+        invalid_count: invalidCount,
+        total_count: totalMailCount,
+        validation_result: `${validCount} valid, ${invalidCount} not valid`,
+      });
+      return;
+    }
+
     if (resultRows.length === 0) {
       const pendingRows = requestItems.length > 0 ? requestItems : requestedEmails.map((mail) => ({ email: mail }));
+      if (pendingRows.length === 0) {
+        return;
+      }
+
       pendingRows.forEach((entry, idx) => {
         const requestedMail = String(entry?.email || requestedEmails[idx] || '').trim().toLowerCase();
         const rowKey = `${baseRequestId}-${idx + 1}`;
         rows.push({
           row_key: rowKey,
           request_id: String(entry?.request_id || '').trim() || baseRequestId,
-          dlr_unique_id: String(entry?.dlr_unique_id || '').trim() || dlrUniqueId || '-',
+          dlr_unique_id: normalizedDlr(String(entry?.dlr_unique_id || '').trim() || dlrUniqueId),
           created_at: item?.created_at,
           validation_timing: item?.completed_at || item?.created_at || null,
-          validation_mode: String(item?.source || '').trim().toLowerCase() || '-',
-          status: item?.status || '-',
+          validation_mode: sourceLabel,
+          status: statusLabel,
           requested_mail: requestedMail || '-',
-          is_valid: false,
+          is_valid: null,
+          row_type: 'mail',
+          validation_kind: validationKind,
+          valid_count: 0,
+          invalid_count: 0,
+          total_count: Number(item?.email_count || 0) || 0,
+          validation_result: String(item?.status || '').toLowerCase() === 'completed' ? 'summary' : 'pending',
         });
       });
       return;
@@ -287,22 +331,29 @@ function flattenMailValidationRows(emailHistoryItems) {
       const requestedMail = String(result?.email || requestedEmails[idx] || requestedEmails[0] || '').trim().toLowerCase();
       const requestItem = shiftItemForEmail(requestedMail, idx);
       const rowKey = `${baseRequestId}-${idx + 1}`;
-      const isValid = result?.validSyntax === true && result?.validMailbox === true;
+      const isValid = (result?.validSyntax ?? result?.valid_syntax) === true
+        && (result?.validMailbox ?? result?.valid_mailbox) === true;
       rows.push({
         row_key: rowKey,
         request_id: String(result?.request_id || requestItem?.request_id || '').trim() || baseRequestId,
-        dlr_unique_id: String(result?.dlr_unique_id || requestItem?.dlr_unique_id || '').trim() || dlrUniqueId || '-',
+        dlr_unique_id: normalizedDlr(String(result?.dlr_unique_id || requestItem?.dlr_unique_id || '').trim() || dlrUniqueId),
         created_at: item?.created_at,
         validation_timing: item?.completed_at || item?.created_at || null,
-        validation_mode: String(item?.source || '').trim().toLowerCase() || '-',
-        status: item?.status || '-',
+        validation_mode: sourceLabel,
+        status: statusLabel,
         requested_mail: requestedMail || '-',
         is_valid: isValid,
+        row_type: 'mail',
+        validation_kind: validationKind,
+        valid_count: isValid ? 1 : 0,
+        invalid_count: isValid ? 0 : 1,
+        total_count: 1,
+        validation_result: isValid ? 'valid' : 'not valid',
       });
     });
   });
 
-  return rows;
+  return rows.filter((row) => String(row?.request_id || '').trim() || String(row?.requested_mail || '').trim());
 }
 
 export default function Reports() {
@@ -316,9 +367,19 @@ export default function Reports() {
   const [emailSearch, setEmailSearch] = useState('');
   const [smsStatus, setSmsStatus] = useState('all');
   const [emailStatus, setEmailStatus] = useState('all');
+  const [emailValidationType, setEmailValidationType] = useState('all');
   const [activeSubmenu, setActiveSubmenu] = useState('sms');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [mailPage, setMailPage] = useState(1);
+  const [selectedMailRequestId, setSelectedMailRequestId] = useState('');
+  const [selectedMailDetails, setSelectedMailDetails] = useState(null);
+  const [selectedMailDetailsLoading, setSelectedMailDetailsLoading] = useState(false);
+  const [selectedMailDetailsError, setSelectedMailDetailsError] = useState('');
+  const [selectedMailDetailsPage, setSelectedMailDetailsPage] = useState(1);
+  const [selectedMailDetailsLastUpdated, setSelectedMailDetailsLastUpdated] = useState(null);
+  const mailPageSize = 50;
+  const mailDetailsPageSize = 500;
 
   const loadReports = async () => {
     setLoading(true);
@@ -333,7 +394,60 @@ export default function Reports() {
       const emailLoaded = emailResult.status === 'fulfilled';
 
       setSmsHistory(smsLoaded && Array.isArray(smsResult.value?.data) ? smsResult.value.data : []);
-      setEmailHistory(emailLoaded && Array.isArray(emailResult.value?.data) ? emailResult.value.data : []);
+
+      let loadedEmailHistory = emailLoaded && Array.isArray(emailResult.value?.data)
+        ? emailResult.value.data
+        : [];
+      if (loadedEmailHistory.length > 0) {
+        loadedEmailHistory = await Promise.all(loadedEmailHistory.map(async (history) => {
+          const isSingleMail = Number(history?.email_count || 0) === 1 && !String(history?.file_name || '').trim();
+          if (!isSingleMail) {
+            return history;
+          }
+          try {
+            const response = await API.get(`email-validation/history/${history.request_id}/results/`, {
+              params: { page: 1, page_size: 1, order: 'oldest' },
+              timeout: 90000,
+            });
+            const row = Array.isArray(response?.data?.rows) ? response.data.rows[0] : null;
+            return row ? {
+              ...history,
+              results_summary: {
+                ...(history.results_summary || {}),
+                results: [{
+                  email: row.email,
+                  request_id: row.request_id,
+                  status: row.status,
+                  statusCode: row.status_code,
+                  classification: row.classification,
+                  validSyntax: row.valid_syntax,
+                  validMailbox: row.valid_mailbox,
+                }],
+              },
+            } : history;
+          } catch {
+            return history;
+          }
+        }));
+      }
+      if (emailSearch.trim() && loadedEmailHistory.length > 0) {
+        loadedEmailHistory = await Promise.all(loadedEmailHistory.map(async (history) => {
+          const historyId = String(history?.request_id || '').trim();
+          if (!historyId) {
+            return history;
+          }
+          try {
+            const response = await API.get(`email-validation/history/${historyId}/results/`, {
+              params: { page: 1, page_size: 1, order: 'oldest', q: emailSearch.trim() },
+              timeout: 90000,
+            });
+            return { ...history, child_search_match: Number(response?.data?.total || 0) > 0 };
+          } catch {
+            return history;
+          }
+        }));
+      }
+      setEmailHistory(loadedEmailHistory);
 
       if (!smsLoaded || !emailLoaded) {
         const failures = [];
@@ -356,7 +470,7 @@ export default function Reports() {
 
   useEffect(() => {
     loadReports();
-  }, []);
+  }, [emailSearch]);
 
   const rangedSmsHistory = useMemo(
     () => smsHistory.filter((item) => inDateRange(item, startDate, endDate)),
@@ -384,10 +498,53 @@ export default function Reports() {
   const filteredMailResultRows = useMemo(
     () => allMailResultRows.filter((row) => {
       const statusMatch = emailStatus === 'all' || String(row?.status || '').toLowerCase() === emailStatus;
-      return statusMatch && matchesSearch(row, emailSearch, ['request_id', 'dlr_unique_id', 'requested_mail', 'status']);
+      const typeMatch = emailValidationType === 'all' || row?.validation_kind === emailValidationType;
+      const rowMatches = matchesSearch(row, emailSearch, ['request_id', 'dlr_unique_id', 'requested_mail', 'status']);
+      return statusMatch && typeMatch && (rowMatches || row?.child_search_match === true);
     }),
-    [allMailResultRows, emailSearch, emailStatus]
+    [allMailResultRows, emailSearch, emailStatus, emailValidationType]
   );
+
+  useEffect(() => {
+    setMailPage(1);
+  }, [emailSearch, emailStatus, emailValidationType, startDate, endDate]);
+
+  const totalMailPages = useMemo(() => Math.max(1, Math.ceil(filteredMailResultRows.length / mailPageSize)), [filteredMailResultRows.length]);
+  const currentMailPage = Math.min(mailPage, totalMailPages);
+  const pagedMailResultRows = useMemo(() => {
+    const start = (currentMailPage - 1) * mailPageSize;
+    return filteredMailResultRows.slice(start, start + mailPageSize);
+  }, [filteredMailResultRows, currentMailPage]);
+
+  const loadMailRequestDetails = async (requestId, page = 1) => {
+    const normalizedId = String(requestId || '').trim();
+    if (!normalizedId) {
+      return;
+    }
+
+    setSelectedMailRequestId(normalizedId);
+    setSelectedMailDetailsLoading(true);
+    setSelectedMailDetailsError('');
+    try {
+      const response = await API.get(`email-validation/history/${normalizedId}/results/`, {
+        params: {
+          page,
+          page_size: mailDetailsPageSize,
+          order: 'latest',
+        },
+        timeout: 90000,
+      });
+      setSelectedMailDetails(response?.data || null);
+      setSelectedMailDetailsPage(page);
+      setSelectedMailDetailsLastUpdated(new Date().toISOString());
+    } catch (err) {
+      setSelectedMailDetails(null);
+      setSelectedMailDetailsError(getProfessionalErrorMessage(err, 'Failed to load request details.'));
+    } finally {
+      setSelectedMailDetailsLoading(false);
+    }
+  };
+
 
   const chartData = useMemo(
     () => buildTimelineData(rangedSmsHistory, rangedEmailHistory, period),
@@ -431,11 +588,12 @@ export default function Reports() {
   }, [filteredSmsHistory]);
 
   const emailSummary = useMemo(() => {
-    const validCount = filteredMailResultRows.reduce((count, row) => (row.is_valid ? count + 1 : count), 0);
+    const validCount = filteredMailResultRows.reduce((count, row) => (row.is_valid === true ? count + 1 : count), 0);
+    const invalidCount = filteredMailResultRows.reduce((count, row) => (row.is_valid === false ? count + 1 : count), 0);
     return {
       total: filteredMailResultRows.length,
       valid: validCount,
-      invalid: Math.max(filteredMailResultRows.length - validCount, 0),
+      invalid: invalidCount,
     };
   }, [filteredMailResultRows]);
 
@@ -471,12 +629,16 @@ export default function Reports() {
   const exportMailReportCsv = () => {
     downloadCsv(
       'bhisha-mail-validation-report.csv',
-      ['Request ID', 'DLR Unique ID', 'Entered Mail', 'Valid/Not', 'Timing', 'Mode'],
+      ['Request ID', 'DLR Unique ID', 'Mail/File', 'Type', 'Total', 'Valid', 'Not Valid', 'Result', 'Timing', 'Mode'],
       filteredMailResultRows.map((row) => [
         row.request_id,
         row.dlr_unique_id,
         row.requested_mail,
-        row.is_valid ? 'valid' : 'not valid',
+        row.row_type || '-',
+        row.total_count ?? '-',
+        row.valid_count ?? '-',
+        row.invalid_count ?? '-',
+        row.validation_result || (row.is_valid ? 'valid' : 'not valid'),
         formatDateTime(row.validation_timing),
         row.validation_mode,
       ])
@@ -486,12 +648,16 @@ export default function Reports() {
   const exportMailReportExcel = () => {
     downloadExcelCompatible(
       'bhisha-mail-validation-report.xls',
-      ['Request ID', 'DLR Unique ID', 'Entered Mail', 'Valid/Not', 'Timing', 'Mode'],
+      ['Request ID', 'DLR Unique ID', 'Mail/File', 'Type', 'Total', 'Valid', 'Not Valid', 'Result', 'Timing', 'Mode'],
       filteredMailResultRows.map((row) => [
         row.request_id,
         row.dlr_unique_id,
         row.requested_mail,
-        row.is_valid ? 'valid' : 'not valid',
+        row.row_type || '-',
+        row.total_count ?? '-',
+        row.valid_count ?? '-',
+        row.invalid_count ?? '-',
+        row.validation_result || (row.is_valid ? 'valid' : 'not valid'),
         formatDateTime(row.validation_timing),
         row.validation_mode,
       ]),
@@ -813,6 +979,17 @@ export default function Reports() {
                     </option>
                   ))}
                 </select>
+                <select
+                  value={emailValidationType}
+                  onChange={(e) => setEmailValidationType(e.target.value)}
+                  aria-label="Mail validation type"
+                  style={{ padding: '9px 10px', borderRadius: '8px', border: '1px solid #d1d5db', minWidth: '170px' }}
+                >
+                  <option value="all">All Validation Types</option>
+                  <option value="single">Single Mails</option>
+                  <option value="bulk">Bulk Mails</option>
+                  <option value="file">File Mails</option>
+                </select>
                 <input
                   type="search"
                   value={emailSearch}
@@ -832,6 +1009,10 @@ export default function Reports() {
                 >
                   Export Mail Excel
                 </button>
+              </div>
+
+              <div style={{ marginBottom: '10px', fontSize: '12px', color: '#475569' }}>
+                Tip: click "View Details" on a request to see individual emails with valid/not valid status.
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '12px' }}>
@@ -880,31 +1061,222 @@ export default function Reports() {
                     <tr style={{ background: '#f8fafc' }}>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Request ID</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>DLR Unique ID</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Entered Mail</th>
-                      <th style={{ textAlign: 'left', padding: '8px' }}>Valid/Not</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>Mail / File</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>Type</th>
+                      <th style={{ textAlign: 'right', padding: '8px' }}>Total</th>
+                      <th style={{ textAlign: 'right', padding: '8px' }}>Valid</th>
+                      <th style={{ textAlign: 'right', padding: '8px' }}>Not Valid</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>Result</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Timing</th>
                       <th style={{ textAlign: 'left', padding: '8px' }}>Mode</th>
+                      <th style={{ textAlign: 'left', padding: '8px' }}>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredMailResultRows.map((row) => (
+                    {pagedMailResultRows.map((row) => (
                       <tr key={row.row_key || `${row.request_id}-${row.requested_mail}`} style={{ borderTop: '1px solid #eef2f7' }}>
                         <td style={{ padding: '8px' }}>{row.request_id}</td>
                         <td style={{ padding: '8px' }}>{row.dlr_unique_id}</td>
                         <td style={{ padding: '8px' }}>{row.requested_mail}</td>
-                        <td style={{ padding: '8px' }}>{row.is_valid ? 'valid' : 'not valid'}</td>
+                        <td style={{ padding: '8px', textTransform: 'capitalize' }}>{row.validation_kind === 'file' ? 'File mails' : row.validation_kind === 'bulk' ? 'Bulk mails' : 'Single mail'}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>{row.total_count ?? '-'}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>{row.valid_count ?? '-'}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>{row.invalid_count ?? '-'}</td>
+                        <td style={{ padding: '8px' }}>{row.validation_result || (row.is_valid ? 'valid' : 'not valid')}</td>
                         <td style={{ padding: '8px' }}>{formatDateTime(row.validation_timing)}</td>
                         <td style={{ padding: '8px', textTransform: 'lowercase' }}>{row.validation_mode}</td>
+                        <td style={{ padding: '8px' }}>
+                          {row.row_type === 'bulk' ? (
+                            <button
+                              type="button"
+                              onClick={() => loadMailRequestDetails(row.request_id, 1)}
+                              style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
+                            >
+                              View Details
+                            </button>
+                          ) : (
+                            <span style={{ color: '#64748b' }}>-</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
-                    {filteredMailResultRows.length === 0 && (
+                    {pagedMailResultRows.length === 0 && (
                       <tr>
-                        <td colSpan={6} style={{ padding: '10px', color: '#64748b' }}>No mail validation records found.</td>
+                        <td colSpan={11} style={{ padding: '10px', color: '#64748b' }}>No mail validation records found.</td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
+
+              {filteredMailResultRows.length > 0 && (
+                <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '12px', color: '#475569' }}>
+                    Showing {(currentMailPage - 1) * mailPageSize + 1} to {Math.min(currentMailPage * mailPageSize, filteredMailResultRows.length)} of {filteredMailResultRows.length} rows
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      onClick={() => setMailPage((prev) => Math.max(1, prev - 1))}
+                      disabled={currentMailPage <= 1}
+                      style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', background: currentMailPage <= 1 ? '#f8fafc' : '#fff', cursor: currentMailPage <= 1 ? 'not-allowed' : 'pointer', color: '#1f2937' }}
+                    >
+                      Prev
+                    </button>
+                    <div style={{ fontSize: '12px', color: '#1f2937', minWidth: '90px', textAlign: 'center' }}>
+                      Page {currentMailPage} / {totalMailPages}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMailPage((prev) => Math.min(totalMailPages, prev + 1))}
+                      disabled={currentMailPage >= totalMailPages}
+                      style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', background: currentMailPage >= totalMailPages ? '#f8fafc' : '#fff', cursor: currentMailPage >= totalMailPages ? 'not-allowed' : 'pointer', color: '#1f2937' }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {(selectedMailRequestId || selectedMailDetailsLoading || selectedMailDetailsError || selectedMailDetails) && (
+                <div style={{ marginTop: '14px', border: '1px solid #e2e8f0', borderRadius: '10px', background: '#f8fafc', padding: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <h4 style={{ margin: 0, color: '#0f172a' }}>
+                      Request Details: {selectedMailRequestId || '-'}
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedMailRequestId('');
+                        setSelectedMailDetails(null);
+                        setSelectedMailDetailsError('');
+                        setSelectedMailDetailsPage(1);
+                        setSelectedMailDetailsLastUpdated(null);
+                      }}
+                      style={{ padding: '6px 9px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  {selectedMailDetailsLoading ? (
+                    <div style={{ marginTop: '10px', color: '#334155' }}>Loading request details...</div>
+                  ) : selectedMailDetailsError ? (
+                    <div style={{ marginTop: '10px', color: '#991b1b' }}>{selectedMailDetailsError}</div>
+                  ) : selectedMailDetails && (
+                    <>
+                      <div style={{ marginTop: '10px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '8px' }}>
+                        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 700 }}>Status</div>
+                          <div style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800 }}>{selectedMailDetails.status || '-'}</div>
+                        </div>
+                        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 700 }}>Completed Validations</div>
+                          <div style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800 }}>
+                            {Number(selectedMailDetails.processed_count || 0)} / {Number(selectedMailDetails.total_count || selectedMailDetails.summary_total || 0)}
+                          </div>
+                        </div>
+                        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 700 }}>Progress</div>
+                          <div style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800 }}>{Number(selectedMailDetails.progress_percent || 0)}%</div>
+                        </div>
+                        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 700 }}>Detail Rows</div>
+                          <div style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800 }}>{Number(selectedMailDetails.total || 0)}</div>
+                        </div>
+                        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 700 }}>Valid</div>
+                          <div style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800 }}>{Number(selectedMailDetails.safe_count || 0)}</div>
+                        </div>
+                        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 700 }}>Not Valid</div>
+                          <div style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800 }}>{Number(selectedMailDetails.unsafe_count || 0)}</div>
+                        </div>
+                        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 700 }}>Summary Total</div>
+                          <div style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800 }}>{Number(selectedMailDetails.summary_total || 0)}</div>
+                        </div>
+                        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '8px' }}>
+                          <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 700 }}>Compacted</div>
+                          <div style={{ fontSize: '14px', color: '#0f172a', fontWeight: 800 }}>{selectedMailDetails.results_compacted ? 'Yes' : 'No'}</div>
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: '8px', height: '8px', width: '100%', background: '#e2e8f0', borderRadius: '999px', overflow: 'hidden' }}>
+                        <div
+                          style={{
+                            height: '100%',
+                            width: `${Math.max(0, Math.min(100, Number(selectedMailDetails.progress_percent || 0)))}%`,
+                            background: '#2563eb',
+                            transition: 'width 0.35s ease',
+                          }}
+                        />
+                      </div>
+
+                      <div style={{ marginTop: '8px', fontSize: '12px', color: '#475569' }}>
+                        {selectedMailDetailsLastUpdated ? `Last updated: ${formatDateTime(selectedMailDetailsLastUpdated)}` : ''}
+                      </div>
+
+                      {selectedMailDetails.detail_available ? (
+                        <>
+                          <div style={{ marginTop: '10px', maxHeight: '300px', overflow: 'auto', border: '1px solid #dbe3ef', borderRadius: '8px', background: '#fff' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                              <thead>
+                                <tr style={{ background: '#f8fafc' }}>
+                                  <th style={{ textAlign: 'left', padding: '7px' }}>Mail Request ID</th>
+                                  <th style={{ textAlign: 'left', padding: '7px' }}>Email</th>
+                                  <th style={{ textAlign: 'left', padding: '7px' }}>Result</th>
+                                  <th style={{ textAlign: 'left', padding: '7px' }}>Status Code</th>
+                                  <th style={{ textAlign: 'left', padding: '7px' }}>Classification</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(Array.isArray(selectedMailDetails.rows) ? selectedMailDetails.rows : []).map((item) => (
+                                  <tr key={`detail-row-${item.id}`} style={{ borderTop: '1px solid #eef2f7' }}>
+                                    <td style={{ padding: '7px' }}>{item.request_id || '-'}</td>
+                                    <td style={{ padding: '7px' }}>{item.email || '-'}</td>
+                                    <td style={{ padding: '7px' }}>{item.result || '-'}</td>
+                                    <td style={{ padding: '7px' }}>{item.status_code || '-'}</td>
+                                    <td style={{ padding: '7px' }}>{item.classification || '-'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <div style={{ fontSize: '12px', color: '#475569' }}>
+                              Page {selectedMailDetailsPage} of {Math.max(1, Math.ceil(Number(selectedMailDetails.total || 0) / mailDetailsPageSize))}
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <button
+                                type="button"
+                                onClick={() => loadMailRequestDetails(selectedMailRequestId, Math.max(1, selectedMailDetailsPage - 1))}
+                                disabled={selectedMailDetailsPage <= 1}
+                                style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', background: selectedMailDetailsPage <= 1 ? '#f1f5f9' : '#fff', cursor: selectedMailDetailsPage <= 1 ? 'not-allowed' : 'pointer' }}
+                              >
+                                Prev
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => loadMailRequestDetails(selectedMailRequestId, selectedMailDetailsPage + 1)}
+                                disabled={selectedMailDetailsPage >= Math.max(1, Math.ceil(Number(selectedMailDetails.total || 0) / mailDetailsPageSize))}
+                                style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', background: selectedMailDetailsPage >= Math.max(1, Math.ceil(Number(selectedMailDetails.total || 0) / mailDetailsPageSize)) ? '#f1f5f9' : '#fff', cursor: selectedMailDetailsPage >= Math.max(1, Math.ceil(Number(selectedMailDetails.total || 0) / mailDetailsPageSize)) ? 'not-allowed' : 'pointer' }}
+                              >
+                                Next
+                              </button>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ marginTop: '10px', color: '#334155', fontSize: '13px' }}>
+                          {selectedMailDetails.message || 'Detailed rows are not available for this request.'}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </>

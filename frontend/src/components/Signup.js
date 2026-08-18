@@ -3,6 +3,7 @@ import API from '../api';
 import { useNavigate, Link } from 'react-router-dom';
 import { parseApiError } from '../errorHelpers';
 import { COUNTRY_CODES } from './countryCodes';
+import { getPasswordRequirements, getPasswordStrengthMessage, isPasswordStrong } from '../passwordStrength';
 
 export default function Signup() {
   const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', confirmPass: '' });
@@ -49,6 +50,8 @@ export default function Signup() {
     });
   }, [countrySearch]);
 
+  const passwordRequirements = useMemo(() => getPasswordRequirements(form.password), [form.password]);
+
   const startBufferingFlow = () => {
     if (bufferingTimerRef.current) {
       clearTimeout(bufferingTimerRef.current);
@@ -76,6 +79,11 @@ export default function Signup() {
 
     if (form.password.length < 8) {
       setError('Password must be at least 8 characters');
+      return;
+    }
+
+    if (!isPasswordStrong(form.password)) {
+      setError(getPasswordStrengthMessage(form.password));
       return;
     }
 
@@ -309,6 +317,13 @@ export default function Signup() {
               onFocus={e => e.target.style.borderColor = '#7C5DC7'}
               onBlur={e => e.target.style.borderColor = '#DDD4F8'}
             />
+            {form.password && (
+              <ul style={{ margin: '8px 0 0', paddingLeft: '18px', fontSize: '12px', lineHeight: '1.6' }}>
+                <li style={{ color: passwordRequirements.minLength ? '#16A34A' : '#9B9BB4' }}>At least 8 characters</li>
+                <li style={{ color: passwordRequirements.hasNumber ? '#16A34A' : '#9B9BB4' }}>At least one number</li>
+                <li style={{ color: passwordRequirements.hasSpecial ? '#16A34A' : '#9B9BB4' }}>At least one special character</li>
+              </ul>
+            )}
           </div>
 
           <div style={{ marginBottom: '20px' }}>

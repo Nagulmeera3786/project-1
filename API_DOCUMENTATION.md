@@ -49,11 +49,10 @@ Endpoint:
 
 `POST /api/auth/email-validation/api/validate/`
 
-Send only API key and one email in JSON body:
+Send the API key in the `X-API-Key` header and send exactly one validation input in the body:
 
 ```json
 {
-  "api_key": "<YOUR_API_KEY>",
   "email": "user@example.com"
 }
 ```
@@ -399,21 +398,21 @@ Minimal response contract:
 ```json
 {
   "request_id": "MeMV00000108ra",
-  "validation_status": "valid"
+  "email": "user@example.com",
+  "status": "valid"
 }
 ```
-
-`validation_status` is either `valid` or `invalid`.
+`status` is `Valid`, `Invalid`, or `queued`.
 
 Single request:
 ```json
 {
-  "api_key": "<YOUR_API_KEY>",
-  "email": "user@example.com"
+  "email": "user@example.com",
+  "dlr_unique_id": "CUSTOM123"
 }
 ```
 
-Bulk (`emails`) and file (`source_file`) are not supported for external API validation.
+External API validation supports exactly one of `email`, `emails`, or `source_file` per request. Authenticate with the `X-API-Key` header or a configured caller IP whitelist; user ID, password, and JWT are not required. An optional `dlr_unique_id` is echoed in the response and defaults to `UNKNOWN`.
 
 Popular language examples (single):
 
@@ -424,12 +423,8 @@ import requests
 base_url = "https://<bhisha.com>"
 response = requests.post(
     base_url + "/api/auth/email-validation/api/validate/",
-    json={
-        "api_key": "<YOUR_API_KEY>",
-        "user_id": "<YOUR_USER_ID>",
-        "password": "<YOUR_PASSWORD>",
-        "email": "yifemat211@fishnone.com",
-    },
+  headers={"X-API-Key": "<YOUR_API_KEY>"},
+  json={"email": "yifemat211@fishnone.com", "dlr_unique_id": "CUSTOM123"},
 )
 print(response.json())
 ```
@@ -438,12 +433,10 @@ JavaScript (bulk):
 ```javascript
 const response = await fetch("https://<bhisha.com>/api/auth/email-validation/api/validate/", {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
+  headers: { "Content-Type": "application/json", "X-API-Key": "<YOUR_API_KEY>" },
   body: JSON.stringify({
-    api_key: "<YOUR_API_KEY>",
-    user_id: "<YOUR_USER_ID>",
-    password: "<YOUR_PASSWORD>",
     emails: ["one@example.com", "two@example.com", "three@example.com"],
+    dlr_unique_id: "BULK123",
   }),
 });
 console.log(await response.json());
@@ -452,9 +445,8 @@ console.log(await response.json());
 cURL (file):
 ```bash
 curl -X POST "https://<bhisha.com>/api/auth/email-validation/api/validate/" \
-  -F "api_key=<YOUR_API_KEY>" \
-  -F "user_id=<YOUR_USER_ID>" \
-  -F "password=<YOUR_PASSWORD>" \
+  -H "X-API-Key: <YOUR_API_KEY>" \
+  -F "dlr_unique_id=FILE123" \
   -F "source_file=@emails.xlsx"
 ```
 
@@ -462,10 +454,8 @@ Java (single):
 ```java
 String payload = """
 {
-  \"api_key\": \"<YOUR_API_KEY>\",
-  \"user_id\": \"<YOUR_USER_ID>\",
-  \"password\": \"<YOUR_PASSWORD>\",
-  \"email\": \"yifemat211@fishnone.com\"
+  \"email\": \"yifemat211@fishnone.com\",
+  \"dlr_unique_id\": \"CUSTOM123\"
 }
 """;
 ```
@@ -473,9 +463,8 @@ String payload = """
 C# (file):
 ```csharp
 using var form = new MultipartFormDataContent();
-form.Add(new StringContent("<YOUR_API_KEY>"), "api_key");
-form.Add(new StringContent("<YOUR_USER_ID>"), "user_id");
-form.Add(new StringContent("<YOUR_PASSWORD>"), "password");
+client.DefaultRequestHeaders.Add("X-API-Key", "<YOUR_API_KEY>");
+form.Add(new StringContent("FILE123"), "dlr_unique_id");
 form.Add(new StreamContent(File.OpenRead("emails.xlsx")), "source_file", "emails.xlsx");
 var response = await client.PostAsync("https://<bhisha.com>/api/auth/email-validation/api/validate/", form);
 ```
@@ -512,9 +501,6 @@ API status:
 - `POST /api/auth/email-validation/api/status/`
 ```json
 {
-  "api_key": "<YOUR_API_KEY>",
-  "user_id": "<YOUR_USER_ID>",
-  "password": "<YOUR_PASSWORD>",
   "request_id": "<REQUEST_ID>"
 }
 ```
@@ -523,9 +509,6 @@ API control:
 - `POST /api/auth/email-validation/api/control/`
 ```json
 {
-  "api_key": "<YOUR_API_KEY>",
-  "user_id": "<YOUR_USER_ID>",
-  "password": "<YOUR_PASSWORD>",
   "request_id": "<REQUEST_ID>",
   "action": "resume"
 }
@@ -549,16 +532,13 @@ Status payload includes progress metadata inside `results_summary`:
 Example request:
 ```json
 {
-  "api_key": "<YOUR_API_KEY>",
-  "user_id": "<YOUR_USER_ID>",
-  "password": "<YOUR_PASSWORD>",
   "emails": ["one@example.com", "two@example.com"]
 }
 ```
 
 Alternative auth style:
 - Header: `X-API-Key: <YOUR_API_KEY>`
-- Body: `user_id`, `password`, plus `email` or `emails` or `source_file`
+- Body: exactly one of `email`, `emails`, or `source_file`, plus optional `dlr_unique_id`
 
 ### 6.4 File Upload Validation
 - Endpoint: `POST /api/auth/email-validation/validate/` (JWT)
@@ -674,11 +654,9 @@ print(resp['request_id'], resp['results'])
 
 # BULK MAIL VALIDATION
 resp = post('/api/auth/email-validation/api/validate/', None, {
-    'api_key': API_KEY,
-    'user_id': USER_ID,
-    'password': USER_PASSWORD,
-    'emails': ['a@example.com', 'b@example.com']
-})
+  'emails': ['a@example.com', 'b@example.com'],
+  'dlr_unique_id': 'BULK123'
+}, headers={'X-API-Key': API_KEY})
 print(resp['request_id'], resp['summary'])
 ```
 
@@ -711,11 +689,10 @@ POST("/api/auth/email-validation/validate/")
 // BULK MAIL VALIDATION (external API mode)
 POST("/api/auth/email-validation/api/validate/")
   .json({
-    "api_key": apiKey,
-    "user_id": userId,
-    "password": userPassword,
-    "emails": List.of("a@example.com", "b@example.com")
+    "emails": List.of("a@example.com", "b@example.com"),
+    "dlr_unique_id": "BULK123"
   })
+  .header("X-API-Key", apiKey)
   .execute();
 ```
 
@@ -742,10 +719,8 @@ await PostJson("/api/auth/email-validation/validate/", token, new {
 
 // BULK MAIL VALIDATION (API mode)
 await PostJson("/api/auth/email-validation/api/validate/", null, new {
-    api_key = apiKey,
-    user_id = userId,
-    password = userPassword,
-    emails = new[] { "a@example.com", "b@example.com" }
+  emails = new[] { "a@example.com", "b@example.com" },
+  dlr_unique_id = "BULK123"
 });
 ```
 

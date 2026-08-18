@@ -212,6 +212,9 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
+    {
+        'NAME': 'accounts.password_validators.StrongPasswordValidator',
+    },
 ]
 
 LANGUAGE_CODE = 'en-us'
