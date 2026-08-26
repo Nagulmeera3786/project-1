@@ -168,6 +168,43 @@ function buildTimelineData(smsItems, emailItems, period) {
     }));
 }
 
+function saveBlobAsFile(blob, contentDisposition, fallbackFilename) {
+  let filename = fallbackFilename;
+  const header = String(contentDisposition || '');
+  const match = header.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  if (match && match[1]) {
+    filename = decodeURIComponent(match[1]);
+  }
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+}
+
+async function readBlobError(err, fallbackMessage) {
+  try {
+    const data = err?.response?.data;
+    if (data instanceof Blob) {
+      const text = await data.text();
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.detail) {
+          return String(parsed.detail);
+        }
+      } catch {
+        // not json - fall through
+      }
+    }
+  } catch {
+    // ignore parsing issues
+  }
+  return getProfessionalErrorMessage(err, fallbackMessage);
+}
+
 function downloadCsv(filename, headers, rows) {
   const escapeCell = (value) => {
     const text = String(value ?? '');
@@ -331,8 +368,12 @@ function flattenMailValidationRows(emailHistoryItems) {
       const requestedMail = String(result?.email || requestedEmails[idx] || requestedEmails[0] || '').trim().toLowerCase();
       const requestItem = shiftItemForEmail(requestedMail, idx);
       const rowKey = `${baseRequestId}-${idx + 1}`;
-      const isValid = (result?.validSyntax ?? result?.valid_syntax) === true
-        && (result?.validMailbox ?? result?.valid_mailbox) === true;
+      const resultLabel = String(result?.result || '').trim().toLowerCase();
+      const safeToSend = result?.safe_to_send;
+      const classification = String(result?.classification || '').trim().toLowerCase();
+      const isValid = resultLabel === 'valid'
+        || safeToSend === true
+        || classification === 'deliverable';
       rows.push({
         row_key: rowKey,
         request_id: String(result?.request_id || requestItem?.request_id || '').trim() || baseRequestId,
@@ -371,6 +412,7 @@ export default function Reports() {
   const [activeSubmenu, setActiveSubmenu] = useState('sms');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [mailDownloading, setMailDownloading] = useState('');
   const [mailPage, setMailPage] = useState(1);
   const [selectedMailRequestId, setSelectedMailRequestId] = useState('');
   const [selectedMailDetails, setSelectedMailDetails] = useState(null);
@@ -421,7 +463,8 @@ export default function Reports() {
                   statusCode: row.status_code,
                   classification: row.classification,
                   validSyntax: row.valid_syntax,
-                  validMailbox: row.valid_mailbox,
+                  result: row.result,
+                  safe_to_send: row.result === 'valid',
                 }],
               },
             } : history;
@@ -624,6 +667,62 @@ export default function Reports() {
       ]),
       'SMS Report'
     );
+  };
+
+  const downloadMailReportFromServer = async (format) => {
+    setError('');
+    setMailDownloading(`report-${format}`);
+    try {
+      const params = { export_format: format };
+      if (startDate) {
+        params.from_date = startDate;
+      }
+      if (endDate) {
+        params.to_date = endDate;
+      }
+      if (emailValidationType !== 'all') {
+        params.kind = emailValidationType;
+      }
+      const response = await API.get('email-validation/reports/download/', {
+        params,
+        responseType: 'blob',
+        timeout: 300000,
+      });
+      saveBlobAsFile(
+        response.data,
+        response.headers?.['content-disposition'],
+        `bhisha-mail-validation-report.${format === 'json' ? 'json' : 'csv'}`
+      );
+    } catch (err) {
+      setError(await readBlobError(err, 'Could not download the mail validation report.'));
+    } finally {
+      setMailDownloading('');
+    }
+  };
+
+  const downloadMailRequestFromServer = async (requestId) => {
+    const normalizedId = String(requestId || '').trim();
+    if (!normalizedId) {
+      return;
+    }
+    setError('');
+    setMailDownloading(`request-${normalizedId}`);
+    try {
+      const response = await API.get(`email-validation/history/${normalizedId}/download/`, {
+        params: { export_format: 'csv' },
+        responseType: 'blob',
+        timeout: 300000,
+      });
+      saveBlobAsFile(
+        response.data,
+        response.headers?.['content-disposition'],
+        `mail-validation-${normalizedId}.csv`
+      );
+    } catch (err) {
+      setError(await readBlobError(err, 'Could not download results for this request.'));
+    } finally {
+      setMailDownloading('');
+    }
   };
 
   const exportMailReportCsv = () => {
@@ -998,6 +1097,14 @@ export default function Reports() {
                   style={{ flex: '1 1 320px', padding: '9px 10px', borderRadius: '8px', border: '1px solid #d1d5db' }}
                 />
                 <button
+                  onClick={() => downloadMailReportFromServer('csv')}
+                  disabled={Boolean(mailDownloading)}
+                  title="Download the full mail validation report from the server for the chosen date range (includes every individual mail result)"
+                  style={{ padding: '9px 12px', borderRadius: '8px', border: '1px solid #7c3aed', background: '#7c3aed', color: '#fff', cursor: mailDownloading ? 'wait' : 'pointer', fontWeight: 700, opacity: mailDownloading ? 0.7 : 1 }}
+                >
+                  {mailDownloading === 'report-csv' ? 'Downloading…' : 'Download Report CSV'}
+                </button>
+                <button
                   onClick={exportMailReportCsv}
                   style={{ padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer', fontWeight: 700 }}
                 >
@@ -1086,17 +1193,26 @@ export default function Reports() {
                         <td style={{ padding: '8px' }}>{formatDateTime(row.validation_timing)}</td>
                         <td style={{ padding: '8px', textTransform: 'lowercase' }}>{row.validation_mode}</td>
                         <td style={{ padding: '8px' }}>
-                          {row.row_type === 'bulk' ? (
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            {row.row_type === 'bulk' && (
+                              <button
+                                type="button"
+                                onClick={() => loadMailRequestDetails(row.request_id, 1)}
+                                style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
+                              >
+                                View Details
+                              </button>
+                            )}
                             <button
                               type="button"
-                              onClick={() => loadMailRequestDetails(row.request_id, 1)}
-                              style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
+                              onClick={() => downloadMailRequestFromServer(row.request_id)}
+                              disabled={mailDownloading === `request-${row.request_id}`}
+                              title="Download full results for this request (CSV)"
+                              style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #7c3aed', color: '#7c3aed', background: '#fff', cursor: 'pointer', fontSize: '12px', fontWeight: 700, opacity: mailDownloading === `request-${row.request_id}` ? 0.6 : 1 }}
                             >
-                              View Details
+                              {mailDownloading === `request-${row.request_id}` ? 'Downloading…' : 'Download'}
                             </button>
-                          ) : (
-                            <span style={{ color: '#64748b' }}>-</span>
-                          )}
+                          </div>
                         </td>
                       </tr>
                     ))}

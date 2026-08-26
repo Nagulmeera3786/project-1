@@ -22,6 +22,17 @@ def generate_email_validation_dlr_unique_id():
     return uuid.uuid4().hex[:8].upper()
 
 
+def generate_email_validation_request_id():
+    """Unique request_id generated at INSERT time.
+
+    Generating the id as the model field default avoids the concurrent-insert
+    race where two histories were both created with the old empty-string
+    default and collided on the unique constraint before a later UPDATE could
+    assign the real id.
+    """
+    return uuid.uuid4().hex
+
+
 class User(AbstractUser):
     SENDER_ID_TYPE_CHOICES = [
         ('numeric', 'Numeric'),
@@ -403,7 +414,7 @@ class EmailValidationHistory(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='email_validations')
     api_key = models.ForeignKey(UserAPIKey, on_delete=models.SET_NULL, null=True, blank=True, related_name='validations')
-    request_id = models.CharField(max_length=80, unique=True, blank=True, default='')
+    request_id = models.CharField(max_length=80, unique=True, blank=True, default=generate_email_validation_request_id)
     dlr_unique_id = models.CharField(max_length=120, blank=True, default='UNKNOWN')
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default=SOURCE_DASHBOARD)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
@@ -420,6 +431,11 @@ class EmailValidationHistory(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            # Speeds up per-user history lists and date-range report downloads.
+            models.Index(fields=['user', 'created_at'], name='accounts_evh_user_created_idx'),
+            models.Index(fields=['created_at'], name='accounts_evh_created_idx'),
+        ]
 
     def __str__(self):
         return f"{self.user.email} validated {self.email_count} email(s) via {self.source}"

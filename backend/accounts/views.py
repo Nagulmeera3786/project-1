@@ -1213,7 +1213,6 @@ def _build_validation_result(email, *, valid_syntax, valid_mailbox, catch_all=Fa
         '',
         '#### Validation report',
         f'Valid syntax: {str(bool(valid_syntax))}',
-        f'Valid mailbox: {str(bool(valid_mailbox))}',
         f'Domain related mail: {str(domain_related)}',
         f'Catch-all domain: {str(bool(catch_all))}',
         f'Disposable address: {str(bool(disposable))}',
@@ -2096,6 +2095,47 @@ def _normalize_optional_bool(value):
     return bool(parsed)
 
 
+_MAILBOX_STATUS_KEYS = {'validMailbox', 'valid_mailbox', 'valid_mailbox_text', 'valid_inbox'}
+
+
+def _strip_mailbox_status(value):
+    if isinstance(value, list):
+        return [_strip_mailbox_status(item) for item in value]
+
+    if isinstance(value, dict):
+        payload = {}
+        for key, item_value in value.items():
+            if key in _MAILBOX_STATUS_KEYS:
+                continue
+            payload[key] = _strip_mailbox_status(item_value)
+        return payload
+
+    return value
+
+
+def _is_result_marked_valid(item):
+    if not isinstance(item, dict):
+        return False
+
+    explicit_result = str(item.get('result') or '').strip().lower()
+    if explicit_result in {'valid', 'not valid'}:
+        return explicit_result == 'valid'
+
+    safe_to_send = item.get('safe_to_send')
+    if isinstance(safe_to_send, bool):
+        return safe_to_send
+
+    if 'validSyntax' in item and 'validMailbox' in item:
+        return bool(item.get('validSyntax') and item.get('validMailbox'))
+
+    if 'valid_syntax' in item and 'valid_mailbox' in item:
+        return bool(item.get('valid_syntax') and item.get('valid_mailbox'))
+
+    classification = str(item.get('classification') or '').strip().lower()
+    status_text = str(item.get('status') or '').strip().lower()
+    return bool(classification in {'deliverable', 'safe'} or status_text == 'valid')
+
+
 def _to_client_validation_result(item):
     entered_email = str(item.get('email') or '').strip().lower()
     did_you_mean = str(item.get('didYouMean') or '').strip()
@@ -2234,7 +2274,6 @@ def _to_history_validation_result(item):
     payload['bhisha_result'] = {
         'provider_mode': str(bhisha_result.get('provider_mode') or payload.get('provider_mode') or '').strip().lower(),
         'provider_mode_label': str(bhisha_result.get('provider_mode_label') or payload.get('provider_mode_label') or '').strip(),
-        'valid_inbox': bool(bhisha_result.get('valid_inbox')),
         'valid_syntax': bool(bhisha_result.get('valid_syntax')),
         'domain_related_mail': bool(bhisha_result.get('domain_related_mail')),
         'disposable': bool(bhisha_result.get('disposable')),
@@ -2265,6 +2304,10 @@ def _compute_safe_to_send(*, valid_syntax, valid_mailbox, disposable, role_based
 
 
 def _is_safe_client_validation_result(item):
+    safe_to_send = item.get('safe_to_send')
+    if isinstance(safe_to_send, bool):
+        return safe_to_send
+
     return _compute_safe_to_send(
         valid_syntax=bool(item.get('validSyntax')),
         valid_mailbox=bool(item.get('validMailbox')),
@@ -2344,9 +2387,6 @@ def _build_verifalia_style_report(normalized_flags, quality_info):
         '',
         'SMTP server validation',
         f" The mail exchanger(s) of the '{domain}' domain can be successfully connected to using the SMTP protocol.",
-        '',
-        'Mailbox validation',
-        ' The mail exchanger responsible for the email address domain can correctly receive messages sent to the email address being tested.',
         '',
         'Catch-all mail exchanger validation',
         ' The mail exchanger responsible for the email address domain does not accept messages sent to nonexistent email addresses..',
@@ -3303,13 +3343,11 @@ def _build_simple_validation_result(item):
         'dlr_unique_id': str(item.get('dlr_unique_id') or '').strip(),
         'email': str(item.get('email') or '').strip().lower(),
         'valid_syntax': bool(syntax_ok),
-        'valid_mailbox': bool(valid_mailbox),
         'risk': normalized_risk,
         'safe_to_send': bool(safe_to_send),
         'valid': _yes_no(None if (syntax_ok is None or valid_mailbox is None) else (syntax_ok and valid_mailbox)),
         'syntax_error': _yes_no(None if syntax_ok is None else (not syntax_ok)),
         'safe_to_send_text': _yes_no(safe_to_send),
-        'valid_mailbox_text': _yes_no(valid_mailbox),
         'catch_all': _yes_no(catch_all),
         'disposable': _yes_no(disposable),
         'role_based': _yes_no(role_based),
@@ -3614,12 +3652,6 @@ def _normalize_provider_mode_label(provider_mode):
 
 def _build_bhisha_api_validation_result(item):
     valid_syntax = bool(item.get('validSyntax'))
-    valid_inbox = bool(
-        item.get('validMailbox')
-        and valid_syntax
-        and not item.get('disposable')
-        and not item.get('roleBased')
-    )
     disposable = bool(item.get('disposable'))
     is_free_domain = _is_free_email_domain(item.get('email'), disposable=disposable)
     status_code = str(item.get('statusCode') or '').strip().upper()
@@ -3636,7 +3668,6 @@ def _build_bhisha_api_validation_result(item):
         'email': str(item.get('email') or '').strip().lower(),
         'provider_mode': str(item.get('provider_mode') or item.get('provider') or 'own_system').strip().lower(),
         'provider_mode_label': _normalize_provider_mode_label(item.get('provider_mode') or item.get('provider') or 'own_system'),
-        'valid_inbox': valid_inbox,
         'valid_syntax': valid_syntax,
         'domain_related_mail': domain_related_mail,
         'disposable': disposable,
@@ -3656,12 +3687,10 @@ def _build_bhisha_result_profile(result):
     if not isinstance(result, dict):
         return ''
 
-    valid_inbox = bool(result.get('valid_inbox'))
     valid_syntax = bool(result.get('valid_syntax'))
     risk_factors = str(result.get('risk_factors') or 'None Detected').strip() or 'None Detected'
 
     return '\n'.join([
-        f'Valid Inbox:    {str(valid_inbox)}',
         f'Valid Syntax:   {str(valid_syntax)}',
         f'Risk Factors:   {risk_factors}',
     ])
@@ -3705,9 +3734,7 @@ def _build_concise_api_validation_response(result_items, request_id='', dlr_uniq
             resolved_request_id = per_email_request_id
         if per_email_dlr_unique_id and allow_result_dlr_fallback:
             resolved_dlr_unique_id = per_email_dlr_unique_id
-        valid_syntax = bool(item.get('validSyntax'))
-        valid_mailbox = bool(item.get('validMailbox'))
-        validation_status = 'Valid' if bool(valid_syntax and valid_mailbox) else 'Invalid'
+        validation_status = 'Valid' if _is_result_marked_valid(item) else 'Invalid'
         break
 
     return {
@@ -3764,7 +3791,7 @@ def _build_email_validation_dlr_report(*, provider_mode, results, history=None, 
         valid_count = 0
         invalid_count = 0
         for item in rows:
-            if bool(item.get('validMailbox')):
+            if _is_result_marked_valid(item):
                 valid_count += 1
             else:
                 invalid_count += 1
@@ -4070,7 +4097,7 @@ def _build_history_payload_from_snapshot(snapshot, worker_active=False, preview_
     results_total_count = int(snapshot.get('results_summary__results_total_count') or 0)
     results_preview = bool(snapshot.get('results_summary__results_preview'))
     results_compacted = bool(snapshot.get('results_summary__results_compacted'))
-    preview_list = preview_rows if isinstance(preview_rows, list) else []
+    preview_list = _strip_mailbox_status(preview_rows if isinstance(preview_rows, list) else [])
 
     payload = {
         'id': snapshot.get('id'),
@@ -4218,7 +4245,7 @@ def _fetch_history_results_preview(history_id):
     if not isinstance(values, list):
         return []
 
-    return values[:max_items]
+    return _strip_mailbox_status(values[:max_items])
 
 
 def _fetch_history_results_from_summary(history_id):
@@ -4256,7 +4283,7 @@ def _fetch_history_results_from_summary(history_id):
             values = []
     if not isinstance(values, list):
         return []
-    return values
+    return _strip_mailbox_status(values)
 
 
 def _get_history_processing_state(history):
@@ -6839,7 +6866,7 @@ class EmailValidationView(generics.GenericAPIView):
             )
             _assign_email_validation_request_id(history)
             _assign_email_validation_dlr_unique_id(history)
-            history_payload = EmailValidationHistorySerializer(history).data
+            history_payload = _strip_mailbox_status(EmailValidationHistorySerializer(history).data)
             if not defer_start:
                 _start_email_validation_worker(history.id)
 
@@ -6883,6 +6910,15 @@ class EmailValidationView(generics.GenericAPIView):
             cost_deducted, remaining_balance = _deduct_email_validation_credits(request.user, len(unique_emails))
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+        except OperationalError:
+            # Concurrent submissions can race on the wallet row; retry once on
+            # the fresh connection Django hands us after close_old_connections.
+            close_old_connections()
+            try:
+                cost_deducted, remaining_balance = _deduct_email_validation_credits(request.user, len(unique_emails))
+            except (ValueError, OperationalError) as exc:
+                detail = str(exc) if isinstance(exc, ValueError) else 'Service busy, please retry.'
+                return Response({'detail': detail}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         if async_threshold > 0 and len(unique_emails) >= async_threshold:
             initial_control_state = 'paused' if defer_start else 'running'
@@ -6920,7 +6956,7 @@ class EmailValidationView(generics.GenericAPIView):
             )
             _assign_email_validation_request_id(history)
             _assign_email_validation_dlr_unique_id(history)
-            history_payload = EmailValidationHistorySerializer(history).data
+            history_payload = _strip_mailbox_status(EmailValidationHistorySerializer(history).data)
             if not defer_start:
                 _start_email_validation_worker(history.id)
             return Response(
@@ -6985,9 +7021,11 @@ class EmailValidationView(generics.GenericAPIView):
         )
         _assign_email_validation_request_id(history)
         _assign_email_validation_dlr_unique_id(history)
-        history_payload = EmailValidationHistorySerializer(history).data
+        history_payload = _strip_mailbox_status(EmailValidationHistorySerializer(history).data)
 
         simple_results = [_build_simple_validation_result(item) for item in client_results]
+        sanitized_client_results = _strip_mailbox_status(client_results)
+        sanitized_simple_results = _strip_mailbox_status(simple_results)
 
         return Response(
             {
@@ -7003,8 +7041,8 @@ class EmailValidationView(generics.GenericAPIView):
                     'safe_to_send_no': unsafe_count,
                 },
                 'request_items': request_items,
-                'simple_results': simple_results,
-                'results': client_results,
+                'simple_results': sanitized_simple_results,
+                'results': sanitized_client_results,
                 'history': history_payload,
                 'dlr_report': _build_email_validation_dlr_report(
                     provider_mode=provider_mode,
@@ -7657,7 +7695,6 @@ class EmailValidationResultsListView(generics.GenericAPIView):
                         'status_code': item.status_code,
                         'classification': item.classification,
                         'valid_syntax': bool(item.valid_syntax),
-                        'valid_mailbox': bool(item.valid_mailbox),
                         'result': 'valid' if (item.valid_syntax and item.valid_mailbox) else 'not valid',
                         'provider_message_id': item.provider_message_id,
                     }
@@ -7692,7 +7729,6 @@ class EmailValidationResultsListView(generics.GenericAPIView):
                             'status_code': str(item.get('statusCode') or '').strip(),
                             'classification': str(item.get('classification') or '').strip(),
                             'valid_syntax': valid_syntax,
-                            'valid_mailbox': valid_mailbox,
                             'result': 'valid' if (valid_syntax and valid_mailbox) else 'not valid',
                             'provider_message_id': str(item.get('providerMessageId') or '').strip(),
                         }
@@ -7768,7 +7804,7 @@ class EmailValidationControlView(generics.GenericAPIView):
             _revoke_celery_task(history)
 
         history.refresh_from_db()
-        payload = EmailValidationHistorySerializer(history).data
+        payload = _strip_mailbox_status(EmailValidationHistorySerializer(history).data)
         payload['worker_active'] = _is_worker_active(history.id)
         payload['processing_state'] = _get_history_processing_state(history)
         summary = _get_history_summary(history)
@@ -7969,7 +8005,7 @@ class APIEmailValidationControlView(generics.GenericAPIView):
             _revoke_celery_task(history)
 
         history.refresh_from_db()
-        payload = EmailValidationHistorySerializer(history).data
+        payload = _strip_mailbox_status(EmailValidationHistorySerializer(history).data)
         payload['worker_active'] = _is_worker_active(history.id)
         payload['processing_state'] = _get_history_processing_state(history)
         summary = _get_history_summary(history)
@@ -8006,7 +8042,7 @@ class AdminLatestValidationHistoryView(generics.GenericAPIView):
                 latest_entries.append({
                     'user_id': user.id,
                     'user_email': user.email,
-                    'latest_history': EmailValidationHistorySerializer(latest).data,
+                    'latest_history': _strip_mailbox_status(EmailValidationHistorySerializer(latest).data),
                 })
         return Response(latest_entries)
 
@@ -8028,6 +8064,11 @@ class AdminUserValidationHistoryView(generics.ListAPIView):
                 filters |= Q(user__id=int(query))
             queryset = queryset.filter(filters)
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        response.data = _strip_mailbox_status(response.data)
+        return response
 
 
 class AdminOwnSystemValidationDiagnosticsView(generics.GenericAPIView):
@@ -8059,7 +8100,7 @@ class AdminOwnSystemValidationDiagnosticsView(generics.GenericAPIView):
             diagnostics_rows.append(
                 {
                     'email': client_result.get('email'),
-                    'result': client_result,
+                    'result': _strip_mailbox_status(client_result),
                     'diagnostics': diagnostics,
                 }
             )

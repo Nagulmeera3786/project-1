@@ -43,6 +43,29 @@ Common JWT-protected endpoints:
 5. `GET/POST /api/auth/email-validation/api-keys/`
 6. `PATCH/DELETE /api/auth/email-validation/api-keys/{key_id}/`
 
+### 2.2.1 Mail Validation Result Downloads
+
+Download full per-mail validation results (works for single, bulk, and file
+requests). Responses are streamed, so very large reports use constant server
+memory. Both endpoints are rate limited per user (default `120/min`,
+configurable via `EMAIL_VALIDATION_DOWNLOAD_RATE`).
+
+1. Individual request (batch request id or an individual per-mail request id):
+
+   `GET /api/auth/email-validation/history/{request_id}/download/?export_format=csv|json`
+
+2. Date-range report (inclusive dates; default range = last 30 days; maximum
+   range = 366 days):
+
+   `GET /api/auth/email-validation/reports/download/?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD&export_format=csv|json&source=dashboard|api&kind=single|bulk|file`
+
+   Support/admin users may additionally pass `user_id=<id>` or `all_users=1`.
+
+Notes:
+- Users only ever receive their own data; support/admin roles may read all.
+- CSV cells are sanitized against spreadsheet formula injection.
+- Responses use `Content-Disposition: attachment` with a generated filename.
+
 ### 2.3 External API Access (API Key Only)
 
 Endpoint:

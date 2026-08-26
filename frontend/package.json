@@ -17,8 +17,8 @@
     "cross-env": "^7.0.3"
   },
   "scripts": {
-    "start": "cross-env HOST=localhost react-scripts start",
-    "start:lan": "cross-env HOST=0.0.0.0 react-scripts start",
+    "start": "cross-env HOST=localhost DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
+    "start:lan": "cross-env HOST=0.0.0.0 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
     "build": "node scripts/verify-deploy-env.js && cross-env GENERATE_SOURCEMAP=false react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"

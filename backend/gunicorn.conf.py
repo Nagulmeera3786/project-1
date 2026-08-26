@@ -8,8 +8,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 
 # ─── Worker Configuration ──────────────────────────────────────
-workers = 4
-worker_class = 'sync'
+# gthread workers let one process serve many concurrent requests (validation
+# submits, polling, and streaming report downloads) without blocking. Each
+# process handles `threads` requests in parallel; tune via env vars.
+workers = int(os.environ.get('GUNICORN_WORKERS', '4'))
+worker_class = os.environ.get('GUNICORN_WORKER_CLASS', 'gthread')
+threads = int(os.environ.get('GUNICORN_THREADS', '4'))
 worker_connections = 1000
 max_requests = 1000
 max_requests_jitter = 50
@@ -19,7 +23,9 @@ bind = '127.0.0.1:8000'
 backlog = 2048
 
 # ─── Timeout ──────────────────────────────────────────────────
-timeout = 30
+# Large streamed CSV/JSON downloads can take longer than 30s on slow links.
+timeout = int(os.environ.get('GUNICORN_TIMEOUT', '300'))
+graceful_timeout = int(os.environ.get('GUNICORN_GRACEFUL_TIMEOUT', '30'))
 keepalive = 5
 
 # ─── Logging ──────────────────────────────────────────────────

@@ -196,6 +196,12 @@ if RUNNING_TESTS and _env_bool('USE_SQLITE_FOR_TESTS', DEBUG):
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': str(BASE_DIR / 'test_db.sqlite3'),
+            # File-based test DB (not in-memory shared-cache) so concurrent
+            # live-server threads get real file locking instead of sqlite
+            # 'bad parameter or other API misuse' errors; the longer busy
+            # timeout makes concurrent writes retry instead of failing.
+            'OPTIONS': {'timeout': int(_env_text('SQLITE_TEST_TIMEOUT', 30))},
+            'TEST': {'NAME': str(BASE_DIR / 'test_db.sqlite3')},
         }
     }
 
@@ -242,6 +248,12 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    # Scoped rate limits. Only endpoints that explicitly opt in via
+    # throttle_classes are affected; all other endpoints stay unthrottled.
+    'DEFAULT_THROTTLE_RATES': {
+        # Mail-validation report downloads are bandwidth heavy; cap per user.
+        'email_validation_download': _env_text('EMAIL_VALIDATION_DOWNLOAD_RATE', '120/min'),
+    },
 }
 
 SIMPLE_JWT = {
@@ -532,6 +544,13 @@ LOGGING = {
         'django.db.backends': {
             'level': _env_text('DJANGO_DB_LOG_LEVEL', 'WARNING').upper(),
             'handlers': ['console'],
+        },
+        # Surface unhandled view exceptions (500s) on the console so load
+        # tests and local dev show the real traceback instead of an empty page.
+        'django.request': {
+            'level': _env_text('DJANGO_REQUEST_LOG_LEVEL', 'ERROR').upper(),
+            'handlers': ['console'],
+            'propagate': False,
         },
     },
 }

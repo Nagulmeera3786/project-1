@@ -73,6 +73,44 @@ const endpointCards = [
   },
 ];
 
+function saveBlobAsFile(blob, contentDisposition, fallbackFilename) {
+  let filename = fallbackFilename;
+  const header = String(contentDisposition || '');
+  const match = header.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  if (match && match[1]) {
+    filename = decodeURIComponent(match[1]);
+  }
+
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+}
+
+async function readBlobError(err, fallbackMessage) {
+  try {
+    const data = err?.response?.data;
+    if (data instanceof Blob) {
+      const text = await data.text();
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.detail) {
+          return String(parsed.detail);
+        }
+      } catch {
+        // Ignore parse failures and fall through to generic message.
+      }
+    }
+  } catch {
+    // Ignore parsing failures and return the fallback message.
+  }
+  return getProfessionalErrorMessage(err, fallbackMessage);
+}
+
 export default function EmailValidation() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -121,6 +159,7 @@ export default function EmailValidation() {
   const [progressTimeline, setProgressTimeline] = useState([]);
   const [keepInBackground, setKeepInBackground] = useState(false);
   const [fileUploadReady, setFileUploadReady] = useState(false);
+  const [dlrDownloading, setDlrDownloading] = useState(false);
 
   const [apiKeys, setApiKeys] = useState([]);
   const [newApiKeyName, setNewApiKeyName] = useState('');
@@ -556,44 +595,37 @@ export default function EmailValidation() {
     return hydrateFromHistoryRow(response.data || {});
   };
 
-  const downloadDlrCsv = () => {
-    if (!dlrReport || !Array.isArray(dlrReport.results) || dlrReport.results.length === 0) {
-      setError('No DLR rows available to download.');
+  const downloadDlrCsv = async () => {
+    const batchRequestId = String(
+      activeRequestMeta?.batchId
+      || activeRequestMeta?.requestId
+      || dlrReport?.request_id
+      || latestRequestId
+      || ''
+    ).trim();
+    if (!batchRequestId) {
+      setError('No request id is available for downloading the validation report.');
       return;
     }
 
-    const rows = dlrReport.results;
-    const header = ['email', 'status', 'status_code', 'classification', 'valid_mailbox', 'valid_syntax'];
-    const escapeCell = (value) => {
-      const raw = String(value ?? '');
-      if (raw.includes(',') || raw.includes('"') || raw.includes('\n')) {
-        return `"${raw.replace(/"/g, '""')}"`;
-      }
-      return raw;
-    };
-
-    const lines = [header.join(',')];
-    for (const row of rows) {
-      lines.push([
-        escapeCell(row?.email || ''),
-        escapeCell(row?.status || row?.classification || row?.status_code || ''),
-        escapeCell(row?.status_code || row?.statusCode || ''),
-        escapeCell(row?.classification || ''),
-        escapeCell(row?.valid_mailbox ?? row?.validMailbox ?? ''),
-        escapeCell(row?.valid_syntax ?? row?.validSyntax ?? ''),
-      ].join(','));
+    setError('');
+    setDlrDownloading(true);
+    try {
+      const response = await API.get(`email-validation/history/${batchRequestId}/download/`, {
+        params: { export_format: 'csv' },
+        responseType: 'blob',
+        timeout: 300000,
+      });
+      saveBlobAsFile(
+        response.data,
+        response.headers?.['content-disposition'],
+        `mail-validation-${batchRequestId}.csv`
+      );
+    } catch (err) {
+      setError(await readBlobError(err, 'Could not download DLR CSV.'));
+    } finally {
+      setDlrDownloading(false);
     }
-
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    const requestLabel = String(latestRequestId || dlrReport?.request_id || 'dlr').trim();
-    link.href = url;
-    link.setAttribute('download', `email-validation-dlr-${requestLabel}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
   };
 
   const runRequestAction = async (action) => {
@@ -1156,17 +1188,15 @@ export default function EmailValidation() {
   }, [summary]);
 
   const isDeliverableResult = (row) => {
+    if (typeof row?.safe_to_send === 'boolean') {
+      return row.safe_to_send;
+    }
+
     const quality = String(row?.bhisha_result?.quality || row?.classification || '').trim().toLowerCase();
     if (quality === 'deliverable' || quality === 'safe') {
       return true;
     }
-    return Boolean(
-      row?.validMailbox
-      && row?.validSyntax
-      && !row?.disposable
-      && !row?.roleBased
-      && !row?.risky
-    );
+    return false;
   };
 
   const deliverableEmails = useMemo(() => {
@@ -1265,11 +1295,13 @@ export default function EmailValidation() {
     const validSyntax = toBool(row?.bhisha_result?.valid_syntax ?? row?.validSyntax);
     const disposable = toBool(row?.bhisha_result?.disposable ?? row?.disposable);
     const roleBased = toBool(row?.bhisha_result?.role_based ?? row?.roleBased);
-    const validInbox = Boolean(row?.validMailbox && validSyntax && !disposable && !roleBased);
+    const safeToSend = typeof row?.safe_to_send === 'boolean'
+      ? row.safe_to_send
+      : Boolean(validSyntax && !disposable && !roleBased);
     const riskFactors = String(bhisha.risk_factors || 'None Detected').trim() || 'None Detected';
 
     return [
-      `Valid Inbox:    ${String(validInbox)}`,
+      `Safe To Send:   ${String(safeToSend)}`,
       `Valid Syntax:   ${String(validSyntax)}`,
       `Risk Factors:   ${riskFactors}`,
     ].join('\n');
@@ -1309,7 +1341,7 @@ export default function EmailValidation() {
 
     const bhisha = row?.bhisha_result || {};
     const factors = [
-      { label: 'Valid Inbox', type: 'bool', value: toBool(bhisha.valid_inbox ?? row?.validMailbox) },
+      { label: 'Safe To Send', type: 'bool', value: toBool(row?.safe_to_send) },
       { label: 'Valid Syntax', type: 'bool', value: toBool(bhisha.valid_syntax ?? row?.validSyntax) },
     ];
 
@@ -1698,9 +1730,10 @@ export default function EmailValidation() {
                 <button
                   type="button"
                   onClick={downloadDlrCsv}
+                  disabled={dlrDownloading}
                   style={{ border: '1px solid #cbd5e1', background: '#ffffff', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer', fontSize: '12px', fontWeight: 700, color: '#1e293b' }}
                 >
-                  Download DLR CSV
+                  {dlrDownloading ? 'Downloading...' : 'Download DLR CSV'}
                 </button>
               </div>
               <div style={{ padding: '12px 14px', display: 'grid', gap: '8px' }}>
