@@ -332,37 +332,11 @@ def _find_user_by_email(email):
 
 
 def _otp_email_diagnostics(email_sent):
-    configured_provider = str(getattr(settings, 'EMAIL_PROVIDER', '') or '').strip().lower()
-    backend = str(getattr(settings, 'EMAIL_BACKEND', '') or '').strip()
-    host = str(getattr(settings, 'EMAIL_HOST', '') or '').strip()
-
-    if configured_provider:
-        provider = configured_provider
-    elif 'sendgrid' in host.lower():
-        provider = 'sendgrid'
-    elif 'mailgun' in host.lower():
-        provider = 'mailgun'
-    elif 'gmail' in host.lower() or 'google' in host.lower():
-        provider = 'gmail'
-    elif host:
-        provider = 'custom-smtp'
-    else:
-        provider = 'unknown'
-
-    diagnostics = {
-        'otp_generated': True,
-        'email_delivery': {
-            'sent': bool(email_sent),
-            'provider': provider,
-            'backend': backend,
-            'host': host,
-        },
-    }
-
+    # Full provider/host/backend details are logged server-side only (see send_otp_via_email);
+    # API responses must never leak infrastructure internals to end users.
+    diagnostics = {'otp_generated': True}
     if not email_sent:
         diagnostics['error_code'] = 'OTP_EMAIL_DELIVERY_FAILED'
-        diagnostics['next_step'] = 'Check Render logs and provider credentials/API key.'
-
     return diagnostics
 
 
@@ -601,6 +575,7 @@ LOGIN_MAX_FAILED_ATTEMPTS = 3
 LOGIN_LOCKOUT_MINUTES = 10
 _PROVIDER_BALANCE_CACHE = {'value': None, 'expires_at': None}
 _EMAIL_PROVIDER_CREDITS_CACHE = {'value': None, 'expires_at': None}
+_MILLIONVERIFIER_CREDITS_CACHE = {'value': None, 'expires_at': None}
 
 
 def _extract_first_numeric_value(text):
@@ -704,7 +679,7 @@ def _get_email_validation_batch_size():
 def _get_email_validation_provider_mode():
     setting = PlatformSetting.objects.filter(key='email_validation_provider_mode').first()
     configured = str(setting.value if setting else getattr(settings, 'EMAIL_VALIDATION_PROVIDER_MODE', 'own_system') or '').strip().lower()
-    if configured not in {'own_system', 'zerobounce'}:
+    if configured not in {'own_system', 'zerobounce', 'millionverifier'}:
         return 'own_system'
     return configured
 
@@ -1417,36 +1392,52 @@ def _validate_email_with_own_system(email):
     return result
 
 
+def _map_third_party_result_to_own_system_vocabulary(bucket):
+    """Translate any third-party validation provider's verdict into the same status/status_code/classification vocabulary
+    used by the own system, so API responses, reports, and downloads never reveal which validation provider was used."""
+    mapping = {
+        'deliverable': ('Valid (syntax + domain exists)', 'SYNTAX_DOMAIN_VALID', 'Deliverable'),
+        'invalid_format': ('Invalid Email Format', 'INVALID_FORMAT', 'Invalid'),
+        'invalid_mailbox': ('Mailbox does not exist', 'HARD_BOUNCE_MAILBOX_NOT_FOUND', 'Invalid'),
+        'invalid_domain': ('Domain does not exist', 'DOMAIN_NOT_FOUND', 'Invalid'),
+        'risky': ('Mailbox could not be verified (catch-all or unknown)', 'SMTP_CANNOT_VERIFY_MAILBOX', 'Risky'),
+        'unknown': ('Mailbox verification temporarily unavailable', 'SMTP_TEMPORARY_ERROR', 'Unknown'),
+    }
+    return mapping.get(bucket, mapping['unknown'])
+
+
 def _validate_email_with_zerobounce(email):
     normalized = str(email or '').strip().lower()
     api_key = str(getattr(settings, 'ZEROBOUNCE_API_KEY', '') or '').strip()
     base_url = str(getattr(settings, 'ZEROBOUNCE_VALIDATE_URL', 'https://api.zerobounce.net/v2/validate') or '').strip()
 
     if not api_key:
+        status_text, status_code, classification = _map_third_party_result_to_own_system_vocabulary('unknown')
         return _build_validation_result(
             normalized,
             valid_syntax=False,
             valid_mailbox=False,
             risky=True,
             risk='high',
-            status='Validation provider is not configured.',
-            status_code='PROVIDER_NOT_CONFIGURED',
-            classification='Invalid',
-            failure_reason='Validation provider is not configured.',
+            status=status_text,
+            status_code=status_code,
+            classification=classification,
+            failure_reason=status_text,
             provider='zerobounce',
         )
 
     if not re.fullmatch(_EMAIL_REGEX, normalized):
+        status_text, status_code, classification = _map_third_party_result_to_own_system_vocabulary('invalid_format')
         return _build_validation_result(
             normalized,
             valid_syntax=False,
             valid_mailbox=False,
             risky=True,
             risk='high',
-            status='Invalid Email Format',
-            status_code='INVALID_FORMAT',
-            classification='Invalid',
-            failure_reason='Invalid Email Format',
+            status=status_text,
+            status_code=status_code,
+            classification=classification,
+            failure_reason=status_text,
             provider='zerobounce',
         )
 
@@ -1458,70 +1449,159 @@ def _validate_email_with_zerobounce(email):
         )
         response.raise_for_status()
         payload = response.json()
-    except Exception as exc:
+    except Exception:
+        status_text, status_code, classification = _map_third_party_result_to_own_system_vocabulary('unknown')
         return _build_validation_result(
             normalized,
             valid_syntax=True,
             valid_mailbox=False,
             risky=True,
             risk='high',
-            status=f'Validation request failed: {type(exc).__name__}',
-            status_code='PROVIDER_ERROR',
-            classification='Risky',
-            failure_reason=f'Validation request failed: {type(exc).__name__}',
+            status=status_text,
+            status_code=status_code,
+            classification=classification,
+            failure_reason=status_text,
             provider='zerobounce',
         )
 
     status_value = str(payload.get('status') or '').strip().lower()
-    sub_status = str(payload.get('sub_status') or '').strip()
-    did_you_mean = str(payload.get('did_you_mean') or '').strip()
     disposable = bool(payload.get('disposable'))
     role_based = bool(payload.get('role'))
     spam = status_value == 'do_not_mail'
     catch_all = status_value == 'catch-all'
 
-    valid_syntax = status_value not in {'invalid'}
-    valid_mailbox = status_value == 'valid'
-
     if status_value == 'valid':
-        classification = 'Deliverable'
-        risk = 'low'
-        risky = False
-    elif status_value in {'invalid', 'do_not_mail'}:
-        classification = 'Invalid'
-        risk = 'high'
-        risky = True
+        bucket = 'deliverable'
+    elif status_value == 'invalid':
+        bucket = 'invalid_mailbox'
+    elif status_value == 'do_not_mail':
+        bucket = 'invalid_mailbox'
     elif status_value in {'catch-all', 'unknown'}:
-        classification = 'Risky'
-        risk = 'medium'
-        risky = True
+        bucket = 'risky'
     else:
-        classification = 'Unknown'
-        risk = 'unknown'
-        risky = True
+        bucket = 'unknown'
 
-    status_text = f'Validation status: {status_value or "unknown"}'
-    if sub_status:
-        status_text = f'{status_text} ({sub_status})'
+    status_text, status_code, classification = _map_third_party_result_to_own_system_vocabulary(bucket)
+    valid_syntax = bucket != 'invalid_format'
+    valid_mailbox = classification == 'Deliverable'
 
     return _build_validation_result(
         normalized,
         valid_syntax=valid_syntax,
         valid_mailbox=valid_mailbox,
         catch_all=catch_all,
-        did_you_mean=did_you_mean,
         disposable=disposable,
         role_based=role_based,
         spam=spam,
-        risky=risky,
-        risk=risk,
+        risky=classification != 'Deliverable',
+        risk='low' if classification == 'Deliverable' else ('medium' if classification == 'Risky' else 'high'),
         provider_message_id=str(payload.get('transaction_id') or ''),
         status=status_text,
-        status_code=str(payload.get('error') or payload.get('status') or 'Success').upper(),
+        status_code=status_code,
         classification=classification,
         failure_reason='' if classification == 'Deliverable' else status_text,
         provider='zerobounce',
     )
+
+
+def _validate_email_with_millionverifier(email):
+    normalized = str(email or '').strip().lower()
+    api_key = str(getattr(settings, 'MILLIONVERIFIER_API_KEY', '') or '').strip()
+    base_url = str(getattr(settings, 'MILLIONVERIFIER_VALIDATE_URL', 'https://api.millionverifier.com/api/v3/') or '').strip()
+
+    if not api_key:
+        status_text, status_code, classification = _map_third_party_result_to_own_system_vocabulary('unknown')
+        return _build_validation_result(
+            normalized,
+            valid_syntax=False,
+            valid_mailbox=False,
+            risky=True,
+            risk='high',
+            status=status_text,
+            status_code=status_code,
+            classification=classification,
+            failure_reason=status_text,
+            provider='millionverifier',
+        )
+
+    if not re.fullmatch(_EMAIL_REGEX, normalized):
+        status_text, status_code, classification = _map_third_party_result_to_own_system_vocabulary('invalid_format')
+        return _build_validation_result(
+            normalized,
+            valid_syntax=False,
+            valid_mailbox=False,
+            risky=True,
+            risk='high',
+            status=status_text,
+            status_code=status_code,
+            classification=classification,
+            failure_reason=status_text,
+            provider='millionverifier',
+        )
+
+    try:
+        response = requests.get(
+            base_url,
+            params={'api': api_key, 'email': normalized, 'timeout': 10},
+            timeout=12,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        status_text, status_code, classification = _map_third_party_result_to_own_system_vocabulary('unknown')
+        return _build_validation_result(
+            normalized,
+            valid_syntax=True,
+            valid_mailbox=False,
+            risky=True,
+            risk='high',
+            status=status_text,
+            status_code=status_code,
+            classification=classification,
+            failure_reason=status_text,
+            provider='millionverifier',
+        )
+
+    quality = str(payload.get('quality') or '').strip().lower()
+    result_value = str(payload.get('result') or '').strip().lower()
+    disposable = result_value == 'disposable'
+    role_based = result_value == 'role_based' or result_value == 'role'
+    catch_all = result_value == 'catch_all'
+    error_value = str(payload.get('error') or '').strip()
+
+    if error_value:
+        bucket = 'unknown'
+    elif quality == 'good' and result_value == 'ok':
+        bucket = 'deliverable'
+    elif result_value in {'invalid', 'disposable'}:
+        bucket = 'invalid_mailbox'
+    elif result_value in {'catch_all', 'unknown'} or quality == 'risky':
+        bucket = 'risky'
+    elif quality == 'bad':
+        bucket = 'invalid_mailbox'
+    else:
+        bucket = 'unknown'
+
+    status_text, status_code, classification = _map_third_party_result_to_own_system_vocabulary(bucket)
+    valid_syntax = bucket != 'invalid_format'
+    valid_mailbox = classification == 'Deliverable'
+
+    return _build_validation_result(
+        normalized,
+        valid_syntax=valid_syntax,
+        valid_mailbox=valid_mailbox,
+        catch_all=catch_all,
+        disposable=disposable,
+        role_based=role_based,
+        risky=classification != 'Deliverable',
+        risk='low' if classification == 'Deliverable' else ('medium' if classification == 'Risky' else 'high'),
+        status=status_text,
+        status_code=status_code,
+        classification=classification,
+        failure_reason='' if classification == 'Deliverable' else status_text,
+        provider='millionverifier',
+    )
+
 
 
 def _validate_email_list_with_parallel_workers(unique_emails, validator_fn, provider_mode='own_system'):
@@ -1567,6 +1647,9 @@ def _validate_email_list(unique_emails, provider_mode=None):
 
     if mode == 'zerobounce':
         return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_zerobounce, provider_mode='zerobounce')
+
+    if mode == 'millionverifier':
+        return _validate_email_list_with_parallel_workers(unique_emails, _validate_email_with_millionverifier, provider_mode='millionverifier')
 
     invalid_results = {}
     emails_by_domain = {}
@@ -2192,40 +2275,40 @@ def _to_client_validation_result(item):
     }
 
     provider_mode = str(normalized_item.get('provider') or 'own_system').strip().lower()
-    provider_mode_label = _normalize_provider_mode_label(provider_mode)
-    if provider_mode == 'own_system':
-        status_code_upper = str(status_code or '').strip().upper()
-        if bool(valid_syntax and valid_mailbox):
-            provider_result_status = 'Valid'
-        elif not valid_syntax:
-            provider_result_status = 'Invalid Syntax'
-        elif status_code_upper == 'HARD_BOUNCE_MAILBOX_NOT_FOUND':
-            provider_result_status = 'Invalid'
-        elif status_code_upper == 'SMTP_CANNOT_VERIFY_MAILBOX':
-            provider_result_status = 'Invalid'
-        elif status_code_upper == 'SMTP_MAILBOX_BUSY':
-            provider_result_status = 'Invalid'
-        elif status_code_upper == 'SMTP_TEMPORARY_ERROR':
-            provider_result_status = 'Invalid'
-        elif status_code_upper == 'SMTP_MAILBOX_FULL':
-            provider_result_status = 'Invalid'
-        elif status_code_upper == 'NO_MX':
-            provider_result_status = 'Invalid Domain'
-        elif status_code_upper == 'DOMAIN_NOT_FOUND':
-            provider_result_status = 'Invalid Domain'
-        elif status_code_upper in {'DNS_LOOKUP_FAILED', 'DNS_UNAVAILABLE'}:
-            provider_result_status = 'Invalid Domain'
-        elif status_code_upper == 'SMTP_CONNECTION_FAILED':
-            provider_result_status = 'Invalid'
-        elif status_code_upper == 'SMTP_POLICY_REJECTED':
-            provider_result_status = 'Invalid'
-        elif status_code_upper in {'SYNTAX_DOMAIN_VALID', 'SYNTAX_VALID_ONLY'}:
-            provider_result_status = 'Valid'
-        else:
-            provider_result_status = status_text or 'Invalid'
+    # Regardless of which provider actually served this request (own system, ZeroBounce,
+    # MillionVerifier, ...), the status text shown to clients always follows the same
+    # own-system vocabulary and never reveals the provider or validation mode used.
+    status_code_upper = str(status_code or '').strip().upper()
+    if bool(valid_syntax and valid_mailbox):
+        provider_result_status = 'Valid'
+    elif not valid_syntax:
+        provider_result_status = 'Invalid Syntax'
+    elif status_code_upper == 'HARD_BOUNCE_MAILBOX_NOT_FOUND':
+        provider_result_status = 'Invalid'
+    elif status_code_upper == 'SMTP_CANNOT_VERIFY_MAILBOX':
+        provider_result_status = 'Invalid'
+    elif status_code_upper == 'SMTP_MAILBOX_BUSY':
+        provider_result_status = 'Invalid'
+    elif status_code_upper == 'SMTP_TEMPORARY_ERROR':
+        provider_result_status = 'Invalid'
+    elif status_code_upper == 'SMTP_MAILBOX_FULL':
+        provider_result_status = 'Invalid'
+    elif status_code_upper == 'NO_MX':
+        provider_result_status = 'Invalid Domain'
+    elif status_code_upper == 'DOMAIN_NOT_FOUND':
+        provider_result_status = 'Invalid Domain'
+    elif status_code_upper in {'DNS_LOOKUP_FAILED', 'DNS_UNAVAILABLE'}:
+        provider_result_status = 'Invalid Domain'
+    elif status_code_upper == 'SMTP_CONNECTION_FAILED':
+        provider_result_status = 'Invalid'
+    elif status_code_upper == 'SMTP_POLICY_REJECTED':
+        provider_result_status = 'Invalid'
+    elif status_code_upper in {'SYNTAX_DOMAIN_VALID', 'SYNTAX_VALID_ONLY'}:
+        provider_result_status = 'Valid'
     else:
-        provider_result_status = f'{classification}: {status_text}'
+        provider_result_status = status_text or 'Invalid'
 
+    normalized_item['provider_mode'] = provider_mode
     bhisha_result = _build_bhisha_api_validation_result(normalized_item)
     safe_to_send = _compute_safe_to_send(
         valid_syntax=valid_syntax,
@@ -2239,8 +2322,6 @@ def _to_client_validation_result(item):
         'request_id': str(item.get('request_id') or '').strip(),
         'dlr_unique_id': str(item.get('dlr_unique_id') or '').strip(),
         'email': entered_email,
-        'provider_mode': provider_mode,
-        'provider_mode_label': provider_mode_label,
         'provider_result_status': provider_result_status,
         'validMailbox': valid_mailbox,
         'validSyntax': valid_syntax,
@@ -2272,8 +2353,6 @@ def _to_history_validation_result(item):
 
     bhisha_result = payload.get('bhisha_result') if isinstance(payload.get('bhisha_result'), dict) else {}
     payload['bhisha_result'] = {
-        'provider_mode': str(bhisha_result.get('provider_mode') or payload.get('provider_mode') or '').strip().lower(),
-        'provider_mode_label': str(bhisha_result.get('provider_mode_label') or payload.get('provider_mode_label') or '').strip(),
         'valid_syntax': bool(bhisha_result.get('valid_syntax')),
         'domain_related_mail': bool(bhisha_result.get('domain_related_mail')),
         'disposable': bool(bhisha_result.get('disposable')),
@@ -2814,6 +2893,36 @@ def _get_verifalia_admin_credits():
     resolved_credits = round(max(0.0, float(credits_value)), 4)
     _EMAIL_PROVIDER_CREDITS_CACHE['value'] = resolved_credits
     _EMAIL_PROVIDER_CREDITS_CACHE['expires_at'] = now + timedelta(seconds=45)
+    return resolved_credits
+
+
+def _get_millionverifier_admin_credits():
+    now = timezone.now()
+    cached_value = _MILLIONVERIFIER_CREDITS_CACHE.get('value')
+    cache_expiry = _MILLIONVERIFIER_CREDITS_CACHE.get('expires_at')
+    if cache_expiry and cache_expiry > now and cached_value is not None:
+        return cached_value
+
+    api_key = str(getattr(settings, 'MILLIONVERIFIER_API_KEY', '') or '').strip()
+    if not api_key:
+        return None
+
+    credits_url = str(getattr(settings, 'MILLIONVERIFIER_CREDITS_URL', 'https://api.millionverifier.com/api/v3/credits') or '').strip()
+
+    try:
+        response = requests.get(credits_url, params={'api': api_key}, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None
+
+    credits_value = _extract_balance_from_data(payload)
+    if credits_value is None:
+        return None
+
+    resolved_credits = round(max(0.0, float(credits_value)), 4)
+    _MILLIONVERIFIER_CREDITS_CACHE['value'] = resolved_credits
+    _MILLIONVERIFIER_CREDITS_CACHE['expires_at'] = now + timedelta(seconds=45)
     return resolved_credits
 
 
@@ -3644,10 +3753,15 @@ def _build_bhisha_raw_status_details(item):
 
 
 def _normalize_provider_mode_label(provider_mode):
-    normalized = str(provider_mode or '').strip().lower()
-    if normalized == 'zerobounce':
-        return 'ZeroBounce API'
-    return 'Own System (SMTP + DNS)'
+    # Never reveal which validation engine (own system, ZeroBounce, MillionVerifier, ...)
+    # served a request; every user/report-facing surface uses one generic label.
+    return 'Standard Validation'
+
+
+def _get_public_provider_mode(provider_mode):
+    """Mask the real validation engine so reports/history/API responses always look
+    identical regardless of which provider (own system or a third party) ran the check."""
+    return 'own_system'
 
 
 def _build_bhisha_api_validation_result(item):
@@ -3666,8 +3780,6 @@ def _build_bhisha_api_validation_result(item):
 
     result = {
         'email': str(item.get('email') or '').strip().lower(),
-        'provider_mode': str(item.get('provider_mode') or item.get('provider') or 'own_system').strip().lower(),
-        'provider_mode_label': _normalize_provider_mode_label(item.get('provider_mode') or item.get('provider') or 'own_system'),
         'valid_syntax': valid_syntax,
         'domain_related_mail': domain_related_mail,
         'disposable': disposable,
@@ -4802,7 +4914,7 @@ class SignupView(generics.CreateAPIView):
         return Response({
             'requires_otp': True,
             'email_sent': email_sent,
-            'detail': 'OTP generated. If email is not received, check SMTP credentials/server logs.',
+            'detail': 'Account created successfully. We are sending your verification code — if it does not arrive shortly, please use the resend option.',
             **diagnostics,
         }, status=201, headers={'X-OTP-Email-Sent': 'true' if email_sent else 'false'})
 
@@ -4914,7 +5026,7 @@ class LoginView(generics.GenericAPIView):
                 {
                     'requires_otp_login': True,
                     'email': user.email,
-                    'detail': 'Two-factor authentication is enabled. OTP sent to your email.',
+                    'detail': 'Two-factor authentication is enabled. OTP sent to your email.' if email_sent else 'Two-factor authentication is enabled, but we could not send your verification code right now. Please try again in a few minutes.',
                     'email_sent': email_sent,
                     **diagnostics,
                 },
@@ -4953,7 +5065,7 @@ class ForgotPasswordView(generics.GenericAPIView):
         if not email_sent:
             return Response(
                 {
-                    'detail': 'OTP generated. Email sending failed; verify server EMAIL_* configuration and mail provider logs.',
+                    'detail': 'We could not send your verification code right now. Please try again in a few minutes.',
                     'email_sent': False,
                     **diagnostics,
                 },
@@ -4993,7 +5105,7 @@ class ResendOTPView(generics.GenericAPIView):
 
         return Response(
             {
-                'detail': 'OTP sent successfully.' if email_sent else 'OTP generated but email sending failed.',
+                'detail': 'OTP sent successfully.' if email_sent else 'We could not send your verification code right now. Please try again in a few minutes.',
                 'email_sent': email_sent,
                 **diagnostics,
             },
@@ -6838,7 +6950,7 @@ class EmailValidationView(generics.GenericAPIView):
                 email_count=0,
                 emails_requested=[],
                 results_summary={
-                    'provider_mode': provider_mode,
+                    'provider_mode': _get_public_provider_mode(provider_mode),
                     'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                     'request_items': [],
                     'safe_count': 0,
@@ -6931,7 +7043,7 @@ class EmailValidationView(generics.GenericAPIView):
                 email_count=len(unique_emails),
                 emails_requested=unique_emails,
                 results_summary={
-                    'provider_mode': provider_mode,
+                    'provider_mode': _get_public_provider_mode(provider_mode),
                     'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                     'request_items': request_items,
                     'safe_count': 0,
@@ -7006,7 +7118,7 @@ class EmailValidationView(generics.GenericAPIView):
             email_count=len(unique_emails),
             emails_requested=unique_emails,
             results_summary={
-                'provider_mode': provider_mode,
+                'provider_mode': _get_public_provider_mode(provider_mode),
                 'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                 'request_items': request_items,
                 'safe_count': safe_count,
@@ -7068,6 +7180,9 @@ class UserWalletView(generics.GenericAPIView):
             provider_email_balance = _get_verifalia_admin_credits()
             if provider_email_balance is not None:
                 payload['provider_email_balance'] = str(provider_email_balance)
+            millionverifier_balance = _get_millionverifier_admin_credits()
+            if millionverifier_balance is not None:
+                payload['millionverifier_email_balance'] = str(millionverifier_balance)
             provider_balance = _get_provider_wallet_balance()
             if provider_balance is not None:
                 payload['provider_message_balance'] = str(provider_balance)
@@ -7428,7 +7543,7 @@ class APIEmailValidationView(generics.GenericAPIView):
                 email_count=len(unique_emails),
                 emails_requested=unique_emails,
                 results_summary={
-                    'provider_mode': provider_mode,
+                    'provider_mode': _get_public_provider_mode(provider_mode),
                     'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                     'request_items': request_items,
                     'request_mode': request_mode,
@@ -7477,7 +7592,7 @@ class APIEmailValidationView(generics.GenericAPIView):
             email_count=len(unique_emails),
             emails_requested=unique_emails,
             results_summary={
-                'provider_mode': provider_mode,
+                'provider_mode': _get_public_provider_mode(provider_mode),
                 'provider_mode_label': _normalize_provider_mode_label(provider_mode),
                 'request_items': request_items,
                 'request_mode': request_mode,
@@ -7520,7 +7635,7 @@ class APIEmailValidationView(generics.GenericAPIView):
 
         history.status = EmailValidationHistory.STATUS_COMPLETED
         history.results_summary = {
-            'provider_mode': provider_mode,
+            'provider_mode': _get_public_provider_mode(provider_mode),
             'provider_mode_label': _normalize_provider_mode_label(provider_mode),
             'request_items': request_items,
             'request_mode': request_mode,
@@ -8128,7 +8243,7 @@ class AdminCreditSettingsView(generics.GenericAPIView):
         )
         provider_setting, _ = PlatformSetting.objects.get_or_create(
             key='email_validation_provider_mode',
-            defaults={'value': 'own_system', 'description': 'Provider used for email validation: own_system or zerobounce'},
+            defaults={'value': 'own_system', 'description': 'Provider used for email validation: own_system, zerobounce, or millionverifier'},
         )
         ip_whitelist_setting, _ = PlatformSetting.objects.get_or_create(
             key='email_validation_ip_whitelist',
@@ -8144,7 +8259,7 @@ class AdminCreditSettingsView(generics.GenericAPIView):
                 **PlatformSettingSerializer(setting).data,
                 'provider_mode': str(provider_setting.value or 'own_system').strip().lower(),
                 'provider_mode_description': provider_setting.description,
-                'provider_mode_options': ['own_system', 'zerobounce'],
+                'provider_mode_options': ['own_system', 'zerobounce', 'millionverifier'],
                 'ip_whitelist': normalized_whitelist,
                 'ip_whitelist_text': '\n'.join(normalized_whitelist),
                 'ip_whitelist_description': ip_whitelist_setting.description,
@@ -8180,11 +8295,11 @@ class AdminCreditSettingsView(generics.GenericAPIView):
         provider_mode = request.data.get('provider_mode')
         if provider_mode is not None:
             normalized_mode = str(provider_mode or '').strip().lower()
-            if normalized_mode not in {'own_system', 'zerobounce'}:
-                return Response({'detail': 'provider_mode must be own_system or zerobounce'}, status=status.HTTP_400_BAD_REQUEST)
+            if normalized_mode not in {'own_system', 'zerobounce', 'millionverifier'}:
+                return Response({'detail': 'provider_mode must be own_system, zerobounce, or millionverifier'}, status=status.HTTP_400_BAD_REQUEST)
             provider_setting, _ = PlatformSetting.objects.get_or_create(
                 key='email_validation_provider_mode',
-                defaults={'value': normalized_mode, 'description': 'Provider used for email validation: own_system or zerobounce'},
+                defaults={'value': normalized_mode, 'description': 'Provider used for email validation: own_system, zerobounce, or millionverifier'},
             )
             provider_setting.value = normalized_mode
             if 'provider_mode_description' in request.data:
@@ -8253,8 +8368,8 @@ class AdminCreditSettingsView(generics.GenericAPIView):
             {
                 **PlatformSettingSerializer(setting).data,
                 'provider_mode': str((provider_mode_setting.value if provider_mode_setting else 'own_system') or 'own_system').strip().lower(),
-                'provider_mode_description': str(provider_mode_setting.description if provider_mode_setting else 'Provider used for email validation: own_system or zerobounce').strip(),
-                'provider_mode_options': ['own_system', 'zerobounce'],
+                'provider_mode_description': str(provider_mode_setting.description if provider_mode_setting else 'Provider used for email validation: own_system, zerobounce, or millionverifier').strip(),
+                'provider_mode_options': ['own_system', 'zerobounce', 'millionverifier'],
                 'ip_whitelist': normalized_whitelist,
                 'ip_whitelist_text': '\n'.join(normalized_whitelist),
                 'ip_whitelist_description': str(ip_whitelist_setting.description if ip_whitelist_setting else 'Comma or newline separated whitelisted client IPs for API email validation without API key').strip(),

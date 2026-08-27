@@ -24,7 +24,7 @@ export default function ForgotPassword() {
     try {
       const response = await API.post('forgot-password/', { email });
       if (response?.data?.email_sent === false) {
-        setError(response?.data?.detail || 'OTP generated but email sending failed.');
+        setError(response?.data?.detail || 'We could not send your verification code right now. Please try again in a few minutes.');
         setDiagnostics(buildOtpDiagnostics(response?.data));
         setLoading(false);
         return;

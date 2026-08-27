@@ -347,6 +347,9 @@ if csrf_trusted_origin_regexes_env.strip():
 #                                         +  EMAIL_PASSWORD=your_ionos_email_password
 #                                         +  EMAIL_FROM=you@yourdomain.com
 #                                         +  automatic fallback between 465/SSL and 587/TLS
+#   graph     →  EMAIL_PROVIDER=graph     +  GRAPH_TENANT_ID / GRAPH_CLIENT_ID / GRAPH_CLIENT_SECRET
+#                                         +  GRAPH_SENDER_EMAIL (defaults to PRIMARY_ADMIN_EMAIL)
+#                                         (sends via Microsoft Graph API instead of SMTP)
 #   custom    →  set EMAIL_HOST / EMAIL_PORT / EMAIL_USER / EMAIL_PASSWORD manually
 #
 # For Gmail App Password: Google Account → Security → 2-Step Verification → App passwords
@@ -423,6 +426,18 @@ else:
     DEFAULT_FROM_EMAIL = 'no-reply@example.com'
 EMAIL_SSL_CERTFILE         = _env_text('EMAIL_SSL_CERTFILE') or None
 EMAIL_SSL_KEYFILE          = _env_text('EMAIL_SSL_KEYFILE') or None
+
+# Microsoft Graph API mail sending (Entra ID app, client-credentials flow).
+# Used for signup OTP, forgot-password OTP, and reset-password mail when
+# EMAIL_PROVIDER=graph. The sending mailbox is the admin mailbox (PRIMARY_ADMIN_EMAIL)
+# unless GRAPH_SENDER_EMAIL is set explicitly.
+GRAPH_TENANT_ID = _env_text('GRAPH_TENANT_ID', '')
+GRAPH_CLIENT_ID = _env_text('GRAPH_CLIENT_ID', '')
+GRAPH_CLIENT_SECRET = _env_secret('GRAPH_CLIENT_SECRET')
+GRAPH_SENDER_EMAIL = _env_text('GRAPH_SENDER_EMAIL', '')
+
+if _email_provider == 'graph':
+    EMAIL_BACKEND = 'accounts.graph_email_backend.GraphEmailBackend'
 EMAIL_VERIFY_CERTS         = _env_bool('EMAIL_VERIFY_CERTS', True)
 EMAIL_ALLOW_INSECURE_FALLBACK = _env_bool('EMAIL_ALLOW_INSECURE_FALLBACK', True)
 EMAIL_TIMEOUT              = int(_env_text('EMAIL_TIMEOUT', 15 if not DEBUG else 20))
@@ -460,8 +475,16 @@ if not DEBUG and ('bhisha.com' in ALLOWED_HOSTS or 'www.bhisha.com' in ALLOWED_H
 # Avoid silent OTP email failures in production.
 # Fall back to console backend when SMTP credentials are missing so the
 # application can still boot; OTP emails simply won't be delivered until
-# proper SMTP credentials are configured.
-if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
+# proper SMTP credentials are configured. Graph mode uses its own
+# tenant/client credentials instead of SMTP, so it is exempt from this check.
+if _email_provider == 'graph':
+    if not (GRAPH_TENANT_ID and GRAPH_CLIENT_ID and GRAPH_CLIENT_SECRET):
+        EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+        logger.warning(
+            'GRAPH_TENANT_ID/GRAPH_CLIENT_ID/GRAPH_CLIENT_SECRET are not configured; '
+            'using console email backend until Microsoft Graph credentials are set.'
+        )
+elif not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
     logger.warning(
         'SMTP credentials are not configured; using console email backend. '
@@ -472,9 +495,15 @@ if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
 # custom user model
 AUTH_USER_MODEL = 'accounts.User'
 
-# Primary admin user to auto-grant elevated access
+# Primary admin user to auto-grant elevated access.
+# Set PRIMARY_ADMIN_EMAIL in backend/.env to your real admin mailbox; it is also
+# used as the sender identity for OTP/forgot-password/reset-password mail.
 PRIMARY_ADMIN_EMAIL = os.environ.get('PRIMARY_ADMIN_EMAIL', 'noreply@smshandover.com').strip().lower()
 PRIMARY_ADMIN_ENFORCEMENT = _env_bool('PRIMARY_ADMIN_ENFORCEMENT', not DEBUG)
+
+# Graph mode sends as the admin mailbox unless EMAIL_FROM/GRAPH_SENDER_EMAIL override it.
+if _email_provider == 'graph' and not _configured_email_from:
+    DEFAULT_FROM_EMAIL = GRAPH_SENDER_EMAIL or PRIMARY_ADMIN_EMAIL
 
 # SMS provider fallback credentials (use backend/.env for confidential values)
 SMS_PROVIDER_USER = _env_text('SMS_PROVIDER_USER', '')
@@ -519,6 +548,11 @@ EMAIL_VALIDATION_SMTP_TIMEOUT_SECONDS = float(_env_text('EMAIL_VALIDATION_SMTP_T
 ZEROBOUNCE_API_KEY = _env_secret('ZEROBOUNCE_API_KEY')
 ZEROBOUNCE_VALIDATE_URL = _env_text('ZEROBOUNCE_VALIDATE_URL', 'https://api.zerobounce.net/v2/validate')
 ZEROBOUNCE_CREDITS_URL = _env_text('ZEROBOUNCE_CREDITS_URL', 'https://api.zerobounce.net/v2/getcredits')
+
+# MillionVerifier API
+MILLIONVERIFIER_API_KEY = _env_secret('MILLIONVERIFIER_API_KEY')
+MILLIONVERIFIER_VALIDATE_URL = _env_text('MILLIONVERIFIER_VALIDATE_URL', 'https://api.millionverifier.com/api/v3/')
+MILLIONVERIFIER_CREDITS_URL = _env_text('MILLIONVERIFIER_CREDITS_URL', 'https://api.millionverifier.com/api/v3/credits')
 
 # Celery + Redis async processing
 EMAIL_VALIDATION_USE_CELERY = _env_bool('EMAIL_VALIDATION_USE_CELERY', False)

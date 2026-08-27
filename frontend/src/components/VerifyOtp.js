@@ -93,7 +93,7 @@ export default function VerifyOtp() {
     try {
       const response = await API.post('resend-otp/', { email });
       if (response?.data?.email_sent === false) {
-        setError(response?.data?.detail || 'OTP generated but email sending failed.');
+        setError(response?.data?.detail || 'We could not send your verification code right now. Please try again in a few minutes.');
         setDiagnostics(buildOtpDiagnostics(response?.data));
       } else {
         setMessage('A new OTP has been sent to your email.');

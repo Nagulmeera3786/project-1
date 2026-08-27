@@ -119,6 +119,7 @@ export default function EmailValidation() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [walletBalance, setWalletBalance] = useState('0');
   const [providerEmailBalance, setProviderEmailBalance] = useState('');
+  const [millionVerifierBalance, setMillionVerifierBalance] = useState('');
   const [providerMessageBalance, setProviderMessageBalance] = useState('');
   const [canViewSupportData, setCanViewSupportData] = useState(false);
   const [canManageValidation, setCanManageValidation] = useState(false);
@@ -214,6 +215,7 @@ export default function EmailValidation() {
         const adminUser = Boolean(profile.data?.is_staff || profile.data?.is_superuser || profile.data?.is_primary_admin);
         const supportUser = Boolean(profile.data?.can_view_support_data || profile.data?.is_employee);
         const currentProviderEmailBalance = wallet.data?.provider_email_balance;
+        const currentMillionVerifierBalance = wallet.data?.millionverifier_email_balance;
         const currentProviderMessageBalance = wallet.data?.provider_message_balance;
         const validationBalance = wallet.data?.balance;
         const providerMode = String(wallet.data?.email_validation_provider_mode || 'own_system').toLowerCase();
@@ -223,6 +225,7 @@ export default function EmailValidation() {
         setValidationProviderMode(providerMode);
         setWalletBalance(String(validationBalance ?? '0'));
         setProviderEmailBalance(currentProviderEmailBalance !== undefined && currentProviderEmailBalance !== null ? String(currentProviderEmailBalance) : '');
+        setMillionVerifierBalance(currentMillionVerifierBalance !== undefined && currentMillionVerifierBalance !== null ? String(currentMillionVerifierBalance) : '');
         setProviderMessageBalance(currentProviderMessageBalance !== undefined && currentProviderMessageBalance !== null ? String(currentProviderMessageBalance) : '');
       } catch {
         setIsAdmin(false);
@@ -241,12 +244,14 @@ export default function EmailValidation() {
     try {
       const refreshedWallet = await API.get('wallet/');
       const currentProviderEmailBalance = refreshedWallet.data?.provider_email_balance;
+      const currentMillionVerifierBalance = refreshedWallet.data?.millionverifier_email_balance;
       const currentProviderMessageBalance = refreshedWallet.data?.provider_message_balance;
       const validationBalance = refreshedWallet.data?.balance;
       const providerMode = String(refreshedWallet.data?.email_validation_provider_mode || validationProviderMode || 'own_system').toLowerCase();
       setWalletBalance(String(validationBalance ?? preferResponseBalance ?? walletBalance));
       setValidationProviderMode(providerMode);
       setProviderEmailBalance(currentProviderEmailBalance !== undefined && currentProviderEmailBalance !== null ? String(currentProviderEmailBalance) : providerEmailBalance);
+      setMillionVerifierBalance(currentMillionVerifierBalance !== undefined && currentMillionVerifierBalance !== null ? String(currentMillionVerifierBalance) : millionVerifierBalance);
       setProviderMessageBalance(currentProviderMessageBalance !== undefined && currentProviderMessageBalance !== null ? String(currentProviderMessageBalance) : providerMessageBalance);
     } catch {
       if (preferResponseBalance !== undefined && preferResponseBalance !== null) {
@@ -441,8 +446,8 @@ export default function EmailValidation() {
       completed: String(status || '').toLowerCase() === 'completed',
       delivery_time: completedAt || null,
       failure_reason: failureReason || '',
-      provider_mode: 'zerobounce',
-      provider_mode_label: 'ZeroBounce API',
+      provider_mode: 'own_system',
+      provider_mode_label: 'Standard Validation',
       summary: { ...totals, total: resultRows.length },
       results: resultRows.map((row) => ({
         email: String(row?.email || '').trim().toLowerCase(),
@@ -1268,122 +1273,6 @@ export default function EmailValidation() {
     }
   };
 
-  const formatLiveResult = (row) => {
-    const toBool = (value) => {
-      if (typeof value === 'boolean') {
-        return value;
-      }
-      if (typeof value === 'number') {
-        return value !== 0;
-      }
-      const normalized = String(value || '').trim().toLowerCase();
-      if (['true', '1', 'yes', 'y'].includes(normalized)) {
-        return true;
-      }
-      if (['false', '0', 'no', 'n'].includes(normalized)) {
-        return false;
-      }
-      return false;
-    };
-
-    const profile = row?.bhisha_result?.result_profile;
-    if (profile) {
-      return profile;
-    }
-
-    const bhisha = row?.bhisha_result || {};
-    const validSyntax = toBool(row?.bhisha_result?.valid_syntax ?? row?.validSyntax);
-    const disposable = toBool(row?.bhisha_result?.disposable ?? row?.disposable);
-    const roleBased = toBool(row?.bhisha_result?.role_based ?? row?.roleBased);
-    const safeToSend = typeof row?.safe_to_send === 'boolean'
-      ? row.safe_to_send
-      : Boolean(validSyntax && !disposable && !roleBased);
-    const riskFactors = String(bhisha.risk_factors || 'None Detected').trim() || 'None Detected';
-
-    return [
-      `Safe To Send:   ${String(safeToSend)}`,
-      `Valid Syntax:   ${String(validSyntax)}`,
-      `Risk Factors:   ${riskFactors}`,
-    ].join('\n');
-  };
-
-  const formatBoolValue = (value) => {
-    if (value === true) {
-      return 'Yes';
-    }
-    return 'No';
-  };
-
-  const getBoolStyles = (value) => {
-    if (value === true) {
-      return { color: '#166534', background: '#dcfce7', border: '#86efac' };
-    }
-    return { color: '#991b1b', background: '#fee2e2', border: '#fca5a5' };
-  };
-
-  const factorCards = (row) => {
-    const toBool = (value) => {
-      if (typeof value === 'boolean') {
-        return value;
-      }
-      if (typeof value === 'number') {
-        return value !== 0;
-      }
-      const normalized = String(value || '').trim().toLowerCase();
-      if (['true', '1', 'yes', 'y'].includes(normalized)) {
-        return true;
-      }
-      if (['false', '0', 'no', 'n'].includes(normalized)) {
-        return false;
-      }
-      return false;
-    };
-
-    const bhisha = row?.bhisha_result || {};
-    const factors = [
-      { label: 'Safe To Send', type: 'bool', value: toBool(row?.safe_to_send) },
-      { label: 'Valid Syntax', type: 'bool', value: toBool(bhisha.valid_syntax ?? row?.validSyntax) },
-    ];
-
-    return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px', marginTop: '10px' }}>
-        {factors.map((factor) => {
-          const style = factor.type === 'bool'
-            ? getBoolStyles(factor.value)
-            : { color: '#1f2937', background: '#eef2ff', border: '#c7d2fe' };
-
-          const displayValue = factor.type === 'bool'
-            ? formatBoolValue(factor.value)
-            : String(factor.value);
-
-          return (
-            <div key={`${row?.email || 'factor'}-${factor.label}`} style={{ border: `1px solid ${style.border}`, borderRadius: '8px', padding: '8px', background: style.background }}>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', marginBottom: '4px' }}>{factor.label}</div>
-              <div style={{ fontSize: '13px', fontWeight: 800, color: style.color }}>{displayValue}</div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
-  const getRowProviderMode = (row) => {
-    return String(
-      row?.provider_mode
-      || row?.bhisha_result?.provider_mode
-      || validationProviderMode
-      || 'own_system'
-    ).toLowerCase();
-  };
-
-  const getRowProviderLabel = (row) => {
-    const explicit = String(row?.provider_mode_label || row?.bhisha_result?.provider_mode_label || '').trim();
-    if (explicit) {
-      return explicit;
-    }
-    return getRowProviderMode(row) === 'zerobounce' ? 'ZeroBounce API' : 'Own System (SMTP + DNS)';
-  };
-
   const getOwnSystemMailStatus = (row) => {
     const bhisha = row?.bhisha_result || {};
     const validSyntax = Boolean(bhisha.valid_syntax ?? row?.validSyntax);
@@ -1506,6 +1395,12 @@ export default function EmailValidation() {
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '12px' }}>
             <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>ZeroBounce Provider Balance</div>
             <div style={{ color: '#0f766e', fontSize: '24px', fontWeight: 800 }}>{providerEmailBalance || '-'}</div>
+          </div>
+        )}
+        {isAdmin && (
+          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '12px' }}>
+            <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>MillionVerifier Provider Balance</div>
+            <div style={{ color: '#0f766e', fontSize: '24px', fontWeight: 800 }}>{millionVerifierBalance || '-'}</div>
           </div>
         )}
         {isAdmin && (
@@ -1792,70 +1687,27 @@ export default function EmailValidation() {
               <div style={{ padding: '12px 14px', background: '#fcfcff', display: 'grid', gap: '10px' }}>
                 {results.map((row, idx) => (
                   <div key={`summary-${row.email || idx}-${idx}`} style={{ border: '1px solid #e5e7eb', borderRadius: '8px', background: '#fff', padding: '10px' }}>
-                    {getRowProviderMode(row) === 'own_system' ? (
-                      <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
-                        <div style={{ marginBottom: '6px', fontSize: '11px', color: '#334155', fontWeight: 700 }}>
-                          Provider: {getRowProviderLabel(row)}
-                        </div>
-                        <div style={{ fontSize: '13px', color: '#111827', fontWeight: 700, marginBottom: '6px' }}>
-                          Entered Mail: {String(row?.email || '').trim().toLowerCase() || '-'}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Validation Status</div>
-                          <div
-                            style={{
-                              border: `1px solid ${getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).border}`,
-                              background: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).background,
-                              color: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).color,
-                              borderRadius: '999px',
-                              padding: '4px 10px',
-                              fontSize: '12px',
-                              fontWeight: 800,
-                            }}
-                          >
-                            {getOwnSystemMailStatus(row)}
-                          </div>
-                        </div>
-                
+                    <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
+                      <div style={{ fontSize: '13px', color: '#111827', fontWeight: 700, marginBottom: '6px' }}>
+                        Entered Mail: {String(row?.email || '').trim().toLowerCase() || '-'}
                       </div>
-                    ) : (
-                      <>
-                        <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Provider</div>
-                          <div
-                            style={{
-                              border: '1px solid #cbd5e1',
-                              background: '#f8fafc',
-                              color: '#0f172a',
-                              borderRadius: '999px',
-                              padding: '4px 10px',
-                              fontSize: '12px',
-                              fontWeight: 800,
-                            }}
-                          >
-                            {getRowProviderLabel(row)}
-                          </div>
-                          <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Validation Status</div>
-                          <div
-                            style={{
-                              border: `1px solid ${getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).border}`,
-                              background: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).background,
-                              color: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).color,
-                              borderRadius: '999px',
-                              padding: '4px 10px',
-                              fontSize: '12px',
-                              fontWeight: 800,
-                            }}
-                          >
-                            {String(row?.provider_result_status || row?.status || row?.classification || 'Result available')}
-                          </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: '12px', color: '#475569', fontWeight: 700 }}>Validation Status</div>
+                        <div
+                          style={{
+                            border: `1px solid ${getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).border}`,
+                            background: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).background,
+                            color: getOwnSystemMailStatusStyle(getOwnSystemMailStatus(row)).color,
+                            borderRadius: '999px',
+                            padding: '4px 10px',
+                            fontSize: '12px',
+                            fontWeight: 800,
+                          }}
+                        >
+                          {getOwnSystemMailStatus(row)}
                         </div>
-                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '12px', color: '#374151', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px', padding: '8px' }}>
-                          {formatLiveResult(row)}
-                        </pre>
-                        {factorCards(row)}
-                      </>
-                    )}
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2085,6 +1937,7 @@ export default function EmailValidation() {
             >
               <option value="own_system">Own System (SMTP + DNS)</option>
               <option value="zerobounce">ZeroBounce API</option>
+              <option value="millionverifier">MillionVerifier API</option>
             </select>
             <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>Description</label>
             <input
