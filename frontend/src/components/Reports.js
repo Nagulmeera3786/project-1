@@ -345,7 +345,7 @@ function flattenMailValidationRows(emailHistoryItems) {
         const rowKey = `${baseRequestId}-${idx + 1}`;
         rows.push({
           row_key: rowKey,
-          request_id: String(entry?.request_id || '').trim() || baseRequestId,
+          request_id: baseRequestId,
           dlr_unique_id: normalizedDlr(String(entry?.dlr_unique_id || '').trim() || dlrUniqueId),
           created_at: item?.created_at,
           validation_timing: item?.completed_at || item?.created_at || null,
@@ -376,7 +376,7 @@ function flattenMailValidationRows(emailHistoryItems) {
         || classification === 'deliverable';
       rows.push({
         row_key: rowKey,
-        request_id: String(result?.request_id || requestItem?.request_id || '').trim() || baseRequestId,
+        request_id: baseRequestId,
         dlr_unique_id: normalizedDlr(String(result?.dlr_unique_id || requestItem?.dlr_unique_id || '').trim() || dlrUniqueId),
         created_at: item?.created_at,
         validation_timing: item?.completed_at || item?.created_at || null,

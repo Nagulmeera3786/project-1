@@ -813,6 +813,17 @@ class EmailValidationMediatorTests(TestCase):
         history = self.normal_user.email_validations.latest('created_at')
         self.assertEqual(history.source, 'api')
         self.assertEqual(history.api_key_id, api_key.id)
+        self.assertEqual(response.data.get('request_id'), history.request_id)
+
+        status_response = self.client.post(
+            '/api/auth/email-validation/api/status/',
+            {'request_id': history.request_id},
+            format='json',
+            HTTP_X_API_KEY=api_key.key,
+        )
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.data.get('request_id'), history.request_id)
 
     @override_settings(PRIMARY_ADMIN_EMAIL='primary@example.com')
     @patch('accounts.views._validate_email_list_with_verifalia')

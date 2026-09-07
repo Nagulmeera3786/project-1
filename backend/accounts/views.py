@@ -3983,7 +3983,6 @@ def _build_concise_api_status_response(history):
         ]
     if stored_results:
         requested_email = str(stored_results[0].get('email') or '').strip().lower()
-        resolved_request_id = str(stored_results[0].get('request_id') or '').strip() or resolved_request_id
         resolved_dlr_unique_id = str(stored_results[0].get('dlr_unique_id') or '').strip() or resolved_dlr_unique_id
     elif isinstance(history.emails_requested, list) and history.emails_requested:
         requested_email = str(history.emails_requested[0] or '').strip().lower()
@@ -3994,7 +3993,7 @@ def _build_concise_api_status_response(history):
             response_rows.append(
                 _build_concise_api_validation_response(
                     [item],
-                    request_id=str(item.get('request_id') or '').strip() or history.request_id,
+                    request_id=history.request_id,
                     dlr_unique_id=str(item.get('dlr_unique_id') or '').strip() or resolved_dlr_unique_id,
                 )
             )
@@ -7141,8 +7140,8 @@ class EmailValidationView(generics.GenericAPIView):
 
         return Response(
             {
-                'request_id': client_results[0].get('request_id', '') if len(client_results) > 1 else history.request_id,
-                'batch_id': history.request_id if len(client_results) > 1 else '',
+                'request_id': history.request_id,
+                'batch_id': history.request_id,
                 'request_ids': [item.get('request_id', '') for item in client_results if item.get('request_id')],
                 'count': len(client_results),
                 'wallet_balance': str(remaining_balance),
@@ -7728,8 +7727,6 @@ class EmailValidationStatusView(generics.GenericAPIView):
         history = EmailValidationHistory.objects.filter(id=history_id).first()
         payload['batch_id'] = snapshot.get('request_id') or ''
         payload['request_ids'] = _get_email_validation_request_ids(history) if history else []
-        if payload['request_ids']:
-            payload['request_id'] = payload['request_ids'][0]
         return Response(payload)
 
 
@@ -7934,8 +7931,6 @@ class EmailValidationControlView(generics.GenericAPIView):
         payload['last_action'] = action
         payload['batch_id'] = history.request_id
         payload['request_ids'] = _get_email_validation_request_ids(history)
-        if payload['request_ids']:
-            payload['request_id'] = payload['request_ids'][0]
         return Response(payload)
 
 
@@ -8136,8 +8131,6 @@ class APIEmailValidationControlView(generics.GenericAPIView):
         payload['last_action'] = action
         payload['batch_id'] = history.request_id
         payload['request_ids'] = _get_email_validation_request_ids(history)
-        if payload['request_ids']:
-            payload['request_id'] = payload['request_ids'][0]
         return Response(payload)
 
 
