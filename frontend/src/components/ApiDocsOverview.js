@@ -429,7 +429,7 @@ const sections = [
     title: 'Mail Validation',
     description: 'Validate single emails, bulk email lists, or uploaded files and track each email result with status/control APIs.',
     endpoints: [
-      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key or Whitelisted IP', description: 'Send exactly one of email, emails, or source_file. Optional dlr_unique_id is an alphanumeric string up to 10 characters and is returned on every result. No login or JWT is required.' },
+      { method: 'POST', path: '/email-validation/api/validate/', auth: 'API Key or Whitelisted IP', description: 'Send exactly one of email, emails, or source_file. Optional dlr_unique_id is an alphanumeric string up to 15 characters and is returned on every result. No login or JWT is required.' },
       { method: 'POST', path: '/email-validation/api/status/', auth: 'API Key or Whitelisted IP', description: 'Get request status by request_id.' },
       { method: 'POST', path: '/email-validation/api/control/', auth: 'API Key or Whitelisted IP', description: 'Control a running request with start/pause/resume/stop/cancel.' },
     ],

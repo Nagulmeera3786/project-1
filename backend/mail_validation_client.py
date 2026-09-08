@@ -172,7 +172,7 @@ def main():
     parser.add_argument('--api-key', help='API key sent as X-API-Key; omit when caller IP is whitelisted')
     parser.add_argument('--bulk', nargs='+', help='List of emails to validate in bulk')
     parser.add_argument('--file', help='Path to .csv/.txt/.xls/.xlsx/.xlsv file to validate')
-    parser.add_argument('--dlr-unique-id', default='', help='Optional alphanumeric DLR ID, max 10 characters')
+    parser.add_argument('--dlr-unique-id', default='', help='Optional alphanumeric DLR ID, max 15 characters')
     args = parser.parse_args()
 
     if not args.bulk and not args.file:

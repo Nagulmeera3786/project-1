@@ -3679,8 +3679,8 @@ def _extract_client_dlr_unique_id(request):
             continue
         value = str(candidate).strip()
         if value:
-            if len(value) > 10:
-                raise ValueError('DLR unique id must be at most 10 characters.')
+            if len(value) > 15:
+                raise ValueError('DLR unique id must be at most 15 characters.')
             if not re.fullmatch(r'[A-Za-z0-9]+', value):
                 raise ValueError('DLR unique id must be alphanumeric (letters and numbers only).')
             return value
