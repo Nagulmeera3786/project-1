@@ -1,0 +1,16 @@
+{
+  "short_name": "Bhisha",
+  "name": "Bhisha | Bulk SMS & Email Validation Platform",
+  "description": "Bhisha is a bulk SMS and email validation platform for businesses.",
+  "icons": [
+    {
+      "src": "bhisha-logo.svg",
+      "type": "image/svg+xml",
+      "sizes": "any"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0d1b2a",
+  "background_color": "#ffffff"
+}

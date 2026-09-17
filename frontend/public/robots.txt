@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /admin
+Disallow: /sms
+Disallow: /broadcast
+Disallow: /reports
+Disallow: /notifications
+Disallow: /profile
+
+Sitemap: https://bhisha.com/sitemap.xml

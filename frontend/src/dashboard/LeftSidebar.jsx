@@ -14,6 +14,7 @@ import {
   FaMoneyBillWave,
   FaWallet,
   FaChartLine,
+  FaShieldAlt,
 
 } from "react-icons/fa";
 import API from "../api";
@@ -63,6 +64,7 @@ const LeftSidebar = () => {
     { icon: <FaUsers />, label: "People", path: null, action: () => setShowPeopleSubmenu((prev) => !prev) },
     { icon: <FaChartLine />, label: "Reports", path: '/reports', action: () => navigate('/reports') },
     { icon: <FaMoneyBillWave />, label: "Utilities", path: null, action: () => setShowUtilitiesSubmenu((prev) => !prev) },
+    { icon: <FaShieldAlt />, label: "Security Settings", path: '/admin/security-settings', action: () => navigate('/admin/security-settings') },
     { icon: <FaPhoneAlt />, label: "Contact Support", path: '/dashboard/contact-support', action: () => navigate('/dashboard/contact-support') },
   ];
 

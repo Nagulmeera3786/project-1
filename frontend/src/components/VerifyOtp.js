@@ -17,26 +17,6 @@ export default function VerifyOtp() {
   const [message, setMessage] = useState('');
   const [lastSubmittedOtp, setLastSubmittedOtp] = useState('');
 
-  if (!email) {
-    return (
-      <div style={{
-        minHeight: '100vh',
-        background: 'linear-gradient(135deg, #1A0E4E 0%, #3D2B82 50%, #5B3FA8 100%)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <div style={{
-          background: 'white', borderRadius: '20px', padding: '40px 36px',
-          boxShadow: '0 24px 64px rgba(26,14,78,0.35)', textAlign: 'center',
-        }}>
-          <p style={{ color: '#6B6B8A', fontSize: '14px' }}>
-            Email not found.{' '}
-            <Link to="/signup" style={{ color: '#5B3FA8', fontWeight: '600', textDecoration: 'none' }}>Try signing up again</Link>
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   const submit = async (otpValue = otp) => {
     const normalizedOtp = String(otpValue || '').trim();
 
@@ -80,6 +60,26 @@ export default function VerifyOtp() {
 
     submit(otp);
   }, [otp, loading, lastSubmittedOtp]);
+
+  if (!email) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: 'linear-gradient(135deg, #1A0E4E 0%, #3D2B82 50%, #5B3FA8 100%)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div style={{
+          background: 'white', borderRadius: '20px', padding: '40px 36px',
+          boxShadow: '0 24px 64px rgba(26,14,78,0.35)', textAlign: 'center',
+        }}>
+          <p style={{ color: '#6B6B8A', fontSize: '14px' }}>
+            Email not found.{' '}
+            <Link to="/signup" style={{ color: '#5B3FA8', fontWeight: '600', textDecoration: 'none' }}>Try signing up again</Link>
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const resendOtp = async () => {
     if (!email || resending) {

@@ -35,6 +35,8 @@ from .views import (
     AdminOwnSystemValidationDiagnosticsView,
     AdminCreditSettingsView,
     AdminRechargeChargeSettingsView,
+    AdminSecuritySettingsView,
+    SessionSecurityConfigView,
     AdminUserWalletCreditsView,
     EmailValidationIPWhitelistRequestView,
     AdminEmailValidationIPWhitelistRequestListView,
@@ -116,6 +118,8 @@ urlpatterns = [
     path('admin/email-validation/ip-whitelist-requests/<int:pk>/', AdminEmailValidationIPWhitelistRequestDetailView.as_view(), name='admin-email-validation-ip-whitelist-request-detail'),
     path('admin/email-validation/ip-whitelist/assign/', AdminEmailValidationAssignWhitelistIPView.as_view(), name='admin-email-validation-ip-whitelist-assign'),
     path('admin/wallet/recharge-settings/', AdminRechargeChargeSettingsView.as_view(), name='admin-wallet-recharge-settings'),
+    path('admin/security-settings/', AdminSecuritySettingsView.as_view(), name='admin-security-settings'),
+    path('session-config/', SessionSecurityConfigView.as_view(), name='session-security-config'),
     path('admin/users/<int:user_id>/wallet/credits/', AdminUserWalletCreditsView.as_view(), name='admin-user-wallet-credits'),
     path('request-status/search/', RequestStatusSearchView.as_view(), name='request-status-search'),
 

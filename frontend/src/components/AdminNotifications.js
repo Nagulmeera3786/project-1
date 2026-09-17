@@ -15,9 +15,12 @@ const FILTERS = [
   { value: 'non_free_trial_users', label: "Who Don't Use Free Trial" },
 ];
 
+const INACTIVITY_DAY_OPTIONS = [15, 30, 45, 60];
+
 export default function AdminNotifications() {
   const navigate = useNavigate();
   const [audienceFilter, setAudienceFilter] = useState('all_users');
+  const [inactivityDays, setInactivityDays] = useState(30);
   const [content, setContent] = useState('');
   const [preview, setPreview] = useState([]);
   const [previewCount, setPreviewCount] = useState(0);
@@ -28,11 +31,15 @@ export default function AdminNotifications() {
 
   const canSend = useMemo(() => content.trim().length > 0 && previewCount > 0, [content, previewCount]);
 
-  const loadPreview = async (selectedFilter) => {
+  const loadPreview = async (selectedFilter, selectedInactivityDays) => {
     setLoadingPreview(true);
     setMessage('');
     try {
-      const response = await API.get(`admin/notifications/preview/?audience_filter=${selectedFilter}`);
+      const params = new URLSearchParams({ audience_filter: selectedFilter });
+      if (selectedFilter === 'inactive_users') {
+        params.set('inactivity_days', selectedInactivityDays);
+      }
+      const response = await API.get(`admin/notifications/preview/?${params.toString()}`);
       setPreview(response.data.preview_recipients || []);
       setPreviewCount(response.data.total_recipients || 0);
     } catch (err) {
@@ -54,27 +61,40 @@ export default function AdminNotifications() {
   };
 
   useEffect(() => {
-    loadPreview(audienceFilter);
+    loadPreview(audienceFilter, inactivityDays);
     loadHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleFilterChange = async (value) => {
     setAudienceFilter(value);
-    await loadPreview(value);
+    await loadPreview(value, inactivityDays);
+  };
+
+  const handleInactivityDaysChange = async (value) => {
+    const parsed = Number(value);
+    setInactivityDays(parsed);
+    if (audienceFilter === 'inactive_users') {
+      await loadPreview(audienceFilter, parsed);
+    }
   };
 
   const sendNotification = async () => {
     setSending(true);
     setMessage('');
     try {
-      await API.post('admin/notifications/send/', {
+      const payload = {
         content: content.trim(),
         audience_filter: audienceFilter,
-      });
+      };
+      if (audienceFilter === 'inactive_users') {
+        payload.inactivity_days_filter = inactivityDays;
+      }
+      await API.post('admin/notifications/send/', payload);
 
       setMessage('Notification sent successfully.');
       setContent('');
-      await loadPreview(audienceFilter);
+      await loadPreview(audienceFilter, inactivityDays);
       await loadHistory();
     } catch (err) {
       setMessage(getProfessionalErrorMessage(err, 'Failed to send notification'));
@@ -123,6 +143,20 @@ export default function AdminNotifications() {
                 <option key={filter.value} value={filter.value}>{filter.label}</option>
               ))}
             </select>
+            {audienceFilter === 'inactive_users' && (
+              <div style={{ marginTop: '10px' }}>
+                <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600 }}>Inactive For (Days)</label>
+                <select
+                  value={inactivityDays}
+                  onChange={(e) => handleInactivityDaysChange(e.target.value)}
+                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #ddd' }}
+                >
+                  {INACTIVITY_DAY_OPTIONS.map((days) => (
+                    <option key={days} value={days}>{days} days</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div style={{ marginTop: '8px', fontSize: '13px', color: '#555' }}>
               Matched users: <strong>{previewCount}</strong>
             </div>
@@ -192,7 +226,10 @@ export default function AdminNotifications() {
             {history.map((item) => (
               <div key={item.id} style={{ borderBottom: '1px solid #f0f0f0', padding: '10px 0' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
-                  <strong>{item.audience_filter}</strong>
+                  <strong>
+                    {item.audience_filter}
+                    {item.audience_filter === 'inactive_users' && item.inactivity_days_filter ? ` (${item.inactivity_days_filter} days)` : ''}
+                  </strong>
                   <span style={{ fontSize: '12px', color: '#666' }}>{new Date(item.created_at).toLocaleString()}</span>
                 </div>
                 <div style={{ margin: '6px 0', color: '#333' }}>{item.content}</div>

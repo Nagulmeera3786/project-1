@@ -21,6 +21,7 @@ export default function AdminSMSDashboard() {
   const [savingUserId, setSavingUserId] = useState(null);
   const [deletingUserId, setDeletingUserId] = useState(null);
   const [grantingAdminUserId, setGrantingAdminUserId] = useState(null);
+  const [togglingEmployeeUserId, setTogglingEmployeeUserId] = useState(null);
   const [senderIdRequests, setSenderIdRequests] = useState([]);
   const [senderIdRequestsLoading, setSenderIdRequestsLoading] = useState(true);
   const [requestSearch, setRequestSearch] = useState('');
@@ -689,6 +690,44 @@ export default function AdminSMSDashboard() {
     }
   };
 
+  const toggleEmployeeAccess = async (user) => {
+    if (!canManageUsers) {
+      return;
+    }
+
+    const grantingEmployee = !user.is_employee;
+    const confirmMessage = grantingEmployee
+      ? `Make ${user.username} an employee? They will be able to view all users' details and history like an admin, but cannot grant, revoke, delete, or modify anything.`
+      : `Remove employee access for ${user.username}?`;
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    setTogglingEmployeeUserId(user.id);
+    try {
+      const response = await API.patch(`admin/users/${user.id}/permissions/`, {
+        is_employee: grantingEmployee,
+      });
+
+      setUsers((prevUsers) =>
+        prevUsers.map((item) =>
+          item.id === user.id ? { ...item, is_employee: Boolean(response.data.is_employee) } : item
+        )
+      );
+
+      alert(
+        grantingEmployee
+          ? `${user.username} is now an employee with read-only access.`
+          : `${user.username} employee access has been removed.`
+      );
+    } catch (err) {
+      alert(`Failed to update employee access: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
+    } finally {
+      setTogglingEmployeeUserId(null);
+    }
+  };
+
   const downloadUserData = async () => {
     try {
       const response = await API.get('admin/users/export/', {
@@ -1313,6 +1352,35 @@ export default function AdminSMSDashboard() {
                               title={!user.is_staff ? 'User is not admin/staff' : 'Revoke admin/staff access'}
                             >
                               Revoke Admin Access
+                            </button>
+                            <button
+                              onClick={() => toggleEmployeeAccess(user)}
+                              disabled={togglingEmployeeUserId === user.id || user.is_staff}
+                              style={{
+                                padding: '6px 10px',
+                                backgroundColor: user.is_staff ? '#9e9e9e' : user.is_employee ? '#455a64' : '#00838f',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '6px',
+                                cursor: togglingEmployeeUserId === user.id || user.is_staff ? 'not-allowed' : 'pointer',
+                                fontSize: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                              }}
+                              title={
+                                user.is_staff
+                                  ? 'User already has admin access'
+                                  : user.is_employee
+                                  ? 'Remove read-only employee access'
+                                  : 'Grant read-only employee access (can view users & history, cannot modify anything)'
+                              }
+                            >
+                              {togglingEmployeeUserId === user.id
+                                ? 'Updating...'
+                                : user.is_employee
+                                ? 'Remove Employee Access'
+                                : 'Make as Employee'}
                             </button>
                             <button
                               onClick={() => deleteUser(user)}

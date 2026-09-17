@@ -313,6 +313,8 @@ class SMSCredentialSerializer(serializers.ModelSerializer):
 
 
 class UserSMSEligibilitySerializer(serializers.ModelSerializer):
+    is_employee = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -328,8 +330,12 @@ class UserSMSEligibilitySerializer(serializers.ModelSerializer):
             'sender_id',
             'free_trial_sender_id',
             'is_staff',
+            'is_employee',
             'date_joined',
         ]
+
+    def get_is_employee(self, obj):
+        return Employee.objects.filter(user=obj, status=Employee.STATUS_ACTIVE).exists()
 
 
 class SMSMessageStatusSerializer(serializers.ModelSerializer):
@@ -381,12 +387,14 @@ class NotificationRecipientPreviewSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'full_name', 'is_active', 'date_joined']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'full_name', 'is_active', 'date_joined', 'last_login']
 
 
 class AdminNotificationSendSerializer(serializers.Serializer):
     content = serializers.CharField(max_length=5000)
     audience_filter = serializers.ChoiceField(choices=[choice[0] for choice in InternalNotification.AUDIENCE_CHOICES])
+    # Only used when audience_filter == 'inactive_users'.
+    inactivity_days_filter = serializers.ChoiceField(choices=[15, 30, 45, 60], required=False, allow_null=True)
 
 
 class AdminNotificationHistorySerializer(serializers.ModelSerializer):
@@ -394,7 +402,7 @@ class AdminNotificationHistorySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = InternalNotification
-        fields = ['id', 'content', 'audience_filter', 'recipient_count', 'created_by', 'created_by_username', 'created_at']
+        fields = ['id', 'content', 'audience_filter', 'inactivity_days_filter', 'recipient_count', 'created_by', 'created_by_username', 'created_at']
 
 
 class UserNotificationSerializer(serializers.ModelSerializer):

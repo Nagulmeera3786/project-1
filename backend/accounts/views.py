@@ -18,6 +18,8 @@ from decimal import Decimal, InvalidOperation
 from django.http import HttpResponseRedirect, Http404
 from django.views import View
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import time
 import re
 import json
@@ -110,6 +112,8 @@ _COMMON_FREE_EMAIL_DOMAINS = {
 
 _EMAIL_VALIDATION_WORKERS = {}
 _EMAIL_VALIDATION_WORKERS_LOCK = threading.Lock()
+_VALIDATION_HTTP_SESSION = None
+_VALIDATION_HTTP_SESSION_LOCK = threading.Lock()
 _VALIDATION_EXECUTOR = None
 _VALIDATION_EXECUTOR_WORKERS = 0
 _VALIDATION_EXECUTOR_LOCK = threading.Lock()
@@ -782,6 +786,36 @@ def _get_shared_validation_executor(max_workers):
     return _VALIDATION_EXECUTOR
 
 
+def _get_validation_http_session():
+    """Shared keep-alive/pooled requests.Session for third-party validator APIs.
+
+    Reusing connections avoids a fresh TCP+TLS handshake per email, which was
+    the real source of latency (MillionVerifier itself responds in ms).
+    """
+    global _VALIDATION_HTTP_SESSION
+    if _VALIDATION_HTTP_SESSION is not None:
+        return _VALIDATION_HTTP_SESSION
+
+    with _VALIDATION_HTTP_SESSION_LOCK:
+        if _VALIDATION_HTTP_SESSION is None:
+            pool_size = _get_email_validation_worker_count()
+            session = requests.Session()
+            retries = Retry(
+                total=1,
+                connect=1,
+                read=0,
+                backoff_factor=0.1,
+                status_forcelist=(502, 503, 504),
+                allowed_methods=frozenset(('GET',)),
+            )
+            adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size, max_retries=retries)
+            session.mount('https://', adapter)
+            session.mount('http://', adapter)
+            _VALIDATION_HTTP_SESSION = session
+
+    return _VALIDATION_HTTP_SESSION
+
+
 def _get_email_validation_use_history_signal():
     configured = str(getattr(settings, 'EMAIL_VALIDATION_USE_HISTORY_SIGNAL', 'false') or '').strip().lower()
     return configured in {'1', 'true', 'yes', 'on'}
@@ -1442,10 +1476,10 @@ def _validate_email_with_zerobounce(email):
         )
 
     try:
-        response = requests.get(
+        response = _get_validation_http_session().get(
             base_url,
             params={'api_key': api_key, 'email': normalized, 'ip_address': ''},
-            timeout=8,
+            timeout=(3, 8),
         )
         response.raise_for_status()
         payload = response.json()
@@ -1540,10 +1574,10 @@ def _validate_email_with_millionverifier(email):
         )
 
     try:
-        response = requests.get(
+        response = _get_validation_http_session().get(
             base_url,
             params={'api': api_key, 'email': normalized, 'timeout': 10},
-            timeout=12,
+            timeout=(3, 6),
         )
         response.raise_for_status()
         payload = response.json()
@@ -3017,7 +3051,7 @@ def _get_provider_wallet_balance():
     return None
 
 
-def _get_users_for_notification_filter(audience_filter):
+def _get_users_for_notification_filter(audience_filter, inactivity_days=None):
     audience_filter = (audience_filter or 'all_users').strip().lower()
     users = User.objects.all()
 
@@ -3032,6 +3066,11 @@ def _get_users_for_notification_filter(audience_filter):
     if audience_filter == 'active_users':
         return users.filter(is_active=True)
     if audience_filter == 'inactive_users':
+        if inactivity_days in (15, 30, 45, 60):
+            cutoff = timezone.now() - timedelta(days=inactivity_days)
+            return users.filter(
+                Q(last_login__lt=cutoff) | Q(last_login__isnull=True, date_joined__lt=cutoff)
+            )
         return users.filter(is_active=False)
 
     free_trial_user_ids = set(
@@ -3115,6 +3154,16 @@ def _get_platform_setting_text(key, default=''):
     if not setting:
         return str(default or '').strip()
     return str(setting.value or default or '').strip()
+
+
+def _get_platform_setting_int(key, default=0):
+    setting = PlatformSetting.objects.filter(key=key).first()
+    if not setting:
+        return int(default)
+    try:
+        return int(str(setting.value or default).strip())
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _get_recharge_charge_percentages():
@@ -5263,9 +5312,12 @@ class AdminUsersListView(generics.ListAPIView):
             return guard
         
         users = User.objects.all().order_by('-date_joined')
+        now = timezone.now()
         payload = []
         for user in users:
             wallet = UserWallet.objects.filter(user=user).first()
+            reference_date = user.last_login or user.date_joined
+            days_since_last_login = (now - reference_date).days if reference_date else None
             payload.append(
                 {
                     'id': user.id,
@@ -5283,6 +5335,7 @@ class AdminUsersListView(generics.ListAPIView):
                     'free_trial_sender_id': user.free_trial_sender_id,
                     'date_joined': user.date_joined,
                     'last_login': user.last_login,
+                    'days_since_last_login': days_since_last_login,
                     'wallet_balance': str(getattr(wallet, 'balance', Decimal('0'))),
                     'email_validation_balance': str(getattr(wallet, 'email_validation_balance', Decimal('0'))),
                     'api_key_count': UserAPIKey.objects.filter(user=user).count(),
@@ -5322,6 +5375,17 @@ class AdminUserPermissionView(generics.GenericAPIView):
         for field in ['is_staff', 'is_superuser', 'is_active', 'is_sms_enabled']:
             if field in request.data:
                 setattr(user, field, bool(request.data[field]))
+
+        if 'is_employee' in request.data:
+            make_employee = bool(request.data['is_employee'])
+            if make_employee:
+                employee, _created = Employee.objects.get_or_create(user=user)
+                employee.status = Employee.STATUS_ACTIVE
+                employee.employee_otp_verified = True
+                employee.admin_otp_verified = True
+                employee.save(update_fields=['status', 'employee_otp_verified', 'admin_otp_verified', 'updated_at'])
+            else:
+                Employee.objects.filter(user=user).update(status=Employee.STATUS_INACTIVE)
 
         if 'sender_id_type' in request.data or 'sender_id' in request.data:
             incoming_type = request.data.get('sender_id_type', user.sender_id_type)
@@ -5398,6 +5462,7 @@ class AdminUserPermissionView(generics.GenericAPIView):
             'is_superuser': user.is_superuser,
             'is_active': user.is_active,
             'is_sms_enabled': user.is_sms_enabled,
+            'is_employee': _is_active_employee(user),
             'sender_id_type': user.sender_id_type,
             'sender_id': user.sender_id,
             'free_trial_sender_id': user.free_trial_sender_id,
@@ -6747,11 +6812,18 @@ class AdminNotificationPreviewView(generics.GenericAPIView):
             return guard
 
         audience_filter = request.query_params.get('audience_filter', 'all_users')
-        users = _get_users_for_notification_filter(audience_filter).order_by('-date_joined')
+        inactivity_days = request.query_params.get('inactivity_days')
+        try:
+            inactivity_days = int(inactivity_days) if inactivity_days is not None else None
+        except (TypeError, ValueError):
+            inactivity_days = None
+
+        users = _get_users_for_notification_filter(audience_filter, inactivity_days).order_by('-date_joined')
         payload = NotificationRecipientPreviewSerializer(users[:200], many=True).data
 
         return Response({
             'audience_filter': audience_filter,
+            'inactivity_days': inactivity_days if audience_filter == 'inactive_users' else None,
             'total_recipients': users.count(),
             'preview_recipients': payload,
         })
@@ -6771,7 +6843,8 @@ class AdminNotificationSendView(generics.GenericAPIView):
 
         content = serializer.validated_data['content'].strip()
         audience_filter = serializer.validated_data['audience_filter']
-        target_users = list(_get_users_for_notification_filter(audience_filter))
+        inactivity_days = serializer.validated_data.get('inactivity_days_filter') if audience_filter == 'inactive_users' else None
+        target_users = list(_get_users_for_notification_filter(audience_filter, inactivity_days))
 
         if not target_users:
             return Response({'detail': 'No users found for selected filter'}, status=status.HTTP_400_BAD_REQUEST)
@@ -6780,6 +6853,7 @@ class AdminNotificationSendView(generics.GenericAPIView):
             notification = InternalNotification.objects.create(
                 content=content,
                 audience_filter=audience_filter,
+                inactivity_days_filter=inactivity_days,
                 created_by=request.user,
                 recipient_count=len(target_users),
             )
@@ -8506,6 +8580,74 @@ class AdminRechargeChargeSettingsView(generics.GenericAPIView):
                 'updated_at': max(service_setting.updated_at, tax_setting.updated_at),
             }
         )
+
+
+class AdminSecuritySettingsView(generics.GenericAPIView):
+    """Admin-controlled account security settings: auto-disable inactive accounts and idle session timeout."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        guard = None if _has_support_read_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        return Response(self._current_settings())
+
+    def patch(self, request):
+        guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        if guard:
+            return guard
+
+        auto_disable_days = request.data.get('account_auto_disable_days')
+        session_timeout_minutes = request.data.get('session_timeout_minutes')
+
+        if auto_disable_days is not None:
+            try:
+                auto_disable_days = int(auto_disable_days)
+            except (TypeError, ValueError):
+                return Response({'detail': 'account_auto_disable_days must be a whole number of days'}, status=status.HTTP_400_BAD_REQUEST)
+            if auto_disable_days < 0:
+                return Response({'detail': 'account_auto_disable_days cannot be negative'}, status=status.HTTP_400_BAD_REQUEST)
+            setting, _ = PlatformSetting.objects.get_or_create(
+                key='account_auto_disable_days',
+                defaults={'value': str(auto_disable_days), 'description': 'Days of no login after which a user account is auto-disabled (0 disables this feature)'},
+            )
+            setting.value = str(auto_disable_days)
+            setting.save(update_fields=['value', 'updated_at'])
+
+        if session_timeout_minutes is not None:
+            try:
+                session_timeout_minutes = int(session_timeout_minutes)
+            except (TypeError, ValueError):
+                return Response({'detail': 'session_timeout_minutes must be a whole number of minutes'}, status=status.HTTP_400_BAD_REQUEST)
+            if session_timeout_minutes < 0:
+                return Response({'detail': 'session_timeout_minutes cannot be negative'}, status=status.HTTP_400_BAD_REQUEST)
+            setting, _ = PlatformSetting.objects.get_or_create(
+                key='session_timeout_minutes',
+                defaults={'value': str(session_timeout_minutes), 'description': 'Minutes of inactivity before all users (admins, employees, users) are automatically logged out (0 disables this feature)'},
+            )
+            setting.value = str(session_timeout_minutes)
+            setting.save(update_fields=['value', 'updated_at'])
+
+        return Response(self._current_settings())
+
+    @staticmethod
+    def _current_settings():
+        return {
+            'account_auto_disable_days': _get_platform_setting_int('account_auto_disable_days', 0),
+            'session_timeout_minutes': _get_platform_setting_int('session_timeout_minutes', 30),
+            'inactivity_notification_day_options': [15, 30, 45, 60],
+        }
+
+
+class SessionSecurityConfigView(generics.GenericAPIView):
+    """Lightweight endpoint any authenticated user (admin, employee, user) can poll to get the idle logout timeout."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            'session_timeout_minutes': _get_platform_setting_int('session_timeout_minutes', 30),
+        })
 
 
 class AdminUserWalletCreditsView(generics.GenericAPIView):

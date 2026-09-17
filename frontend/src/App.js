@@ -64,6 +64,7 @@ const landingMenus = [
 ];
 
 import RouteErrorBoundary from './components/RouteErrorBoundary';
+import IdleTimeoutGuard from './components/IdleTimeoutGuard';
 import API from './api';
 import './App.css';
 
@@ -74,6 +75,7 @@ const ForgotPassword = lazy(() => import('./components/ForgotPassword'));
 const ResetPassword = lazy(() => import('./components/ResetPassword'));
 const UserProfile = lazy(() => import('./components/UserProfile'));
 const AdminUsers = lazy(() => import('./components/AdminUsers'));
+const AdminSecuritySettings = lazy(() => import('./components/AdminSecuritySettings'));
 const MainPage = lazy(() => import('./components/MainPage'));
 const ApiDocsOverview = lazy(() => import('./components/ApiDocsOverview'));
 const TermsAndConditions = lazy(() => import('./components/TermsAndConditions'));
@@ -167,6 +169,16 @@ function App() {
     return <div style={{ padding: '20px' }}>Loading...</div>;
   }
 
+  const handleIdleForceLogout = () => {
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('access');
+    localStorage.removeItem('refresh');
+    setIsLoggedIn(false);
+    setIsAdmin(false);
+    setIsSupportUser(false);
+    window.location.href = '/login';
+  };
+
   const isPublicRoute = !/^\/(dashboard|admin|sms|broadcast|reports|notifications|profile)/.test(window.location.pathname);
 
   const closeMenu = () => setOpenMenu(null);
@@ -214,6 +226,7 @@ function App() {
         v7_relativeSplatPath: true,
       }}
     >
+      {isLoggedIn && <IdleTimeoutGuard isLoggedIn={isLoggedIn} onForceLogout={handleIdleForceLogout} />}
       {isPublicRoute && (
       <div className="bhisha-header-shell" onMouseLeave={closeMenu}>
         <div className="bhisha-utility-bar">
@@ -302,6 +315,7 @@ function App() {
         <Route path="/profile" element={privateRoute('Profile', <UserProfile />)} />
         <Route path="/api-docs" element={wrapModule('API Docs', <ApiDocsOverview />)} />
         <Route path="/admin/users" element={supportRoute('Support Users', <AdminUsers />)} />
+        <Route path="/admin/security-settings" element={adminRoute('Account Security Settings', <AdminSecuritySettings />)} />
         <Route path="/dashboard" element={privateRoute('Dashboard', <DashboardLayout page="dashboard" />)} />
         <Route path="/dashboard/recharge" element={privateRoute('Recharge & Payments', <DashboardLayout page="recharge" />)} />
         <Route path="/dashboard/contact-support" element={privateRoute('Contact Support', <DashboardLayout page="contactSupport" />)} />

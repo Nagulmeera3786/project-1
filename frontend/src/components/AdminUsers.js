@@ -353,24 +353,44 @@ export default function AdminUsers() {
           Users Management
         </h2>
         {canManageUsers && (
-          <button
-            onClick={downloadExcel}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '10px 20px',
-              backgroundColor: '#4CAF50',
-              color: 'white',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontSize: '14px',
-              fontWeight: 'bold'
-            }}
-          >
-            <FaDownload /> Download Excel
-          </button>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button
+              onClick={() => navigate('/admin/security-settings')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '10px 20px',
+                backgroundColor: '#5B3FA8',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 'bold'
+              }}
+            >
+              Security Settings
+            </button>
+            <button
+              onClick={downloadExcel}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '10px 20px',
+                backgroundColor: '#4CAF50',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 'bold'
+              }}
+            >
+              <FaDownload /> Download Excel
+            </button>
+          </div>
         )}
       </div>
 
@@ -409,6 +429,7 @@ export default function AdminUsers() {
               <th style={{ padding: '15px', textAlign: 'center', fontWeight: 'bold' }}>Sender ID</th>
               <th style={{ padding: '15px', textAlign: 'center', fontWeight: 'bold' }}>Free Trial Sender</th>
               <th style={{ padding: '15px', textAlign: 'center', fontWeight: 'bold' }}>Joined Date</th>
+              <th style={{ padding: '15px', textAlign: 'center', fontWeight: 'bold' }}>Last Login</th>
               <th style={{ padding: '15px', textAlign: 'center', fontWeight: 'bold' }}>Actions</th>
             </tr>
           </thead>
@@ -478,6 +499,18 @@ export default function AdminUsers() {
                 </td>
                 <td style={{ padding: '15px', textAlign: 'center' }}>
                   {new Date(user.date_joined).toLocaleDateString()}
+                </td>
+                <td style={{ padding: '15px', textAlign: 'center' }}>
+                  {user.last_login ? (
+                    <>
+                      {new Date(user.last_login).toLocaleDateString()}
+                      <div style={{ fontSize: '11px', color: '#888' }}>
+                        {user.days_since_last_login === 0 ? 'Today' : `${user.days_since_last_login} day(s) ago`}
+                      </div>
+                    </>
+                  ) : (
+                    <span style={{ color: '#c62828', fontSize: '12px' }}>Never logged in</span>
+                  )}
                 </td>
                 <td style={{ padding: '15px', textAlign: 'center' }}>
                   <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>

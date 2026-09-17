@@ -286,6 +286,8 @@ class InternalNotification(models.Model):
 
     content = models.TextField()
     audience_filter = models.CharField(max_length=50, choices=AUDIENCE_CHOICES, default='all_users')
+    # Only meaningful when audience_filter == 'inactive_users' (15/30/45/60 days without login).
+    inactivity_days_filter = models.PositiveIntegerField(blank=True, null=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_notifications')
     recipient_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)

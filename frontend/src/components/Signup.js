@@ -77,8 +77,8 @@ export default function Signup() {
       return;
     }
 
-    if (form.password.length < 8) {
-      setError('Password must be at least 8 characters');
+    if (form.password.length < 12) {
+      setError('Password must be at least 12 characters');
       return;
     }
 
@@ -96,7 +96,7 @@ export default function Signup() {
     const fullPhoneNumber = `${selectedCountry.dialCode}${normalizedPhone}`;
     const totalDigits = fullPhoneNumber.replace(/\D/g, '').length;
 
-    if (totalDigits < 10 || totalDigits > 15) {
+    if (totalDigits < 10 || totalDigits > 12) {
       setError('Enter a valid mobile number with country code');
       return;
     }
