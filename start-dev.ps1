@@ -1,6 +1,5 @@
 param(
-    [int]$BackendPort = 8000,
-    [switch]$UseSqlite
+    [int]$BackendPort = 8000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,8 +30,6 @@ if (-not (Test-Path $venvActivatePath)) {
     & python -m venv (Join-Path $backendPath '.venv')
 }
 
-$backendRunMode = if ($UseSqlite) { 'sqlite' } else { 'default' }
-
 $backendCommand = @"
 Set-Location '$backendPath'
 `$ErrorActionPreference = 'Stop'
@@ -47,13 +44,8 @@ if (-not (Test-Path '.\.venv\.deps_installed')) {
     New-Item -Path '.\.venv\.deps_installed' -ItemType File -Force | Out-Null
 }
 
-if ('$backendRunMode' -eq 'sqlite') {
-    python manage.py migrate --settings=project.settings_sqlite_dump
-    python manage.py runserver 0.0.0.0:$BackendPort --settings=project.settings_sqlite_dump
-} else {
-    python manage.py migrate
-    python manage.py runserver 0.0.0.0:$BackendPort
-}
+python manage.py migrate
+python manage.py runserver 0.0.0.0:$BackendPort
 "@
 
 $frontendCommand = @"
