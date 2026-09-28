@@ -65,6 +65,33 @@ class User(AbstractUser):
         return self.email or self.username
 
 
+class SMSTemplate(models.Model):
+    name = models.CharField(max_length=120, unique=True)
+    message_content = models.TextField()
+    sender_id = models.CharField(max_length=50, blank=True, default='')
+    sms_type = models.CharField(max_length=20, choices=[
+        ('transactional', 'Transactional'),
+        ('promotional', 'Promotional'),
+        ('service', 'Service'),
+    ], default='transactional')
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_sms_templates',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'id']
+
+    def __str__(self):
+        return self.name
+
+
 class SMSMessage(models.Model):
     SEND_MODE_CHOICES = [
         ('single', 'Single'),
@@ -99,6 +126,13 @@ class SMSMessage(models.Model):
     timezone_name = models.CharField(max_length=100, blank=True, default='')
     batch_reference = models.CharField(max_length=64, blank=True, default='')
     source_file_name = models.CharField(max_length=255, blank=True, default='')
+    sms_template = models.ForeignKey(
+        SMSTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='messages',
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     message_id = models.CharField(max_length=100, blank=True, null=True, unique=True)
     provider_message_id = models.CharField(max_length=150, blank=True, default='')

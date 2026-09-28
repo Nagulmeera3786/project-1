@@ -87,6 +87,7 @@ const FreeTrialSMS = lazy(() => import('./components/FreeTrialSMS'));
 const SMSHistory = lazy(() => import('./components/SMSHistory'));
 const AdminSMSDashboard = lazy(() => import('./components/AdminSMSDashboard'));
 const AdminSMSCredentials = lazy(() => import('./components/AdminSMSCredentials'));
+const AdminSMSTemplates = lazy(() => import('./components/AdminSMSTemplates'));
 const AdminNotifications = lazy(() => import('./components/AdminNotifications'));
 const UserNotifications = lazy(() => import('./components/UserNotifications'));
 const EmailValidation = lazy(() => import('./components/EmailValidation'));
@@ -322,7 +323,7 @@ function App() {
         <Route path="/dashboard/sender-id-request" element={privateRoute('Sender ID Request', <SenderIdRequestPage />)} />
 
         {/* SMS Routes */}
-        <Route path="/sms/send" element={adminRoute('SMS Send', <SMSSend />)} />
+        <Route path="/sms/send" element={privateRoute('SMS Send', <SMSSend />)} />
         <Route path="/sms/free-trial" element={privateRoute('Free Trial SMS', <FreeTrialSMS />)} />
         <Route path="/sms/history" element={privateRoute('SMS History', <SMSHistory />)} />
         <Route path="/admin/sms" element={supportRoute('Support SMS Dashboard', <AdminSMSDashboard />)} />
@@ -330,6 +331,7 @@ function App() {
           path="/admin/sms/credentials"
           element={supportRoute('Support SMS Credentials', <AdminSMSCredentials />)}
         />
+        <Route path="/admin/sms/templates" element={adminRoute('SMS Templates', <AdminSMSTemplates />)} />
         <Route path="/admin/notifications" element={supportRoute('Support Notifications', <AdminNotifications />)} />
         <Route path="/broadcast/email-validation" element={privateRoute('Email Validation', <EmailValidation />)} />
         <Route path="/reports" element={privateRoute('Reports', <Reports />)} />

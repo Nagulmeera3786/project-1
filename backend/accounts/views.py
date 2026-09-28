@@ -50,7 +50,7 @@ except Exception:  # pragma: no cover - optional import in dev
 from .serializers import (
     SignupSerializer, OTPVerifySerializer, LoginSerializer,
     ForgotPasswordSerializer, ResetPasswordSerializer,
-    SMSMessageSerializer, SMSSendSerializer, SMSCredentialSerializer,
+    SMSMessageSerializer, SMSSendSerializer, SMSCredentialSerializer, SMSTemplateSerializer,
     UserSMSEligibilitySerializer, SMSMessageStatusSerializer,
     SMSContactGroupSerializer, SMSContactGroupCreateSerializer,
     SMSShortURLSerializer,
@@ -82,6 +82,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import Employee
 from .models import (
     SMSMessage,
+    SMSTemplate,
     SMSCredential,
     SMSContactGroup,
     SMSContact,
@@ -345,6 +346,7 @@ def _otp_email_diagnostics(email_sent):
 
 
 def _get_sms_provider_config():
+    preferred_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or '').strip()
     cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
     if cred:
         db_user = (cred.user or '').strip()
@@ -356,6 +358,7 @@ def _get_sms_provider_config():
                 'user': db_user,
                 'password': db_password,
                 'sender_ids': db_sender_ids,
+                'default_sender_id': preferred_sender_id or str(getattr(cred, 'free_trial_default_sender_id', '') or '').strip() or (db_sender_ids[0] if db_sender_ids else ''),
                 'source': 'database',
             }
 
@@ -368,6 +371,7 @@ def _get_sms_provider_config():
             'user': env_user,
             'password': env_password,
             'sender_ids': sender_ids,
+            'default_sender_id': preferred_sender_id or (sender_ids[0] if sender_ids else ''),
             'source': 'env',
         }
 
@@ -375,6 +379,7 @@ def _get_sms_provider_config():
 
 
 def _get_admin_managed_sms_provider_config():
+    preferred_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or '').strip()
     cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
     if cred:
         db_user = (cred.user or '').strip()
@@ -388,6 +393,7 @@ def _get_admin_managed_sms_provider_config():
                 'password': db_password,
                 'sender_ids': db_sender_ids,
                 'free_trial_default_sender_id': db_free_trial_sender_id,
+                'default_sender_id': preferred_sender_id or db_free_trial_sender_id or (db_sender_ids[0] if db_sender_ids else ''),
                 'source': 'database',
             }
 
@@ -402,6 +408,7 @@ def _get_admin_managed_sms_provider_config():
             'password': env_password,
             'sender_ids': env_sender_ids,
             'free_trial_default_sender_id': env_free_trial_sender_id,
+            'default_sender_id': preferred_sender_id or env_free_trial_sender_id or (env_sender_ids[0] if env_sender_ids else ''),
             'source': 'env',
         }
 
@@ -5494,10 +5501,6 @@ class SMSSendView(generics.CreateAPIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def create(self, request, *args, **kwargs):
-        guard = _primary_admin_guard(request)
-        if guard:
-            return guard
-
         self._process_due_scheduled_messages()
 
         serializer = self.get_serializer(data=request.data)
@@ -5508,16 +5511,35 @@ class SMSSendView(generics.CreateAPIView):
         display_sender_id = validated_data['display_sender_id']
         sms_type = validated_data['sms_type']
         message_content = validated_data['message_content']
+        sms_template = validated_data['sms_template']
         send_mode = validated_data.get('send_mode') or 'single'
         delivery_mode = validated_data.get('delivery_mode') or 'instant'
         destination_country = validated_data.get('destination_country') or 'OTHER'
-        dlt_template_id = str(validated_data.get('dlt_template_id') or getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip()
-        dlt_entity_id = str(validated_data.get('dlt_entity_id') or getattr(settings, 'SMS_DLT_ENTITY_ID', '') or '').strip()
-        dlt_telemarketer_id = str(validated_data.get('dlt_telemarketer_id') or getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip()
+        dlt_template_id = str(
+            (getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') if transport == 'smpp' else validated_data.get('dlt_template_id'))
+            or getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or ''
+        ).strip()
+        dlt_entity_id = str(
+            (getattr(settings, 'SMS_DLT_ENTITY_ID', '') if transport == 'smpp' else validated_data.get('dlt_entity_id'))
+            or getattr(settings, 'SMS_DLT_ENTITY_ID', '') or ''
+        ).strip()
+        dlt_telemarketer_id = str(
+            (getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') if transport == 'smpp' else validated_data.get('dlt_telemarketer_id'))
+            or getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or ''
+        ).strip()
 
-        usage_summary = _get_user_sms_usage_summary(request.user)
+        is_wallet_exempt = bool(request.user.is_staff or request.user.is_superuser)
+        if not _has_admin_access(request.user):
+            sender_options = SMSSendOptionsView.get_sender_options()
+            allowed_sender_ids = set(sender_options['sender_ids'])
+            if display_sender_id not in allowed_sender_ids:
+                return Response(
+                    {'detail': 'Select a sender ID configured by the administrator.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        usage_summary = _get_user_sms_usage_summary(request.user) if not is_wallet_exempt else {}
         wallet_balance = usage_summary.get('wallet_balance')
-        if wallet_balance is not None:
+        if not is_wallet_exempt and wallet_balance is not None:
             try:
                 if float(wallet_balance) <= 0:
                     return Response(
@@ -5550,12 +5572,13 @@ class SMSSendView(generics.CreateAPIView):
         else:
             dispatch_config.update(self._build_smpp_config(validated_data))
 
-        dispatch_config.update({
-            'destination_country': destination_country,
-            'dlt_template_id': dlt_template_id,
-            'dlt_entity_id': dlt_entity_id,
-            'dlt_telemarketer_id': dlt_telemarketer_id,
-        })
+        dispatch_config['destination_country'] = destination_country
+        if transport == 'api':
+            dispatch_config.update({
+                'dlt_template_id': dlt_template_id,
+                'dlt_entity_id': dlt_entity_id,
+                'dlt_telemarketer_id': dlt_telemarketer_id,
+            })
 
         if send_mode == 'single':
             recipient_user_id = validated_data.get('recipient_user_id')
@@ -5566,10 +5589,11 @@ class SMSSendView(generics.CreateAPIView):
             if destination_country == 'IN' and not _is_indian_number(recipient_number):
                 return Response({'detail': 'Selected destination country is India, but recipient number is not a valid Indian number'}, status=status.HTTP_400_BAD_REQUEST)
 
-            try:
-                _, remaining_sms_balance = _deduct_sms_credits(request.user, 1)
-            except ValueError as exc:
-                return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+            if not is_wallet_exempt:
+                try:
+                    _, remaining_sms_balance = _deduct_sms_credits(request.user, 1)
+                except ValueError as exc:
+                    return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
             recipient_user = None
             try:
@@ -5584,6 +5608,7 @@ class SMSSendView(generics.CreateAPIView):
                 request=request,
                 recipient_number=recipient_number,
                 recipient_user=recipient_user,
+                sms_template=sms_template,
                 display_sender_id=display_sender_id,
                 message_content=message_content,
                 sms_type=sms_type,
@@ -5595,7 +5620,7 @@ class SMSSendView(generics.CreateAPIView):
             )
 
             send_result = self._dispatch_or_schedule_message(sms_msg, dispatch_config)
-            if transport == 'api':
+            if transport == 'api' and _has_admin_access(request.user):
                 self._persist_sender_id(provider_config, display_sender_id)
 
             response_payload = SMSMessageSerializer(sms_msg).data
@@ -5684,10 +5709,11 @@ class SMSSendView(generics.CreateAPIView):
         if payable_target_count <= 0:
             return Response({'detail': 'No valid recipients found for selected mode'}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            _, remaining_sms_balance = _deduct_sms_credits(request.user, payable_target_count)
-        except ValueError as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+        if not is_wallet_exempt:
+            try:
+                _, remaining_sms_balance = _deduct_sms_credits(request.user, payable_target_count)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
         sent_count = 0
         failed_count = 0
@@ -5712,6 +5738,7 @@ class SMSSendView(generics.CreateAPIView):
                 request=request,
                 recipient_number=target['recipient_number'],
                 recipient_user=None,
+                sms_template=sms_template,
                 display_sender_id=display_sender_id,
                 message_content=target['message_content'],
                 sms_type=sms_type,
@@ -5740,7 +5767,7 @@ class SMSSendView(generics.CreateAPIView):
             if sms_msg.message_id:
                 message_ids.append(sms_msg.message_id)
 
-        if transport == 'api':
+        if transport == 'api' and _has_admin_access(request.user):
             self._persist_sender_id(provider_config, display_sender_id)
 
         return Response(
@@ -5773,22 +5800,22 @@ class SMSSendView(generics.CreateAPIView):
 
     def _build_smpp_config(self, validated_data):
         return {
-            'host': str(validated_data.get('smpp_host') or '').strip(),
-            'port': int(validated_data.get('smpp_port') or 2775),
-            'system_id': str(validated_data.get('smpp_system_id') or '').strip(),
-            'password': str(validated_data.get('smpp_password') or '').strip(),
+            'host': str(getattr(settings, 'SMS_SMPP_HOST', '') or '').strip(),
+            'port': int(getattr(settings, 'SMS_SMPP_PORT', 2775) or 2775),
+            'system_id': str(getattr(settings, 'SMS_SMPP_SYSTEM_ID', '') or '').strip(),
+            'password': str(getattr(settings, 'SMS_SMPP_PASSWORD', '') or '').strip(),
             'profile': str(validated_data.get('smpp_profile') or 'standard').strip(),
-            'template_id': str(validated_data.get('smpp_template_id') or '').strip(),
-            'source_addr_ton': int(validated_data.get('smpp_source_addr_ton') or 5),
-            'source_addr_npi': int(validated_data.get('smpp_source_addr_npi') or 0),
-            'dest_addr_ton': int(validated_data.get('smpp_dest_addr_ton') or 1),
-            'dest_addr_npi': int(validated_data.get('smpp_dest_addr_npi') or 1),
-            'data_coding': int(validated_data.get('smpp_data_coding') or 0),
-            'registered_delivery': bool(validated_data.get('smpp_registered_delivery', True)),
+            'template_id': str(getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip(),
+            'source_addr_ton': int(getattr(settings, 'SMS_SMPP_SOURCE_ADDR_TON', 5)),
+            'source_addr_npi': int(getattr(settings, 'SMS_SMPP_SOURCE_ADDR_NPI', 0)),
+            'dest_addr_ton': int(getattr(settings, 'SMS_SMPP_DEST_ADDR_TON', 1)),
+            'dest_addr_npi': int(getattr(settings, 'SMS_SMPP_DEST_ADDR_NPI', 1)),
+            'data_coding': int(getattr(settings, 'SMS_SMPP_DATA_CODING', 0)),
+            'registered_delivery': bool(getattr(settings, 'SMS_SMPP_REGISTERED_DELIVERY', True)),
             'destination_country': validated_data.get('destination_country') or 'OTHER',
-            'dlt_template_id': str(validated_data.get('dlt_template_id') or '').strip(),
-            'dlt_entity_id': str(validated_data.get('dlt_entity_id') or '').strip(),
-            'dlt_telemarketer_id': str(validated_data.get('dlt_telemarketer_id') or '').strip(),
+            'dlt_template_id': str(getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip(),
+            'dlt_entity_id': str(getattr(settings, 'SMS_DLT_ENTITY_ID', '') or '').strip(),
+            'dlt_telemarketer_id': str(getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip(),
         }
 
     def _create_sms_record(
@@ -5796,6 +5823,7 @@ class SMSSendView(generics.CreateAPIView):
         request,
         recipient_number,
         recipient_user,
+        sms_template,
         display_sender_id,
         message_content,
         sms_type,
@@ -5809,6 +5837,7 @@ class SMSSendView(generics.CreateAPIView):
             sender=request.user,
             recipient_number=recipient_number,
             recipient_user=recipient_user,
+            sms_template=sms_template,
             display_sender_id=display_sender_id,
             message_content=message_content,
             sms_type=sms_type,
@@ -6208,6 +6237,20 @@ class SMSSendView(generics.CreateAPIView):
 
         client = smpplib.client.Client(smpp_config['host'], smpp_config['port'])
         client.socket_timeout = 20
+        submit_response = {'received': False, 'message_id': ''}
+
+        def handle_submit_sm_resp(pdu):
+            submit_response['received'] = True
+            submit_response['message_id'] = str(getattr(pdu, 'message_id', '') or '')
+
+        def handle_deliver_sm(pdu):
+            receipt = getattr(pdu, 'short_message', b'') or b''
+            if isinstance(receipt, bytes):
+                receipt = receipt.decode(errors='ignore')
+            logger.info('SMPP delivery receipt received: %s', receipt)
+
+        client.set_message_sent_handler(handle_submit_sm_resp)
+        client.set_message_received_handler(handle_deliver_sm)
 
         try:
             client.connect()
@@ -6241,11 +6284,16 @@ class SMSSendView(generics.CreateAPIView):
                     optional_parameters[0x1402] = telemarketer_id.encode()
                 send_kwargs['optional_parameters'] = optional_parameters
 
-            pdu = client.send_message(**send_kwargs)
-            message_id = getattr(pdu, 'message_id', None) or getattr(pdu, 'sequence', None)
+            client.send_message(**send_kwargs)
+            while not submit_response['received']:
+                client.read_once(auto_send_enquire_link=False)
+
+            message_id = submit_response['message_id']
+            if not message_id:
+                raise Exception('SMPP provider did not return a message ID')
 
             return {
-                'message_id': str(message_id) if message_id is not None else f'smpp-{timezone.now().timestamp()}',
+                'message_id': message_id,
                 'status': 'sent',
             }
         except (socket.timeout, OSError) as exc:
@@ -6522,6 +6570,110 @@ class SMSMessageStatusView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
 
+class SMSTemplateListCreateView(generics.GenericAPIView):
+    serializer_class = SMSTemplateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _admin_guard(self, request):
+        if _has_admin_access(request.user):
+            return None
+        return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+
+    def get(self, request):
+        templates = SMSTemplate.objects.all()
+        if not _has_admin_access(request.user):
+            templates = templates.filter(is_active=True)
+        return Response(self.get_serializer(templates, many=True).data)
+
+    def post(self, request):
+        guard = self._admin_guard(request)
+        if guard:
+            return guard
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(created_by=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class SMSSendOptionsView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def get_sender_options():
+        sender_ids = [
+            str(item).strip()
+            for item in getattr(settings, 'SMS_DEFAULT_SENDER_IDS', [])
+            if str(item).strip()
+        ]
+        default_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or '').strip()
+        credential = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
+        if credential:
+            sender_ids.extend(str(item).strip() for item in (credential.sender_ids or []) if str(item).strip())
+            configured_trial_sender = str(credential.free_trial_default_sender_id or '').strip()
+            if not default_sender_id:
+                default_sender_id = configured_trial_sender
+
+        if default_sender_id:
+            sender_ids.append(default_sender_id)
+        sender_ids = list(dict.fromkeys(sender_ids))
+        if not default_sender_id and sender_ids:
+            default_sender_id = sender_ids[0]
+        return {'sender_ids': sender_ids, 'default_sender_id': default_sender_id}
+
+    def get(self, request):
+        return Response(self.get_sender_options())
+
+
+class SMSTemplateDetailView(generics.GenericAPIView):
+    serializer_class = SMSTemplateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _admin_guard(self, request):
+        if _has_admin_access(request.user):
+            return None
+        return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+
+    def _get_template(self, template_id):
+        try:
+            return SMSTemplate.objects.get(id=template_id)
+        except SMSTemplate.DoesNotExist:
+            return None
+
+    def patch(self, request, template_id):
+        guard = self._admin_guard(request)
+        if guard:
+            return guard
+        template = self._get_template(template_id)
+        if not template:
+            return Response({'detail': 'Template not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = self.get_serializer(template, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def put(self, request, template_id):
+        guard = self._admin_guard(request)
+        if guard:
+            return guard
+        template = self._get_template(template_id)
+        if not template:
+            return Response({'detail': 'Template not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = self.get_serializer(template, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, template_id):
+        guard = self._admin_guard(request)
+        if guard:
+            return guard
+        template = self._get_template(template_id)
+        if not template:
+            return Response({'detail': 'Template not found'}, status=status.HTTP_404_NOT_FOUND)
+        template.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class SMSCredentialView(generics.GenericAPIView):
     serializer_class = SMSCredentialSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -6535,17 +6687,22 @@ class SMSCredentialView(generics.GenericAPIView):
             env_user = getattr(settings, 'SMS_PROVIDER_USER', '').strip()
             env_sender_ids = [str(item).strip() for item in getattr(settings, 'SMS_DEFAULT_SENDER_IDS', []) if str(item).strip()]
             env_free_trial_sender_id = str(getattr(settings, 'SMS_FREE_TRIAL_DEFAULT_SENDER_ID', '') or '').strip()
+            default_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or env_free_trial_sender_id or (env_sender_ids[0] if env_sender_ids else '')).strip()
             has_env_provider = bool(env_user and getattr(settings, 'SMS_PROVIDER_PASSWORD', '').strip())
             return Response({
                 'user': env_user,
                 'password': '',
                 'sender_ids': env_sender_ids,
+                'default_sender_id': default_sender_id,
                 'free_trial_default_sender_id': env_free_trial_sender_id,
                 'is_active': has_env_provider,
                 'created_at': None,
                 'updated_at': None,
             })
-        return Response(self.get_serializer(cred).data)
+        response_data = self.get_serializer(cred).data
+        env_default_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or '').strip()
+        response_data['default_sender_id'] = env_default_sender_id or str(cred.free_trial_default_sender_id or '').strip() or (response_data['sender_ids'][0] if response_data['sender_ids'] else '')
+        return Response(response_data)
 
     def patch(self, request):
         guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
