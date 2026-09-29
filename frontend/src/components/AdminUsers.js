@@ -261,7 +261,7 @@ export default function AdminUsers() {
       }));
 
       alert(
-        `Credits updated successfully. Unified wallet credits: ${response.data.message_credits}`
+        `Credits updated. SMS wallet: ${response.data.message_credits}; email validation wallet: ${response.data.email_validation_credits}.`
       );
     } catch (err) {
       alert(`Failed to update credits: ${getProfessionalErrorMessage(err, 'Please try again.')}`);
@@ -644,7 +644,8 @@ export default function AdminUsers() {
                   )}
 
                   <div style={{ marginTop: '8px', fontSize: '12px', color: '#334155' }}>
-                    <div><strong>Unified Wallet Credits (SMS + Mail):</strong> {user.wallet_balance || user.email_validation_balance || '0'}</div>
+                    <div><strong>SMS wallet:</strong> {user.wallet_balance ?? '0'}</div>
+                    <div><strong>Email validation wallet:</strong> {user.email_validation_balance ?? '0'}</div>
                   </div>
                 </td>
               </tr>

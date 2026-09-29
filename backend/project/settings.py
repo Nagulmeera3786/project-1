@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 env_path = os.path.join(BASE_DIR, '.env')
 load_dotenv(env_path)
 
+WHATSAPP_ACCOUNT_NAME = os.getenv("WHATSAPP_ACCOUNT_NAME", "")
+WHATSAPP_ACCOUNT_ID = os.getenv("WHATSAPP_ACCOUNT_ID", "")
 
 def _env_bool(name, default=False):
     value = os.environ.get(name)
@@ -202,6 +204,17 @@ if RUNNING_TESTS and _env_bool('USE_SQLITE_FOR_TESTS', DEBUG):
             # timeout makes concurrent writes retry instead of failing.
             'OPTIONS': {'timeout': int(_env_text('SQLITE_TEST_TIMEOUT', 30))},
             'TEST': {'NAME': str(BASE_DIR / 'test_db.sqlite3')},
+        }
+    }
+
+# Local developer convenience: if running with DEBUG and a local sqlite file exists,
+# prefer it so developers can run the project without a local Postgres server.
+local_sqlite_path = BASE_DIR / 'db.sqlite3'
+if DEBUG and local_sqlite_path.exists():
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': str(local_sqlite_path),
         }
     }
 
@@ -512,30 +525,28 @@ SMS_PROVIDER_URL = _env_text('SMS_PROVIDER_URL', 'https://mshastra.com/bsms/buse
 SMS_PROVIDER_JSON_URL = _env_text('SMS_PROVIDER_JSON_URL', 'https://mshastra.com/sendsms_api_json.aspx')
 SMS_PROVIDER_BALANCE_URL = _env_text('SMS_PROVIDER_BALANCE_URL', '')
 SMS_PROVIDER_BALANCE_METHOD = _env_text('SMS_PROVIDER_BALANCE_METHOD', 'GET').upper()
+SMS_DEFAULT_SENDER_ID = _env_text('SMS_DEFAULT_SENDER_ID', '')
 SMS_DEFAULT_SENDER_IDS = [
     sender_id.strip()
     for sender_id in _env_text('SMS_DEFAULT_SENDER_IDS', '').split(',')
     if sender_id.strip()
 ]
-SMS_DEFAULT_SENDER_ID = (
-    _env_text('SMS_DEFAULT_SENDER_ID', '')
-    or _env_text('SMS_FREE_TRIAL_DEFAULT_SENDER_ID', '')
-    or (SMS_DEFAULT_SENDER_IDS[0] if SMS_DEFAULT_SENDER_IDS else '')
-)
-SMS_FREE_TRIAL_DEFAULT_SENDER_ID = _env_text('SMS_FREE_TRIAL_DEFAULT_SENDER_ID', SMS_DEFAULT_SENDER_ID)
-SMS_DLT_TEMPLATE_ID = _env_text('SMS_DLT_TEMPLATE_ID', '')
-SMS_DLT_ENTITY_ID = _env_text('SMS_DLT_ENTITY_ID', '')
-SMS_DLT_TELEMARKETER_ID = _env_text('SMS_DLT_TELEMARKETER_ID', '')
 SMS_SMPP_HOST = _env_text('SMS_SMPP_HOST', '')
 SMS_SMPP_PORT = int(_env_text('SMS_SMPP_PORT', 2775))
 SMS_SMPP_SYSTEM_ID = _env_text('SMS_SMPP_SYSTEM_ID', '')
 SMS_SMPP_PASSWORD = _env_secret('SMS_SMPP_PASSWORD')
+SMS_SMPP_TEMPLATE_ID = _env_text('SMS_SMPP_TEMPLATE_ID', '')
 SMS_SMPP_SOURCE_ADDR_TON = int(_env_text('SMS_SMPP_SOURCE_ADDR_TON', 5))
 SMS_SMPP_SOURCE_ADDR_NPI = int(_env_text('SMS_SMPP_SOURCE_ADDR_NPI', 0))
 SMS_SMPP_DEST_ADDR_TON = int(_env_text('SMS_SMPP_DEST_ADDR_TON', 1))
 SMS_SMPP_DEST_ADDR_NPI = int(_env_text('SMS_SMPP_DEST_ADDR_NPI', 1))
 SMS_SMPP_DATA_CODING = int(_env_text('SMS_SMPP_DATA_CODING', 0))
 SMS_SMPP_REGISTERED_DELIVERY = _env_bool('SMS_SMPP_REGISTERED_DELIVERY', True)
+SMS_DLT_TEMPLATE_ID = _env_text('SMS_DLT_TEMPLATE_ID', '')
+SMS_DLT_ENTITY_ID = _env_text('SMS_DLT_ENTITY_ID', '')
+SMS_DLT_TELEMARKETER_ID = _env_text('SMS_DLT_TELEMARKETER_ID', '')
+WHATSAPP_API = _env_secret('WHATSAPP_API') or _env_secret('whatsapp_api')
+WHATSAPP_API_BASE_URL = _env_text('WHATSAPP_API_BASE_URL', 'https://apiv1.anantya.ai').rstrip('/')
 SMS_SEND_MAX_FILE_SIZE_MB = int(_env_text('SMS_SEND_MAX_FILE_SIZE_MB', 250))
 SMS_MAX_SEGMENTS = int(_env_text('SMS_MAX_SEGMENTS', 10))
 

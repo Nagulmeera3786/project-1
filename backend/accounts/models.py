@@ -66,7 +66,16 @@ class User(AbstractUser):
 
 
 class SMSTemplate(models.Model):
-    name = models.CharField(max_length=120, unique=True)
+    APPROVAL_PENDING = 'pending'
+    APPROVAL_APPROVED = 'approved'
+    APPROVAL_REJECTED = 'rejected'
+    APPROVAL_CHOICES = [
+        (APPROVAL_PENDING, 'Pending'),
+        (APPROVAL_APPROVED, 'Approved'),
+        (APPROVAL_REJECTED, 'Rejected'),
+    ]
+
+    name = models.CharField(max_length=120)
     message_content = models.TextField()
     sender_id = models.CharField(max_length=50, blank=True, default='')
     sms_type = models.CharField(max_length=20, choices=[
@@ -75,6 +84,16 @@ class SMSTemplate(models.Model):
         ('service', 'Service'),
     ], default='transactional')
     is_active = models.BooleanField(default=True)
+    approval_status = models.CharField(max_length=20, choices=APPROVAL_CHOICES, default=APPROVAL_APPROVED)
+    review_note = models.CharField(max_length=500, blank=True, default='')
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_sms_templates',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -374,6 +393,12 @@ class PlatformSetting(models.Model):
 
 
 class WalletRechargePayment(models.Model):
+    WALLET_SMS = 'sms'
+    WALLET_EMAIL_VALIDATION = 'email_validation'
+    WALLET_TYPE_CHOICES = [
+        (WALLET_SMS, 'SMS'),
+        (WALLET_EMAIL_VALIDATION, 'Email validation'),
+    ]
     STATUS_PENDING = 'pending'
     STATUS_SUCCESSFUL = 'successful'
     STATUS_FAILED = 'failed'
@@ -384,6 +409,7 @@ class WalletRechargePayment(models.Model):
     ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='wallet_recharge_payments')
+    wallet_type = models.CharField(max_length=30, choices=WALLET_TYPE_CHOICES, default=WALLET_SMS)
     entered_amount = models.DecimalField(max_digits=12, decimal_places=2)
     service_charge_percentage = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     tax_percentage = models.DecimalField(max_digits=6, decimal_places=2, default=0)
@@ -560,3 +586,182 @@ class Employee(models.Model):
     def __str__(self):
         return f"Employee: {self.user.email} ({self.status})"
 
+
+class WhatsAppAccount(models.Model):
+    account_name = models.CharField(max_length=150)
+    account_id = models.CharField(max_length=100, unique=True)
+    status = models.CharField(max_length=30, default="Active")
+    active_users = models.PositiveIntegerField(default=0)
+    created_on = models.DateField(auto_now_add=True)
+
+    def __str__(self):
+        return self.account_name
+
+
+class WhatsAppNumber(models.Model):
+    account = models.ForeignKey(
+        WhatsAppAccount,
+        on_delete=models.CASCADE,
+        related_name="whatsapp_numbers"
+    )
+    country = models.CharField(max_length=100)
+    country_code = models.CharField(max_length=10)
+    phone_number = models.CharField(max_length=30)
+    number_type = models.CharField(
+        max_length=100,
+        default="WhatsApp Number"
+    )
+    display_name = models.CharField(
+        max_length=150,
+        blank=True
+    )
+    business_category = models.CharField(
+        max_length=100,
+        default="Business"
+    )
+    status = models.CharField(
+        max_length=30,
+        default="Pending"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.country_code} {self.phone_number}"
+
+
+class WhatsAppTemplate(models.Model):
+    APPROVAL_PENDING = 'pending'
+    APPROVAL_APPROVED = 'approved'
+    APPROVAL_REJECTED = 'rejected'
+    APPROVAL_CHOICES = [
+        (APPROVAL_PENDING, 'Pending'),
+        (APPROVAL_APPROVED, 'Approved'),
+        (APPROVAL_REJECTED, 'Rejected'),
+    ]
+
+    name = models.CharField(max_length=150)
+    category = models.CharField(max_length=100, blank=True, default='')
+    message_text = models.TextField(blank=True, default='')
+    provider_template_id = models.CharField(max_length=100, blank=True, default='')
+    is_active = models.BooleanField(default=False)
+    approval_status = models.CharField(max_length=20, choices=APPROVAL_CHOICES, default=APPROVAL_PENDING)
+    review_note = models.CharField(max_length=500, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='requested_whatsapp_templates',
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_whatsapp_templates',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+class WhatsAppCampaign(models.Model):
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_ACCEPTED, 'Accepted'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='whatsapp_campaigns')
+    approved_template = models.ForeignKey(
+        WhatsAppTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='campaigns',
+    )
+    name = models.CharField(max_length=150, blank=True, default='')
+    template_id = models.CharField(max_length=100)
+    recipient_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_FAILED)
+    provider_campaign_id = models.CharField(max_length=150, blank=True, default='')
+    provider_response = models.JSONField(default=dict, blank=True)
+    error_message = models.CharField(max_length=500, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.name or f"WhatsApp campaign {self.pk}"
+
+
+class WhatsAppMessage(models.Model):
+    MODE_TEXT = 'text'
+    MODE_CAMPAIGN = 'campaign'
+    MODE_CHOICES = [
+        (MODE_TEXT, 'Text'),
+        (MODE_CAMPAIGN, 'Campaign'),
+    ]
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_ACCEPTED, 'Accepted by provider'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+    DELIVERY_PENDING = 'pending'
+    DELIVERY_SENT = 'sent'
+    DELIVERY_DELIVERED = 'delivered'
+    DELIVERY_SEEN = 'seen'
+    DELIVERY_FAILED = 'failed'
+    DELIVERY_CHOICES = [
+        (DELIVERY_PENDING, 'Pending'),
+        (DELIVERY_SENT, 'Sent'),
+        (DELIVERY_DELIVERED, 'Delivered'),
+        (DELIVERY_SEEN, 'Seen'),
+        (DELIVERY_FAILED, 'Failed'),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='whatsapp_messages')
+    campaign = models.ForeignKey(
+        WhatsAppCampaign,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='messages',
+    )
+    approved_template = models.ForeignKey(
+        WhatsAppTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='messages',
+    )
+    mode = models.CharField(max_length=20, choices=MODE_CHOICES)
+    contact_name = models.CharField(max_length=150, blank=True, default='')
+    contact_no = models.CharField(max_length=30)
+    message_text = models.TextField(blank=True, default='')
+    template_id = models.CharField(max_length=100, blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_FAILED)
+    delivery_status = models.CharField(max_length=20, choices=DELIVERY_CHOICES, default=DELIVERY_PENDING)
+    provider_status_code = models.PositiveSmallIntegerField(null=True, blank=True)
+    provider_message_id = models.CharField(max_length=150, blank=True, default='')
+    provider_campaign_id = models.CharField(max_length=150, blank=True, default='')
+    provider_response = models.JSONField(default=dict, blank=True)
+    error_message = models.CharField(max_length=500, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'created_at'], name='accounts_wa_user_created_idx'),
+            models.Index(fields=['status', 'created_at'], name='accounts_wa_status_created_idx'),
+        ]
+
+    def __str__(self):
+        return f"WhatsApp {self.mode} to {self.contact_no} ({self.status})"

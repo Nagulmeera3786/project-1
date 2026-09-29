@@ -26,7 +26,7 @@ const Dashboard = () => {
   const [showServiceSearch, setShowServiceSearch] = useState(false);
   const [serviceSearchQuery, setServiceSearchQuery] = useState('');
   const navigate = useNavigate();
-  const isAdmin = Boolean(user?.is_staff);
+  const isAdmin = Boolean(user?.is_primary_admin || user?.is_staff || user?.is_superuser);
   const isSupportUser = Boolean(user?.can_view_support_data || user?.is_employee) && !isAdmin;
   const serviceSearchTerm = serviceSearchQuery.trim().toLowerCase();
 
@@ -58,7 +58,7 @@ const Dashboard = () => {
     }
 
     return [
-      { name: isAdmin ? "Provider Message Balance" : "Wallet Balance", value: adminMessageBalance },
+      { name: isAdmin ? "Provider Message Balance" : "SMS Wallet Balance", value: adminMessageBalance },
       { name: "Messages Used", value: Number(user.sms_used_messages || 0) },
       { name: "Messages Available", value: Number(user.sms_available_messages || 0) },
     ];
@@ -114,7 +114,7 @@ const Dashboard = () => {
 
   const generalServiceCards = [
     { key: 'whatsapp', label: 'WhatsApp', desc: 'Reach customers with fast, branded WhatsApp conversations and campaign delivery.', action: () => navigate('/dashboard/contact-support') },
-    { key: 'sms', label: isAdmin ? 'SMS Console' : 'Your SMS Console', desc: isAdmin ? 'Create campaigns, manage delivery, and monitor SMS performance from one place.' : 'Use your own verified number and account data to send and track your SMS.', action: () => navigate(isAdmin ? '/sms/send' : '/sms/free-trial') },
+    { key: 'sms', label: isAdmin ? 'SMS Console' : 'Your SMS Console', desc: isAdmin ? 'Create campaigns, manage delivery, and monitor SMS performance from one place.' : 'Send SMS using administrator-approved sender IDs and templates.', action: () => navigate(isAdmin ? '/sms/send' : '/sms/user-send') },
     { key: 'dlt', label: 'DLT Configuration', desc: 'Manage sender registration, templates, and delivery compliance settings.', action: () => navigate('/admin/sms/credentials') },
     { key: 'notify', label: 'Send Notifications', desc: 'Internal communication module with audience filters, preview, and dedicated history.', action: () => navigate('/admin/notifications') },
   ].filter((card) => {
@@ -230,8 +230,9 @@ const Dashboard = () => {
             <div className="stat-card stat-card-1 dashboard-fade-in">
               <div className="stat-card-icon"><FaWallet /></div>
               <div className="stat-card-info">
-                <div className="stat-card-label">{isAdmin ? 'Provider Message Balance' : 'Wallet Balance'}</div>
+                <div className="stat-card-label">{isAdmin ? 'Provider Message Balance' : 'SMS Wallet Balance'}</div>
                 <div className="stat-card-value">{user ? formatNumeric(adminMessageBalance) : '—'}</div>
+                {!isAdmin && <div className="stat-card-label" style={{ marginTop: '4px' }}>Email validation: {user ? formatNumeric(user.email_validation_balance) : '—'}</div>}
               </div>
             </div>
             <div className="stat-card stat-card-2 dashboard-fade-in dashboard-delay-1">
@@ -375,8 +376,9 @@ const Dashboard = () => {
           <div className="stat-card stat-card-1 dashboard-fade-in">
             <div className="stat-card-icon"><FaWallet /></div>
             <div className="stat-card-info">
-              <div className="stat-card-label">{isAdmin ? 'Provider Message Balance' : 'Wallet Balance'}</div>
+              <div className="stat-card-label">{isAdmin ? 'Provider Message Balance' : 'SMS Wallet Balance'}</div>
               <div className="stat-card-value">{user ? formatNumeric(adminMessageBalance) : '—'}</div>
+              {!isAdmin && <div className="stat-card-label" style={{ marginTop: '4px' }}>Email validation: {user ? formatNumeric(user.email_validation_balance) : '—'}</div>}
             </div>
           </div>
           <div className="stat-card stat-card-2 dashboard-fade-in dashboard-delay-1">
@@ -432,7 +434,8 @@ const Dashboard = () => {
               <div><strong>Total Limit:</strong> {user.sms_total_limit || 0}</div>
               <div><strong>Messages Used:</strong> {user.sms_used_messages || 0} ({user.sms_used_percentage || 0}%)</div>
               <div><strong>Messages Available:</strong> {user.sms_available_messages || 0} ({user.sms_available_percentage || 0}%)</div>
-              <div><strong>{isAdmin ? 'Provider Message Balance' : 'Wallet Balance'}:</strong> {formatNumeric(adminMessageBalance)}</div>
+              <div><strong>{isAdmin ? 'Provider Message Balance' : 'SMS Wallet Balance'}:</strong> {formatNumeric(adminMessageBalance)}</div>
+              {!isAdmin && <div><strong>Email Validation Wallet:</strong> {formatNumeric(user.email_validation_balance)}</div>}
               {!user.is_staff && <div><strong>Free Trial Number Ready:</strong> {user.free_trial_verified_numbers_count || 0}</div>}
             </div>
           )}

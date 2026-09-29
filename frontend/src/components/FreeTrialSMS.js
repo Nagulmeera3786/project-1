@@ -12,6 +12,8 @@ export default function FreeTrialSMS() {
   const [profile, setProfile] = useState(null);
   const [signupNumber, setSignupNumber] = useState('');
   const [messageContent, setMessageContent] = useState('');
+  const [templates, setTemplates] = useState([]);
+  const [templateId, setTemplateId] = useState('');
   const [usage, setUsage] = useState({ used_messages: 0, available_messages: 3, total_limit: 3 });
   const [sendingSms, setSendingSms] = useState(false);
   const [error, setError] = useState('');
@@ -28,9 +30,10 @@ export default function FreeTrialSMS() {
   const initialize = async () => {
     setLoading(true);
     try {
-      const [profileResponse, usageResponse] = await Promise.all([
+      const [profileResponse, usageResponse, templateResponse] = await Promise.all([
         API.get('profile/'),
         API.get('sms/usage-summary/'),
+        API.get('sms/templates/'),
       ]);
 
       if (profileResponse.data?.is_staff) {
@@ -41,6 +44,7 @@ export default function FreeTrialSMS() {
       setProfile(profileResponse.data);
       setSignupNumber(profileResponse.data?.phone_number || '');
       setUsage(usageResponse.data || { used_messages: 0, available_messages: 3, total_limit: 3 });
+      setTemplates((Array.isArray(templateResponse.data) ? templateResponse.data : []).filter((item) => item.approval_status === 'approved' && item.is_active));
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'Failed to load free trial data'));
     } finally {
@@ -81,9 +85,11 @@ export default function FreeTrialSMS() {
       const response = await API.post('sms/free-trial/send/', {
         recipient_number: signupNumber,
         message_content: messageContent,
+        ...(templateId ? { template_id: Number(templateId) } : {}),
       });
       setSuccess(response.data?.detail || 'Message sent successfully');
       setMessageContent('');
+      setTemplateId('');
       await refreshUsage();
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'Failed to send free trial SMS'));
@@ -152,6 +158,24 @@ export default function FreeTrialSMS() {
             </div>
           </div>
         </div>
+
+        {templates.length > 0 && <div style={{ marginBottom: '12px' }}>
+          <label htmlFor="free-trial-sms-template" style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#111827' }}>Approved SMS template</label>
+          <select
+            id="free-trial-sms-template"
+            value={templateId}
+            onChange={(event) => {
+              setTemplateId(event.target.value);
+              const selectedTemplate = templates.find((item) => String(item.id) === event.target.value);
+              if (selectedTemplate) setMessageContent(selectedTemplate.message_content || '');
+            }}
+            disabled={freeTrialComplete || !signupNumber}
+            style={{ width: '100%', padding: '10px', border: '1px solid #d1d5db', borderRadius: '6px', background: '#fff' }}
+          >
+            <option value="">Write a message</option>
+            {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+          </select>
+        </div>}
 
         <div style={{ marginBottom: '12px' }}>
           <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, color: '#111827' }}>Message content</label>

@@ -39,9 +39,9 @@ const LeftSidebar = () => {
           API.get('profile/'),
           API.get('sms/groups/'),
         ]);
-        const hasAdminAccess = Boolean(profileResponse.data?.is_staff || profileResponse.data?.is_superuser || profileResponse.data?.is_primary_admin);
-        setIsAdmin(hasAdminAccess);
-        setIsSupportUser(Boolean(profileResponse.data?.can_view_support_data || profileResponse.data?.is_employee) && !hasAdminAccess);
+        const adminAccess = Boolean(profileResponse.data?.is_primary_admin || profileResponse.data?.is_staff || profileResponse.data?.is_superuser);
+        setIsAdmin(adminAccess);
+        setIsSupportUser(Boolean(profileResponse.data?.can_view_support_data || profileResponse.data?.is_employee) && !adminAccess);
         setGroups(groupsResponse.data || []);
       } catch (err) {
         setIsAdmin(false);
@@ -90,12 +90,12 @@ const LeftSidebar = () => {
   ];
 
   const baseMenuItems = isAdmin ? adminBaseMenuItems : (isSupportUser ? supportBaseMenuItems : userBaseMenuItems);
-  const sendSmsRoute = '/sms/send';
+  const sendSmsRoute = isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/user-send');
 
   const broadcastSubMenuItems = [
     { icon: <FaEnvelope />, label: 'Send SMS', action: () => navigate(sendSmsRoute) },
     { icon: <FaEnvelope />, label: 'Email Validation', action: () => navigate('/broadcast/email-validation') },
-    { icon: <FaWhatsapp />, label: 'Send WhatsApp', action: null },
+    { icon: <FaWhatsapp />, label: 'Send WhatsApp', action: () => navigate('/whatsapp/send') },
     { icon: <FaBroadcastTower />, label: 'Send RCS', action: null },
     { icon: <FaPhoneAlt />, label: 'Send Voice', action: null },
     { icon: <FaEnvelope />, label: 'Omni Channel', action: () => navigate('/sms/send') },
@@ -105,8 +105,8 @@ const LeftSidebar = () => {
     {
       icon: <FaEnvelope />,
       label: isAdmin ? 'Send SMS' : (isSupportUser ? 'Read SMS' : 'My SMS'),
-      path: isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/free-trial'),
-      action: () => navigate(isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/free-trial')),
+      path: isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/user-send'),
+      action: () => navigate(isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/user-send')),
     },
   ];
 
@@ -262,6 +262,18 @@ const LeftSidebar = () => {
 
         {/* SMS Items */}
         {smsMenuItems.map((item, index) => renderItem(item, `sms-${index}`))}
+        {!isAdmin && renderItem({
+          icon: <FaFileAlt />,
+          label: 'SMS Templates',
+          path: '/sms/templates',
+          action: () => navigate('/sms/templates'),
+        }, 'user-sms-templates')}
+        {renderItem({
+          icon: <FaWhatsapp />,
+          label: 'WhatsApp Templates',
+          path: isAdmin ? '/admin/whatsapp/templates' : '/whatsapp/templates',
+          action: () => navigate(isAdmin ? '/admin/whatsapp/templates' : '/whatsapp/templates'),
+        }, 'whatsapp-templates')}
 
         {/* Admin SMS Items */}
         {isAdmin && (
