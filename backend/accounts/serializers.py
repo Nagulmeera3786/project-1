@@ -5,6 +5,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.conf import settings
 from .models import (
     SMSMessage,
+    SMSTemplate,
     SMSCredential,
     SMSContactGroup,
     SMSContact,
@@ -70,6 +71,7 @@ class ResetPasswordSerializer(serializers.Serializer):
 class SMSMessageSerializer(serializers.ModelSerializer):
     sender_username = serializers.CharField(source='sender.username', read_only=True)
     recipient_username = serializers.CharField(source='recipient_user.username', read_only=True)
+    sms_template_name = serializers.CharField(source='sms_template.name', read_only=True, default='')
     transport = serializers.SerializerMethodField()
     dlr_report = serializers.SerializerMethodField()
 
@@ -103,7 +105,7 @@ class SMSMessageSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'sender', 'sender_username', 'recipient_number', 'recipient_user',
             'recipient_username', 'display_sender_id', 'message_content', 'sms_type',
-            'transport',
+            'transport', 'sms_template', 'sms_template_name',
             'send_mode', 'schedule_type', 'scheduled_at', 'timezone_name',
             'batch_reference', 'source_file_name', 'status', 'message_id',
             'provider_message_id', 'failure_reason', 'delivery_time', 'dlr_report', 'created_at', 'updated_at'
@@ -114,12 +116,20 @@ class SMSMessageSerializer(serializers.ModelSerializer):
         ]
 
 
+class SMSTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SMSTemplate
+        fields = ['id', 'name', 'message_content', 'sender_id', 'sms_type', 'is_active', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
 class SMSSendSerializer(serializers.Serializer):
     transport = serializers.ChoiceField(choices=['api', 'smpp'], default='api', required=False)
     smpp_profile = serializers.ChoiceField(choices=['standard', 'dlt'], default='standard', required=False)
     display_sender_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
     sender_id = serializers.CharField(max_length=50, required=False, allow_blank=True, write_only=True)
-    message_content = serializers.CharField()
+    template_id = serializers.IntegerField(required=True, write_only=True)
+    message_content = serializers.CharField(required=False, allow_blank=True)
     sms_type = serializers.ChoiceField(
         choices=[choice[0] for choice in SMSMessage.SMS_TYPE_CHOICES],
         default='transactional',
@@ -142,18 +152,6 @@ class SMSSendSerializer(serializers.Serializer):
 
     source_file = serializers.FileField(required=False, allow_null=True)
 
-    smpp_host = serializers.CharField(max_length=255, required=False, allow_blank=True, write_only=True)
-    smpp_port = serializers.IntegerField(required=False, min_value=1, max_value=65535, default=2775, write_only=True)
-    smpp_system_id = serializers.CharField(max_length=100, required=False, allow_blank=True, write_only=True)
-    smpp_password = serializers.CharField(max_length=100, required=False, allow_blank=True, write_only=True)
-    smpp_template_id = serializers.CharField(max_length=100, required=False, allow_blank=True, write_only=True)
-    smpp_source_addr_ton = serializers.IntegerField(required=False, min_value=0, max_value=255, default=5, write_only=True)
-    smpp_source_addr_npi = serializers.IntegerField(required=False, min_value=0, max_value=255, default=0, write_only=True)
-    smpp_dest_addr_ton = serializers.IntegerField(required=False, min_value=0, max_value=255, default=1, write_only=True)
-    smpp_dest_addr_npi = serializers.IntegerField(required=False, min_value=0, max_value=255, default=1, write_only=True)
-    smpp_data_coding = serializers.IntegerField(required=False, min_value=0, max_value=255, default=0, write_only=True)
-    smpp_registered_delivery = serializers.BooleanField(required=False, default=True, write_only=True)
-
     destination_country = serializers.ChoiceField(choices=['IN', 'OTHER'], default='OTHER', required=False)
     dlt_template_id = serializers.CharField(max_length=100, required=False, allow_blank=True)
     dlt_entity_id = serializers.CharField(max_length=100, required=False, allow_blank=True)
@@ -173,6 +171,13 @@ class SMSSendSerializer(serializers.Serializer):
         return sender_id
 
     def validate(self, attrs):
+        template = SMSTemplate.objects.filter(id=attrs.get('template_id'), is_active=True).first()
+        if not template:
+            raise serializers.ValidationError({'template_id': 'Select an available saved SMS template.'})
+        attrs['sms_template'] = template
+        attrs['message_content'] = template.message_content
+        attrs['sms_type'] = template.sms_type
+
         transport = attrs.get('transport') or 'api'
         sender_value = attrs.get('display_sender_id') or attrs.get('sender_id')
         normalized_sender = (sender_value or '').strip()
@@ -236,14 +241,19 @@ class SMSSendSerializer(serializers.Serializer):
                 raise serializers.ValidationError({'start_time': 'Start time is required for scheduled delivery'})
 
         if transport == 'smpp':
-            required_fields = {
-                'smpp_host': 'SMPP host is required',
-                'smpp_system_id': 'SMPP system ID is required',
-                'smpp_password': 'SMPP password is required',
+            configured_fields = {
+                'SMS_SMPP_HOST': 'SMPP host',
+                'SMS_SMPP_SYSTEM_ID': 'SMPP system ID',
+                'SMS_SMPP_PASSWORD': 'SMPP password',
             }
-            for field_name, message in required_fields.items():
-                if not str(attrs.get(field_name) or '').strip():
-                    raise serializers.ValidationError({field_name: message})
+            missing_fields = [
+                label for setting_name, label in configured_fields.items()
+                if not str(getattr(settings, setting_name, '') or '').strip()
+            ]
+            if missing_fields:
+                raise serializers.ValidationError({
+                    'transport': f'SMPP is not configured on the server: {", ".join(missing_fields)}.'
+                })
 
             smpp_profile = attrs.get('smpp_profile') or 'standard'
             configured_template_id = str(getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip()
@@ -251,13 +261,12 @@ class SMSSendSerializer(serializers.Serializer):
             configured_telemarketer_id = str(getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip()
 
             if smpp_profile == 'dlt':
-                if not str(attrs.get('smpp_template_id') or '').strip() and not configured_template_id:
+                if not configured_template_id:
                     raise serializers.ValidationError({'smpp_template_id': 'Template ID is required for DLT SMPP sending'})
-
-                if not str(attrs.get('dlt_entity_id') or '').strip() and not configured_entity_id:
+                if not configured_entity_id:
                     raise serializers.ValidationError({'dlt_entity_id': 'Entity ID is required for DLT SMPP sending'})
 
-                if not str(attrs.get('dlt_telemarketer_id') or '').strip() and not configured_telemarketer_id:
+                if not configured_telemarketer_id:
                     raise serializers.ValidationError({'dlt_telemarketer_id': 'Telemarketer ID is required for DLT SMPP sending'})
 
             if delivery_mode == 'scheduled':
@@ -282,7 +291,8 @@ class SMSSendSerializer(serializers.Serializer):
             }
 
             for field_name, message in required_dlt_fields.items():
-                if not str(attrs.get(field_name) or '').strip() and not configured_defaults[field_name]:
+                request_value = attrs.get(field_name) if transport != 'smpp' else ''
+                if not str(request_value or '').strip() and not configured_defaults[field_name]:
                     raise serializers.ValidationError({field_name: message})
 
         return attrs

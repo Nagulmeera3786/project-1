@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient, APITestCase
-from accounts.models import FreeTrialVerifiedNumber, SMSMessage, UserWallet, Employee, PlatformSetting, EmailValidationHistory
+from accounts.models import FreeTrialVerifiedNumber, SMSMessage, SMSTemplate, UserWallet, Employee, PlatformSetting, EmailValidationHistory
 
 
 User = get_user_model()
@@ -150,7 +150,7 @@ class AuthFlowTests(TestCase):
 
 class SMSSenderIdTests(TestCase):
     def setUp(self):
-        from accounts.models import SMSCredential
+        from accounts.models import SMSCredential, SMSTemplate
 
         self.client = APIClient()
         self.admin_user = User.objects.create(
@@ -163,6 +163,12 @@ class SMSSenderIdTests(TestCase):
         self.admin_user.save()
 
         self.client.force_authenticate(user=self.admin_user)
+        self.template = SMSTemplate.objects.create(
+            name='Approved notification',
+            message_content='Approved template text',
+            sender_id='KNOWNID',
+            created_by=self.admin_user,
+        )
         self.credential = SMSCredential.objects.create(
             user='provider-user',
             password='provider-pass',
@@ -170,9 +176,16 @@ class SMSSenderIdTests(TestCase):
             is_active=True,
         )
 
+    @override_settings(SMS_DEFAULT_SENDER_ID='ENVDEFAULT', SMS_DEFAULT_SENDER_IDS=['KNOWNID'])
+    def test_configured_env_sender_is_returned_as_default(self):
+        response = self.client.get('/api/auth/sms/credentials/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.get('default_sender_id'), 'ENVDEFAULT')
+
     @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'm-1', 'status': 'sent'})
     def test_manual_sender_id_is_saved_to_dropdown_source(self, _mock_send):
         payload = {
+            'template_id': self.template.id,
             'display_sender_id': 'NEWMANUALID',
             'message_content': 'Test message',
             'recipient_number': '9876543210',
@@ -186,6 +199,7 @@ class SMSSenderIdTests(TestCase):
     @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'm-2', 'status': 'sent'})
     def test_existing_sender_id_is_not_duplicated(self, _mock_send):
         payload = {
+            'template_id': self.template.id,
             'display_sender_id': 'KNOWNID',
             'message_content': 'Another test message',
             'recipient_number': '9876543210',
@@ -263,6 +277,12 @@ class SMSSendModesFlowTests(TestCase):
         self.admin_user.save()
 
         self.client.force_authenticate(user=self.admin_user)
+        self.template = SMSTemplate.objects.create(
+            name='Approved campaign',
+            message_content='Hello #2#, this is an approved campaign.',
+            sender_id='KNOWNID',
+            created_by=self.admin_user,
+        )
         SMSCredential.objects.create(
             user='provider-user',
             password='provider-pass',
@@ -279,6 +299,7 @@ class SMSSendModesFlowTests(TestCase):
         response = self.client.post(
             '/api/auth/sms/send/',
             {
+                'template_id': self.template.id,
                 'display_sender_id': 'KNOWNID',
                 'message_content': 'Single mode test',
                 'sms_type': 'transactional',
@@ -290,6 +311,149 @@ class SMSSendModesFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data.get('status'), 'sent')
+        self.assertEqual(response.data.get('message_content'), self.template.message_content)
+
+    def test_admin_can_view_other_users_sms_history(self):
+        other_user = User.objects.create_user(
+            username='history-user',
+            email='history-user@example.com',
+            password='UserPass123!',
+            is_active=True,
+        )
+        sms_message = SMSMessage.objects.create(
+            sender=other_user,
+            recipient_number='919876543210',
+            display_sender_id='KNOWNID',
+            message_content='User history item',
+            sms_template=self.template,
+            message_id='user-history-1',
+        )
+
+        response = self.client.get('/api/auth/sms/messages/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(sms_message.id, [item['id'] for item in response.data])
+
+    def test_regular_user_can_only_list_active_sms_templates(self):
+        user = User.objects.create_user(
+            username='template-user',
+            email='template-user@example.com',
+            password='UserPass123!',
+            is_active=True,
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.get('/api/auth/sms/templates/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['id'] for item in response.data], [self.template.id])
+
+    def test_regular_user_send_options_hide_provider_credentials(self):
+        user = User.objects.create_user(
+            username='send-options-user',
+            email='send-options-user@example.com',
+            password='UserPass123!',
+            is_active=True,
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.get('/api/auth/sms/send-options/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('KNOWNID', response.data['sender_ids'])
+        self.assertNotIn('user', response.data)
+        self.assertNotIn('password', response.data)
+
+    @patch('accounts.views.SMSSendView._send_sms_via_api', return_value={'message_id': 'user-send-1', 'status': 'sent'})
+    def test_funded_regular_user_sends_using_admin_provider_credentials(self, mock_send):
+        user = User.objects.create_user(
+            username='funded-sms-user',
+            email='funded-sms-user@example.com',
+            password='UserPass123!',
+            is_active=True,
+        )
+        UserWallet.objects.create(user=user, balance=Decimal('3.0000'), email_validation_balance=Decimal('3.0000'))
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            '/api/auth/sms/send/',
+            {
+                'template_id': self.template.id,
+                'display_sender_id': 'KNOWNID',
+                'message_content': 'This client text is ignored',
+                'transport': 'api',
+                'recipient_number': '919876543210',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args.args[0], 'provider-user')
+        self.assertEqual(mock_send.call_args.args[1], 'provider-pass')
+        self.assertEqual(mock_send.call_args.args[4], self.template.message_content)
+        self.assertEqual(response.data.get('message_content'), self.template.message_content)
+        user.wallet.refresh_from_db()
+        self.assertEqual(user.wallet.balance, Decimal('2.0000'))
+
+    def test_regular_user_cannot_create_templates(self):
+        user = User.objects.create_user(
+            username='template-create-user',
+            email='template-create-user@example.com',
+            password='UserPass123!',
+            is_active=True,
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            '/api/auth/sms/templates/',
+            {'name': 'forbidden', 'message_content': 'Unauthorized', 'is_active': True},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch('accounts.views.SMSSendView._send_sms_via_api')
+    def test_regular_user_cannot_send_with_unconfigured_sender_id(self, mock_send):
+        user = User.objects.create_user(
+            username='sender-guard-user',
+            email='sender-guard-user@example.com',
+            password='UserPass123!',
+            is_active=True,
+        )
+        UserWallet.objects.create(user=user, balance=Decimal('3.0000'), email_validation_balance=Decimal('3.0000'))
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            '/api/auth/sms/send/',
+            {
+                'template_id': self.template.id,
+                'display_sender_id': 'FORGEDID',
+                'recipient_number': '919876543210',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        mock_send.assert_not_called()
+
+    def test_send_rejects_inactive_template(self):
+        self.template.is_active = False
+        self.template.save(update_fields=['is_active'])
+
+        response = self.client.post(
+            '/api/auth/sms/send/',
+            {
+                'template_id': self.template.id,
+                'display_sender_id': 'KNOWNID',
+                'message_content': 'Unapproved custom message',
+                'recipient_number': '919876543210',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('template_id', response.data)
 
     @patch('accounts.views.SMSSendView._send_sms_via_api')
     def test_send_file_numbers_mode(self, mock_send):
@@ -304,6 +468,7 @@ class SMSSendModesFlowTests(TestCase):
         response = self.client.post(
             '/api/auth/sms/send/',
             {
+                'template_id': self.template.id,
                 'display_sender_id': 'KNOWNID',
                 'message_content': 'File mode test',
                 'sms_type': 'transactional',
@@ -317,19 +482,23 @@ class SMSSendModesFlowTests(TestCase):
         self.assertEqual(response.data.get('sent_count'), 2)
         self.assertEqual(response.data.get('failed_count'), 0)
 
+    @override_settings(
+        SMS_SMPP_HOST='smpp.example.com',
+        SMS_SMPP_PORT=2775,
+        SMS_SMPP_SYSTEM_ID='smpp-user',
+        SMS_SMPP_PASSWORD='smpp-pass',
+        SMS_DLT_TEMPLATE_ID='TPL123',
+        SMS_DLT_ENTITY_ID='ENTITY99',
+        SMS_DLT_TELEMARKETER_ID='TMID99',
+    )
     @patch('accounts.views.SMSSendView._send_sms_via_smpp', return_value={'message_id': 'smpp-1', 'status': 'sent'})
     def test_send_single_mode_via_smpp_with_dlt_template(self, mock_send):
         response = self.client.post(
             '/api/auth/sms/send/',
             {
+                'template_id': self.template.id,
                 'transport': 'smpp',
                 'smpp_profile': 'dlt',
-                'smpp_host': 'smpp.example.com',
-                'smpp_port': 2775,
-                'smpp_system_id': 'smpp-user',
-                'smpp_password': 'smpp-pass',
-                'smpp_template_id': 'TPL123',
-                'dlt_entity_id': 'ENTITY99',
                 'display_sender_id': 'APPROVEDID',
                 'message_content': 'Your OTP is 123456',
                 'sms_type': 'transactional',
@@ -346,19 +515,25 @@ class SMSSendModesFlowTests(TestCase):
         smpp_config = mock_send.call_args[0][0]
         self.assertEqual(smpp_config['host'], 'smpp.example.com')
         self.assertEqual(smpp_config['template_id'], 'TPL123')
+        self.assertEqual(smpp_config['system_id'], 'smpp-user')
+        self.assertEqual(smpp_config['password'], 'smpp-pass')
 
 
-    @override_settings(SMS_DLT_TEMPLATE_ID='')
+    @override_settings(
+        SMS_SMPP_HOST='smpp.example.com',
+        SMS_SMPP_SYSTEM_ID='smpp-user',
+        SMS_SMPP_PASSWORD='smpp-pass',
+        SMS_DLT_TEMPLATE_ID='',
+        SMS_DLT_ENTITY_ID='',
+        SMS_DLT_TELEMARKETER_ID='',
+    )
     def test_smpp_requires_template_for_dlt_profile(self):
         response = self.client.post(
             '/api/auth/sms/send/',
             {
+                'template_id': self.template.id,
                 'transport': 'smpp',
                 'smpp_profile': 'dlt',
-                'smpp_host': 'smpp.example.com',
-                'smpp_port': 2775,
-                'smpp_system_id': 'smpp-user',
-                'smpp_password': 'smpp-pass',
                 'display_sender_id': 'APPROVEDID',
                 'message_content': 'Missing template id',
                 'sms_type': 'transactional',
@@ -371,18 +546,21 @@ class SMSSendModesFlowTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('smpp_template_id', response.data)
 
-    @override_settings(SMS_DLT_ENTITY_ID='')
+    @override_settings(
+        SMS_SMPP_HOST='smpp.example.com',
+        SMS_SMPP_SYSTEM_ID='smpp-user',
+        SMS_SMPP_PASSWORD='smpp-pass',
+        SMS_DLT_TEMPLATE_ID='TPL123',
+        SMS_DLT_ENTITY_ID='',
+        SMS_DLT_TELEMARKETER_ID='TMID99',
+    )
     def test_smpp_dlt_requires_entity_id_when_not_configured(self):
         response = self.client.post(
             '/api/auth/sms/send/',
             {
+                'template_id': self.template.id,
                 'transport': 'smpp',
                 'smpp_profile': 'dlt',
-                'smpp_host': 'smpp.example.com',
-                'smpp_port': 2775,
-                'smpp_system_id': 'smpp-user',
-                'smpp_password': 'smpp-pass',
-                'smpp_template_id': 'TPL123',
                 'display_sender_id': 'APPROVEDID',
                 'message_content': 'Missing entity id',
                 'sms_type': 'transactional',
@@ -395,19 +573,21 @@ class SMSSendModesFlowTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('dlt_entity_id', response.data)
 
-    @override_settings(SMS_DLT_TELEMARKETER_ID='')
+    @override_settings(
+        SMS_SMPP_HOST='smpp.example.com',
+        SMS_SMPP_SYSTEM_ID='smpp-user',
+        SMS_SMPP_PASSWORD='smpp-pass',
+        SMS_DLT_TEMPLATE_ID='TPL123',
+        SMS_DLT_ENTITY_ID='ENTITY1',
+        SMS_DLT_TELEMARKETER_ID='',
+    )
     def test_smpp_dlt_requires_telemarketer_id_when_not_configured(self):
         response = self.client.post(
             '/api/auth/sms/send/',
             {
+                'template_id': self.template.id,
                 'transport': 'smpp',
                 'smpp_profile': 'dlt',
-                'smpp_host': 'smpp.example.com',
-                'smpp_port': 2775,
-                'smpp_system_id': 'smpp-user',
-                'smpp_password': 'smpp-pass',
-                'smpp_template_id': 'TPL123',
-                'dlt_entity_id': 'ENTITY1',
                 'display_sender_id': 'APPROVEDID',
                 'message_content': 'Missing telemarketer id',
                 'sms_type': 'transactional',
@@ -420,16 +600,18 @@ class SMSSendModesFlowTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('dlt_telemarketer_id', response.data)
 
+    @override_settings(
+        SMS_SMPP_HOST='smpp.example.com',
+        SMS_SMPP_SYSTEM_ID='smpp-user',
+        SMS_SMPP_PASSWORD='smpp-pass',
+    )
     def test_smpp_rejects_scheduled_delivery(self):
         response = self.client.post(
             '/api/auth/sms/send/',
             {
+                'template_id': self.template.id,
                 'transport': 'smpp',
                 'smpp_profile': 'standard',
-                'smpp_host': 'smpp.example.com',
-                'smpp_port': 2775,
-                'smpp_system_id': 'smpp-user',
-                'smpp_password': 'smpp-pass',
                 'display_sender_id': 'TEST',
                 'message_content': 'Scheduled smpp',
                 'sms_type': 'transactional',
@@ -445,6 +627,88 @@ class SMSSendModesFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('delivery_mode', response.data)
+
+    @override_settings(
+        SMS_SMPP_HOST='smpp.example.com',
+        SMS_SMPP_SYSTEM_ID='smpp-user',
+        SMS_SMPP_PASSWORD='smpp-pass',
+    )
+    @patch('accounts.views.SMSSendView._send_sms_via_api')
+    @patch('accounts.views.SMSSendView._send_sms_via_smpp')
+    def test_regular_user_cannot_send_sms_without_wallet_balance(self, mock_smpp_send, mock_api_send):
+        user = User.objects.create_user(
+            username='sms-no-wallet',
+            email='sms-no-wallet@example.com',
+            password='UserPass123!',
+            is_active=True,
+        )
+        UserWallet.objects.create(user=user, balance=Decimal('0'), email_validation_balance=Decimal('0'))
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            '/api/auth/sms/send/',
+            {
+                'template_id': self.template.id,
+                'transport': 'smpp',
+                'display_sender_id': 'KNOWNID',
+                'message_content': 'Wallet required',
+                'send_mode': 'single',
+                'recipient_number': '919876543210',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 402)
+        mock_smpp_send.assert_not_called()
+
+        response = self.client.post(
+            '/api/auth/sms/send/',
+            {
+                'template_id': self.template.id,
+                'transport': 'api',
+                'display_sender_id': 'KNOWNID',
+                'message_content': 'Wallet required',
+                'send_mode': 'single',
+                'recipient_number': '919876543210',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 402)
+        mock_api_send.assert_not_called()
+
+    @patch('smpplib.client.Client')
+    def test_smpp_send_uses_provider_submit_response_id(self, mock_client_class):
+        from accounts.views import SMSSendView
+
+        client = mock_client_class.return_value
+
+        def read_submit_response(**_kwargs):
+            handler = client.set_message_sent_handler.call_args.args[0]
+            handler(pdu=Mock(message_id='provider-message-123'))
+
+        client.read_once.side_effect = read_submit_response
+        result = SMSSendView()._send_sms_via_smpp(
+            {
+                'host': 'smpp.example.com',
+                'port': 2775,
+                'system_id': 'system-user',
+                'password': 'system-password',
+                'source_addr_ton': 5,
+                'source_addr_npi': 0,
+                'dest_addr_ton': 1,
+                'dest_addr_npi': 1,
+                'data_coding': 0,
+                'registered_delivery': True,
+            },
+            'APPROVEDID',
+            '919876543210',
+            'SMPP response test',
+        )
+
+        self.assertEqual(result['message_id'], 'provider-message-123')
+        client.set_message_received_handler.assert_called_once()
+        client.read_once.assert_called_once_with(auto_send_enquire_link=False)
 
     @patch('accounts.views.SMSSendView._send_sms_via_api')
     def test_send_personalized_file_mode(self, mock_send):
@@ -473,6 +737,7 @@ class SMSSendModesFlowTests(TestCase):
         response = self.client.post(
             '/api/auth/sms/send/',
             {
+                'template_id': self.template.id,
                 'display_sender_id': 'KNOWNID',
                 'message_content': 'Hi #2#, your code is ready',
                 'sms_type': 'transactional',

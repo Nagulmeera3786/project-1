@@ -38,7 +38,10 @@ export default function SMSSend() {
   const [transport, setTransport] = useState('api');
   const [smppProfile, setSmppProfile] = useState('standard');
   const [selectedSenderId, setSelectedSenderId] = useState('');
+  const [defaultSenderId, setDefaultSenderId] = useState('');
   const [manualSenderId, setManualSenderId] = useState('');
+  const [templates, setTemplates] = useState([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const [messageContent, setMessageContent] = useState('');
   const [smsType, setSmsType] = useState('transactional');
   const [destinationCountry, setDestinationCountry] = useState('OTHER');
@@ -81,21 +84,6 @@ export default function SMSSend() {
 
   const [users, setUsers] = useState([]);
   const [senderIds, setSenderIds] = useState([]);
-  const [smppConfig, setSmppConfig] = useState({
-    host: '',
-    port: '2775',
-    systemId: '',
-    password: '',
-    templateId: '',
-    entityId: '',
-    telemarketerId: '',
-    sourceAddrTon: '5',
-    sourceAddrNpi: '0',
-    destAddrTon: '1',
-    destAddrNpi: '1',
-    dataCoding: '0',
-    registeredDelivery: true,
-  });
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState('');
   const [error, setError] = useState('');
@@ -270,21 +258,27 @@ export default function SMSSend() {
     [messageContent]
   );
   const effectiveSenderId = useMemo(
-    () => (isSmppTransport ? manualSenderId : (manualSenderId || selectedSenderId || '')).trim(),
-    [isSmppTransport, manualSenderId, selectedSenderId]
+    () => (manualSenderId || selectedSenderId || '').trim(),
+    [manualSenderId, selectedSenderId]
   );
+  const selectedTemplate = templates.find((template) => String(template.id) === String(selectedTemplateId));
 
   useEffect(() => {
     fetchProfile();
   }, []);
 
   useEffect(() => {
-    if (profileLoading || !isAdmin) {
+    if (profileLoading) {
       return;
     }
 
-    fetchUsers();
-    fetchSenderIds();
+    if (isAdmin) {
+      fetchUsers();
+      fetchSenderIds();
+    } else {
+      fetchSendOptions();
+    }
+    fetchTemplates();
     fetchGroups();
     fetchShortUrls();
     fetchTimezoneOptions();
@@ -362,7 +356,7 @@ export default function SMSSend() {
   const fetchProfile = async () => {
     try {
       const response = await API.get('profile/');
-      setIsAdmin(Boolean(response.data?.is_staff));
+      setIsAdmin(Boolean(response.data?.is_staff || response.data?.is_superuser || response.data?.is_primary_admin));
     } catch (err) {
       setIsAdmin(false);
     } finally {
@@ -441,14 +435,67 @@ export default function SMSSend() {
     try {
       const response = await API.get('sms/credentials/');
       if (response.data && response.data.sender_ids) {
-        const uniqueSenderIds = [...new Set(response.data.sender_ids.map((id) => String(id).trim()).filter(Boolean))];
+        const configuredDefault = String(response.data.default_sender_id || '').trim();
+        const uniqueSenderIds = [...new Set([
+          ...response.data.sender_ids.map((id) => String(id).trim()).filter(Boolean),
+          configuredDefault,
+        ].filter(Boolean))];
         setSenderIds(uniqueSenderIds);
+        setDefaultSenderId(configuredDefault);
         if (uniqueSenderIds.length > 0) {
-          setSelectedSenderId(uniqueSenderIds[0]);
+          setSelectedSenderId(configuredDefault || uniqueSenderIds[0]);
         }
       }
     } catch (err) {
       console.error('Error fetching sender IDs:', err);
+    }
+  };
+
+  const fetchSendOptions = async () => {
+    try {
+      const response = await API.get('sms/send-options/');
+      const configuredDefault = String(response.data?.default_sender_id || '').trim();
+      const configuredSenderIds = Array.isArray(response.data?.sender_ids) ? response.data.sender_ids : [];
+      const availableSenderIds = [...new Set([
+        ...configuredSenderIds.map((id) => String(id).trim()).filter(Boolean),
+        configuredDefault,
+      ].filter(Boolean))];
+      setSenderIds(availableSenderIds);
+      setDefaultSenderId(configuredDefault);
+      setSelectedSenderId(configuredDefault || availableSenderIds[0] || '');
+    } catch (err) {
+      setSenderIds([]);
+      setDefaultSenderId('');
+      setSelectedSenderId('');
+      setError(getProfessionalErrorMessage(err, 'Failed to load administrator sender IDs'));
+    }
+  };
+
+  const fetchTemplates = async () => {
+    try {
+      const response = await API.get('sms/templates/');
+      setTemplates((Array.isArray(response.data) ? response.data : []).filter((item) => item.is_active));
+    } catch (err) {
+      setTemplates([]);
+      setError(getProfessionalErrorMessage(err, 'Failed to load SMS templates'));
+    }
+  };
+
+  const handleTemplateChange = (templateId) => {
+    setSelectedTemplateId(templateId);
+    const template = templates.find((item) => String(item.id) === String(templateId));
+    if (template) {
+      setMessageContent(template.message_content || '');
+      if (template.sender_id) {
+        setSenderIds((current) => [...new Set([...current, template.sender_id])]);
+        setSelectedSenderId(template.sender_id);
+        setManualSenderId('');
+      }
+      if (template.sms_type) {
+        setSmsType(template.sms_type);
+      }
+    } else {
+      setMessageContent('');
     }
   };
 
@@ -500,13 +547,6 @@ export default function SMSSend() {
     setTransport(nextTransport);
     setError('');
     setSuccess('');
-  };
-
-  const handleSmppConfigChange = (field, value) => {
-    setSmppConfig((prev) => ({
-      ...prev,
-      [field]: value,
-    }));
   };
 
   const handleDltChange = (field, value) => {
@@ -681,6 +721,12 @@ export default function SMSSend() {
       return;
     }
 
+    if (!selectedTemplate) {
+      setError('Select an active saved message template before sending');
+      setLoading(false);
+      return;
+    }
+
     if (!isSmppTransport) {
       const senderIdError = validateSenderIdFormat(effectiveSenderId);
       if (senderIdError) {
@@ -726,37 +772,10 @@ export default function SMSSend() {
       return;
     }
 
-    if (isSmppTransport) {
-      if (!smppConfig.host.trim() || !smppConfig.systemId.trim() || !smppConfig.password.trim()) {
-        setError('Please enter SMPP host, system ID and password');
-        setLoading(false);
-        return;
-      }
-
-      if (smppProfile === 'dlt') {
-        if (!smppConfig.templateId.trim()) {
-          setError('Please enter Template ID for DLT SMPP sending');
-          setLoading(false);
-          return;
-        }
-
-        if (!smppConfig.entityId.trim()) {
-          setError('Please enter Entity ID for DLT SMPP sending');
-          setLoading(false);
-          return;
-        }
-
-        if (!smppConfig.telemarketerId.trim()) {
-          setError('Please enter Telemarketer ID for DLT SMPP sending');
-          setLoading(false);
-          return;
-        }
-      }
-    }
-
     const payload = new FormData();
     payload.append('transport', transport);
     payload.append('display_sender_id', effectiveSenderId);
+    payload.append('template_id', selectedTemplateId);
     payload.append('message_content', messageContent);
     payload.append('sms_type', smsType);
     payload.append('send_mode', sendMode);
@@ -771,23 +790,6 @@ export default function SMSSend() {
 
     if (isSmppTransport) {
       payload.append('smpp_profile', smppProfile);
-      payload.append('smpp_host', smppConfig.host.trim());
-      payload.append('smpp_port', smppConfig.port || '2775');
-      payload.append('smpp_system_id', smppConfig.systemId.trim());
-      payload.append('smpp_password', smppConfig.password);
-      payload.append('smpp_source_addr_ton', smppConfig.sourceAddrTon || '5');
-      payload.append('smpp_source_addr_npi', smppConfig.sourceAddrNpi || '0');
-      payload.append('smpp_dest_addr_ton', smppConfig.destAddrTon || '1');
-      payload.append('smpp_dest_addr_npi', smppConfig.destAddrNpi || '1');
-      payload.append('smpp_data_coding', smppConfig.dataCoding || '0');
-      payload.append('smpp_registered_delivery', smppConfig.registeredDelivery ? 'true' : 'false');
-
-      if (smppProfile === 'dlt') {
-        payload.append('smpp_template_id', smppConfig.templateId.trim());
-        payload.append('dlt_template_id', smppConfig.templateId.trim());
-        payload.append('dlt_entity_id', smppConfig.entityId.trim());
-        payload.append('dlt_telemarketer_id', smppConfig.telemarketerId.trim());
-      }
     }
 
     if (deliveryMode === 'scheduled') {
@@ -915,9 +917,6 @@ export default function SMSSend() {
       }
 
       setManualSenderId('');
-      if (sendMode !== 'personalized_file') {
-        setMessageContent('');
-      }
       if (sendMode === 'single') {
         setRecipientNumber('');
         setRecipientUserId('');
@@ -1187,48 +1186,49 @@ export default function SMSSend() {
             Sender ID *
           </label>
           <div style={{ maxWidth: '360px' }}>
-            {!isSmppTransport && (
-              <>
-                <select
-                  value={selectedSenderId}
-                  onChange={(e) => setSelectedSenderId(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    border: '1px solid #ddd',
-                    borderRadius: '6px',
-                    fontSize: '14px',
-                  }}
-                >
-                  <option value="">Select Sender ID</option>
-                  {senderIds.map((id) => (
-                    <option key={id} value={id}>
-                      {id}
-                    </option>
-                  ))}
-                </select>
-                <small style={{ color: '#999', display: 'block', marginTop: '6px' }}>
-                  Select from existing sender IDs or enter a new one below.
-                </small>
-                <small style={{ color: '#475467', display: 'block', marginTop: '4px' }}>
-                  Alphanumeric: 3-11 characters. Numeric only: 10-15 digits.
-                </small>
-              </>
-            )}
-            <input
-              type="text"
-              value={manualSenderId}
-              onChange={(e) => setManualSenderId(e.target.value)}
-              placeholder={isSmppTransport ? 'Enter approved SMPP sender ID' : 'Or enter sender ID manually'}
+            <select
+              value={selectedSenderId}
+              onChange={(e) => {
+                setSelectedSenderId(e.target.value);
+                setManualSenderId('');
+              }}
               style={{
                 width: '100%',
-                marginTop: isSmppTransport ? 0 : '8px',
                 padding: '10px 12px',
                 border: '1px solid #ddd',
                 borderRadius: '6px',
                 fontSize: '14px',
               }}
-            />
+            >
+              <option value="">Select Sender ID</option>
+              {senderIds.map((id) => (
+                <option key={id} value={id}>
+                  {id}{id === defaultSenderId ? ' (Default)' : ''}
+                </option>
+              ))}
+            </select>
+            <small style={{ color: '#999', display: 'block', marginTop: '6px' }}>
+              Choose a configured sender ID or enter a different approved ID below.
+            </small>
+            <small style={{ color: '#475467', display: 'block', marginTop: '4px' }}>
+              Alphanumeric: 3-11 characters. Numeric only: 10-15 digits.
+            </small>
+            {isAdmin && (
+              <input
+                type="text"
+                value={manualSenderId}
+                onChange={(e) => setManualSenderId(e.target.value)}
+                placeholder="Or enter sender ID manually"
+                style={{
+                  width: '100%',
+                  marginTop: '8px',
+                  padding: '10px 12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                }}
+              />
+            )}
             <small style={{ color: '#444', display: 'block', marginTop: '6px' }}>
               Selected sender ID: <strong>{(effectiveSenderId || 'Not selected')}</strong>
             </small>
@@ -1264,114 +1264,8 @@ export default function SMSSend() {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '12px' }}>
-              <input
-                type="text"
-                value={smppConfig.host}
-                onChange={(e) => handleSmppConfigChange('host', e.target.value)}
-                placeholder="SMPP Host *"
-                style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-              />
-              <input
-                type="number"
-                value={smppConfig.port}
-                onChange={(e) => handleSmppConfigChange('port', e.target.value)}
-                placeholder="Port *"
-                style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-              />
-              <input
-                type="text"
-                value={smppConfig.systemId}
-                onChange={(e) => handleSmppConfigChange('systemId', e.target.value)}
-                placeholder="System ID *"
-                style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-              />
-              <input
-                type="password"
-                value={smppConfig.password}
-                onChange={(e) => handleSmppConfigChange('password', e.target.value)}
-                placeholder="Password *"
-                style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-              />
-            </div>
-
-            {smppProfile === 'dlt' && (
-              <div style={{ marginBottom: '12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
-                <input
-                  type="text"
-                  value={smppConfig.templateId}
-                  onChange={(e) => handleSmppConfigChange('templateId', e.target.value)}
-                  placeholder="DLT Template ID *"
-                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-                />
-                <input
-                  type="text"
-                  value={smppConfig.entityId}
-                  onChange={(e) => handleSmppConfigChange('entityId', e.target.value)}
-                  placeholder="DLT Entity ID *"
-                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-                />
-                <input
-                  type="text"
-                  value={smppConfig.telemarketerId}
-                  onChange={(e) => handleSmppConfigChange('telemarketerId', e.target.value)}
-                  placeholder="DLT Telemarketer ID *"
-                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-                />
-              </div>
-            )}
-
-            <div style={{ borderTop: '1px solid #d7efe9', paddingTop: '12px' }}>
-              <div style={{ fontWeight: 'bold', color: '#134e4a', marginBottom: '10px' }}>Advanced SMPP Parameters</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
-                <input
-                  type="number"
-                  value={smppConfig.sourceAddrTon}
-                  onChange={(e) => handleSmppConfigChange('sourceAddrTon', e.target.value)}
-                  placeholder="Source TON"
-                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-                />
-                <input
-                  type="number"
-                  value={smppConfig.sourceAddrNpi}
-                  onChange={(e) => handleSmppConfigChange('sourceAddrNpi', e.target.value)}
-                  placeholder="Source NPI"
-                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-                />
-                <input
-                  type="number"
-                  value={smppConfig.destAddrTon}
-                  onChange={(e) => handleSmppConfigChange('destAddrTon', e.target.value)}
-                  placeholder="Destination TON"
-                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-                />
-                <input
-                  type="number"
-                  value={smppConfig.destAddrNpi}
-                  onChange={(e) => handleSmppConfigChange('destAddrNpi', e.target.value)}
-                  placeholder="Destination NPI"
-                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-                />
-                <input
-                  type="number"
-                  value={smppConfig.dataCoding}
-                  onChange={(e) => handleSmppConfigChange('dataCoding', e.target.value)}
-                  placeholder="Data Coding"
-                  style={{ padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px' }}
-                />
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', border: '1px solid #b7d7cf', borderRadius: '6px', backgroundColor: '#fff' }}>
-                  <input
-                    type="checkbox"
-                    checked={smppConfig.registeredDelivery}
-                    onChange={(e) => handleSmppConfigChange('registeredDelivery', e.target.checked)}
-                  />
-                  Request delivery report
-                </label>
-              </div>
-            </div>
-
             <small style={{ color: '#115e59', display: 'block', marginTop: '10px' }}>
-              The app submits the SMPP message immediately using these credentials. Scheduled delivery is disabled for SMPP because credentials are entered per request.
+              SMPP connection and DLT settings are managed securely by the server. Scheduled delivery is not supported for SMPP.
             </small>
           </div>
         )}
@@ -1405,7 +1299,7 @@ export default function SMSSend() {
             <option value="IN">India</option>
           </select>
 
-          {destinationCountry === 'IN' && (
+          {destinationCountry === 'IN' && !isSmppTransport && (
             <div style={{ marginTop: '12px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
               <input
                 type="text"
@@ -1592,30 +1486,60 @@ export default function SMSSend() {
 
         {/* Message Content */}
         <div style={{ marginBottom: '20px' }}>
-          <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
-            Message Content *
+          <label htmlFor="sms-template-select" style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+            Saved Message Template *
           </label>
-          <textarea
-            value={messageContent}
-            onChange={(e) => setMessageContent(e.target.value)}
-            placeholder={sendMode === 'personalized_file' ? 'Type your personalized SMS template here' : 'Enter your message'}
-            required
-            style={{
-              width: '100%',
-              height: '120px',
-              padding: '12px',
-              border: '1px solid #ddd',
-              borderRadius: '6px',
-              fontSize: '14px',
-              fontFamily: 'Arial, sans-serif',
-              resize: 'none',
-            }}
-          />
-          <small style={{ color: !smsMeta.isWithinLimit ? '#d32f2f' : '#999' }}>
-            Character_count: {smsMeta.lengthUnits} | no.of_messages: {smsMeta.segments}/{MAX_SMS_SEGMENTS}
-            {smsMeta.segments > 0 ? ` | Per-segment limit: ${smsMeta.perSegmentLimit}` : ''}
-            {!smsMeta.isWithinLimit ? ' | Exceeds allowed SMS segments' : ''}
-          </small>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 270px', gap: '18px', alignItems: 'start' }}>
+            <div>
+              <select
+                id="sms-template-select"
+                value={selectedTemplateId}
+                onChange={(e) => handleTemplateChange(e.target.value)}
+                required
+                style={{ width: '100%', marginBottom: '10px', padding: '10px 12px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '14px' }}
+              >
+                <option value="">Choose an active saved template</option>
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>{template.name}</option>
+                ))}
+              </select>
+              {templates.length === 0 && (
+                <div style={{ marginBottom: '10px', color: '#9a3412', fontSize: '13px' }}>
+                  No active templates are available. Create one in SMS Templates before sending.
+                </div>
+              )}
+              <div
+                aria-label="Saved SMS message content"
+                style={{ minHeight: '120px', whiteSpace: 'pre-wrap', padding: '12px', border: '1px solid #ddd', borderRadius: '6px', backgroundColor: '#f8fafc', color: messageContent ? '#1f2937' : '#98a2b3', fontSize: '14px' }}
+              >
+                {messageContent || 'Saved template content appears here and cannot be changed while sending.'}
+              </div>
+              <small style={{ color: !smsMeta.isWithinLimit ? '#d32f2f' : '#667085', display: 'block', marginTop: '6px' }}>
+                Character count: {smsMeta.lengthUnits} | Messages: {smsMeta.segments}/{MAX_SMS_SEGMENTS}
+                {smsMeta.segments > 0 ? ` | Per-segment limit: ${smsMeta.perSegmentLimit}` : ''}
+                {!smsMeta.isWithinLimit ? ' | Exceeds allowed SMS segments' : ''}
+              </small>
+            </div>
+            <div style={{ width: '100%', maxWidth: '270px', justifySelf: 'center', border: '5px solid #202124', borderRadius: '28px', padding: '9px', backgroundColor: '#111827', boxShadow: '0 8px 20px rgba(16,24,40,0.18)' }}>
+              <div style={{ minHeight: '320px', borderRadius: '19px', overflow: 'hidden', backgroundColor: '#f1f3f4', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ padding: '10px 12px', backgroundColor: '#fff', borderBottom: '1px solid #e4e7ec', textAlign: 'center' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#344054' }}>Messages</div>
+                  <div style={{ fontSize: '10px', color: '#667085', marginTop: '2px' }}>{recipientNumber || 'Recipient number'}</div>
+                </div>
+                <div style={{ flex: 1, padding: '14px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: '8px' }}>
+                  <div style={{ alignSelf: 'flex-start', maxWidth: '90%', padding: '9px 11px', borderRadius: '15px 15px 15px 4px', backgroundColor: '#fff', color: '#101828', fontSize: '12px', lineHeight: 1.4, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                    {messageContent || 'Select a saved template to preview the SMS.'}
+                  </div>
+                  <div style={{ alignSelf: 'flex-start', fontSize: '9px', color: '#667085', paddingLeft: '3px' }}>
+                    From {effectiveSenderId || 'sender ID'}
+                  </div>
+                </div>
+                <div style={{ padding: '8px 10px', backgroundColor: '#fff', borderTop: '1px solid #e4e7ec' }}>
+                  <div style={{ border: '1px solid #d0d5dd', borderRadius: '15px', padding: '6px 9px', color: '#98a2b3', fontSize: '10px' }}>Text Message</div>
+                </div>
+              </div>
+            </div>
+          </div>
           
           {showPersonalizedGuide && (
             <div style={{ marginTop: '10px', backgroundColor: '#f7fbff', border: '1px solid #cfe8ff', borderRadius: '6px', padding: '10px' }}>

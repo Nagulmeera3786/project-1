@@ -39,8 +39,9 @@ const LeftSidebar = () => {
           API.get('profile/'),
           API.get('sms/groups/'),
         ]);
-        setIsAdmin(Boolean(profileResponse.data?.is_staff));
-        setIsSupportUser(Boolean(profileResponse.data?.can_view_support_data || profileResponse.data?.is_employee) && !Boolean(profileResponse.data?.is_staff));
+        const hasAdminAccess = Boolean(profileResponse.data?.is_staff || profileResponse.data?.is_superuser || profileResponse.data?.is_primary_admin);
+        setIsAdmin(hasAdminAccess);
+        setIsSupportUser(Boolean(profileResponse.data?.can_view_support_data || profileResponse.data?.is_employee) && !hasAdminAccess);
         setGroups(groupsResponse.data || []);
       } catch (err) {
         setIsAdmin(false);
@@ -89,7 +90,7 @@ const LeftSidebar = () => {
   ];
 
   const baseMenuItems = isAdmin ? adminBaseMenuItems : (isSupportUser ? supportBaseMenuItems : userBaseMenuItems);
-  const sendSmsRoute = isAdmin ? '/sms/send' : (isSupportUser ? '/sms/history' : '/sms/free-trial');
+  const sendSmsRoute = '/sms/send';
 
   const broadcastSubMenuItems = [
     { icon: <FaEnvelope />, label: 'Send SMS', action: () => navigate(sendSmsRoute) },
@@ -116,6 +117,8 @@ const LeftSidebar = () => {
 
   const adminSMSMenuItems = [
     { icon: <FaCog />, label: "SMS Management", path: '/admin/sms', action: () => navigate('/admin/sms') },
+    { icon: <FaEnvelope />, label: "SMS History", path: '/sms/history', action: () => navigate('/sms/history') },
+    { icon: <FaFileAlt />, label: "SMS Templates", path: '/admin/sms/templates', action: () => navigate('/admin/sms/templates') },
     { icon: <FaKey />, label: "SMS Credentials", path: '/admin/sms/credentials', action: () => navigate('/admin/sms/credentials') },
     { icon: <FaFileAlt />, label: "DLT Config", path: '/admin/sms/credentials', action: () => navigate('/admin/sms/credentials') },
   ];

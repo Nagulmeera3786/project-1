@@ -14,8 +14,8 @@ const codeSamples = {
   -H "Authorization: Bearer <access_token>" \\
   -H "Content-Type: application/json" \\
   -d '{
+    "template_id": 1,
     "display_sender_id": "BHISHA",
-    "message_content": "Hello from Bhisha",
     "recipient_number": "+91XXXXXXXXXX"
   }'`,
   JavaScript: `const baseUrl = "${BASE_URL}";
@@ -26,8 +26,8 @@ const response = await fetch(baseUrl + "${API_PREFIX}${SMS_SEND_PATH}", {
     Authorization: 'Bearer ' + accessToken,
   },
   body: JSON.stringify({
+    template_id: 1,
     display_sender_id: 'BHISHA',
-    message_content: 'Hello from Bhisha',
     recipient_number: '+91XXXXXXXXXX',
   }),
 });
@@ -40,8 +40,8 @@ response = requests.post(
     base_url + "${API_PREFIX}${SMS_SEND_PATH}",
     headers={'Authorization': f'Bearer {access_token}'},
     json={
+      'template_id': 1,
         'display_sender_id': 'BHISHA',
-        'message_content': 'Hello from Bhisha',
         'recipient_number': '+91XXXXXXXXXX',
     },
 )
@@ -54,8 +54,8 @@ HttpRequest request = HttpRequest.newBuilder()
     .header("Authorization", "Bearer " + accessToken)
     .POST(HttpRequest.BodyPublishers.ofString("""
         {
+          "template_id": 1,
           \"display_sender_id\": \"BHISHA\",
-          \"message_content\": \"Hello from Bhisha\",
           \"recipient_number\": \"+91XXXXXXXXXX\"
         }
         """))
@@ -66,16 +66,16 @@ client.DefaultRequestHeaders.Authorization =
     new AuthenticationHeaderValue("Bearer", accessToken);
 
 var payload = new {
+  template_id = 1,
     display_sender_id = "BHISHA",
-    message_content = "Hello from Bhisha",
     recipient_number = "+91XXXXXXXXXX"
 };
 
 var response = await client.PostAsJsonAsync("${API_PREFIX}${SMS_SEND_PATH}", payload);`,
   PHP: `$baseUrl = '${BASE_URL}';
 $payload = [
+  'template_id' => 1,
   'display_sender_id' => 'BHISHA',
-  'message_content' => 'Hello from Bhisha',
   'recipient_number' => '+91XXXXXXXXXX',
 ];
 
@@ -87,8 +87,8 @@ curl_setopt($ch, CURLOPT_HTTPHEADER, [
 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));`,
   Go: `baseURL := "${BASE_URL}"
 payload := strings.NewReader(` + "`" + `{
+  "template_id":1,
   "display_sender_id":"BHISHA",
-  "message_content":"Hello from Bhisha",
   "recipient_number":"+91XXXXXXXXXX"
 }` + "`" + `)
 
@@ -106,8 +106,8 @@ const advancedSendExamples = [
   -d '{
     "transport": "api",
     "send_mode": "single",
+    "template_id": 1,
     "display_sender_id": "SENDERID",
-    "message_content": "Your OTP is 384221",
     "recipient_number": "91XXXXXXXXXX"
   }'`,
   },
@@ -116,8 +116,8 @@ const advancedSendExamples = [
     code: `const formData = new FormData();
 formData.append('transport', 'api');
 formData.append('send_mode', 'file_numbers');
+formData.append('template_id', '1');
 formData.append('display_sender_id', 'SENDERID');
-formData.append('message_content', 'Festival offer is now live');
 formData.append('source_file', fileInput.files[0]);
 
 await fetch('${BASE_URL}${API_PREFIX}/sms/send/', {
@@ -133,13 +133,9 @@ await fetch('${BASE_URL}${API_PREFIX}/sms/send/', {
 payload = {
     "transport": "smpp",
     "smpp_profile": "standard",
+    "template_id": 1,
     "display_sender_id": "SENDERID",
-    "message_content": "SMPP route test message",
-    "recipient_number": "91XXXXXXXXXX",
-    "smpp_host": "smpp.your-provider.com",
-    "smpp_port": 2775,
-    "smpp_system_id": "your_system_id",
-    "smpp_password": "your_smpp_password",
+    "recipient_number": "91XXXXXXXXXX"
 }
 
 res = requests.post(
@@ -155,16 +151,9 @@ print(res.status_code, res.json())`,
     code: `{
   "transport": "smpp",
   "smpp_profile": "dlt",
+  "template_id": 1,
   "display_sender_id": "SENDERID",
-  "message_content": "Your order #1234 is dispatched.",
-  "recipient_number": "91XXXXXXXXXX",
-  "smpp_host": "smpp.your-provider.com",
-  "smpp_port": 2775,
-  "smpp_system_id": "your_system_id",
-  "smpp_password": "your_smpp_password",
-  "smpp_template_id": "DLT_TEMPLATE_1001",
-  "dlt_entity_id": "DLT_ENTITY_1001",
-  "dlt_telemarketer_id": "DLT_TMK_1001"
+  "recipient_number": "91XXXXXXXXXX"
 }`,
   },
 ];
@@ -412,11 +401,15 @@ const sections = [
   {
     id: 'sms',
     title: 'SMS Operations',
-    description: 'Send SMS, inspect message history/status, and manage groups and short URLs.',
+    description: 'Send approved saved templates, inspect message history/status, and manage templates, groups, and short URLs.',
     endpoints: [
-      { method: 'POST', path: '/sms/send/', auth: 'JWT + Admin', description: 'Send SMS via API/SMPP with optional modes.' },
+      { method: 'POST', path: '/sms/send/', auth: 'JWT + Admin', description: 'Send using an active saved template ID; message content is selected server-side.' },
       { method: 'GET', path: '/sms/messages/', auth: 'JWT', description: 'List SMS history for allowed scope.' },
       { method: 'GET', path: '/sms/messages/{id}/', auth: 'JWT', description: 'Fetch a message status record.' },
+      { method: 'GET', path: '/sms/templates/', auth: 'JWT', description: 'List active templates for sending; admins can list all templates.' },
+      { method: 'POST', path: '/sms/templates/', auth: 'JWT + Admin', description: 'Create an approved SMS template.' },
+      { method: 'PATCH/DELETE', path: '/sms/templates/{template_id}/', auth: 'JWT + Admin', description: 'Edit, deactivate, or delete an SMS template.' },
+      { method: 'GET', path: '/sms/send-options/', auth: 'JWT', description: 'Get configured sender IDs and default sender without provider credentials.' },
       { method: 'GET/PATCH', path: '/sms/credentials/', auth: 'JWT + Admin', description: 'Get/update provider credentials and sender IDs.' },
       { method: 'GET/POST', path: '/sms/groups/', auth: 'JWT + Admin', description: 'Create and list contact groups for campaigns.' },
       { method: 'GET/POST', path: '/sms/short-urls/', auth: 'JWT + Admin', description: 'Create and list short tracking links.' },
