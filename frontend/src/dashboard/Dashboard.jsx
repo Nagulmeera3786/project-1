@@ -26,7 +26,7 @@ const Dashboard = () => {
   const [showServiceSearch, setShowServiceSearch] = useState(false);
   const [serviceSearchQuery, setServiceSearchQuery] = useState('');
   const navigate = useNavigate();
-  const isAdmin = Boolean(user?.is_staff);
+  const isAdmin = localStorage.getItem("isAdmin") === "true";
   const isSupportUser = Boolean(user?.can_view_support_data || user?.is_employee) && !isAdmin;
   const serviceSearchTerm = serviceSearchQuery.trim().toLowerCase();
 

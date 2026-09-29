@@ -1,7 +1,9 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom';
 import { FaChevronDown, FaSearch } from 'react-icons/fa';
-
+import WhatsAppSendPage from "./pages/WhatsAppSendPage";
+import WhatsAppDashboard from "./dashboard/WhatsAppDashboard";
+import AdminWhatsAppDashboard from "./components/AdminWhatsAppDashboard";
 const landingMenus = [
   {
     key: 'products',
@@ -94,10 +96,33 @@ const Reports = lazy(() => import('./components/Reports'));
 const ContactSupportPage = lazy(() => import('./dashboard/ContactSupportPage'));
 const SenderIdRequestPage = lazy(() => import('./dashboard/SenderIdRequestPage'));
 const DashboardLayout = lazy(() => import('./dashboard/Layout'));
+const Inbox = lazy(() => import('./components/WhatsApp_Inbox'));
+const Templates = lazy(() => import('./components/WhatsApp_Templates'));
+const Campaigns = lazy(() => import('./components/WhatsApp_Campaigns'));
+const Analytics = lazy(() => import('./components/WhatsApp_Analytics'));
+const History = lazy(() => import('./components/WhatsApp_History'));
+const Support = lazy(() => import('./components/WhatsApp_Support'));
+const Settings = lazy(() => import('./components/WhatsApp_Settings'));
+const AdminWhatsAppAccounts = lazy(() => import('./components/Admin_WhatsApp_WhatsAppAccounts'));
+const AdminWhatsAppCustomers = lazy(() => import('./components/Admin_WhatsApp_Customers'));
+const AdminWhatsAppMessages = lazy(() => import('./components/Admin_WhatsApp_Messages'));
+const AdminWhatsAppCampaigns = lazy(() => import('./components/Admin_WhatsApp_Campaigns'));
+const AdminWhatsAppTemplates = lazy(() => import('./components/Admin_WhatsApp_Templates'));
+const AdminWhatsAppAutomation = lazy(() => import('./components/Admin_WhatsApp_Automation'));
+const AdminWhatsAppSettings = lazy(() => import('./components/Admin_WhatsApp_Settings'));
+const AdminWhatsAppReports = lazy(() => import('./components/Admin_WhatsApp_Reports'));
+
+
+
+
+
+
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(
+  localStorage.getItem('isAdmin') === 'true'
+);
   const [isSupportUser, setIsSupportUser] = useState(false);
   const [loading, setLoading] = useState(true);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -235,7 +260,7 @@ function App() {
               Sign up
             </Link>
             <Link to="/login" className="bhisha-utility-login" onClick={closeMenu}>
-              Login
+              Sign-in
             </Link>
           </div>
         </div>
@@ -267,6 +292,8 @@ function App() {
                     <span>{menu.label}</span>
                     <FaChevronDown />
                   </button>
+                  
+
 
                   <div className={`bhisha-dropdown ${openMenu === menu.key ? 'open' : ''}`}>
                     {menu.items.map((item) => (
@@ -302,14 +329,11 @@ function App() {
           path="/signup"
           element={wrapModule('Signup', isLoggedIn ? <Navigate to="/dashboard" replace /> : <Signup />)}
         />
-        <Route
+        <Route 
           path="/verify-otp"
-          element={wrapModule('Verify OTP', isLoggedIn ? <Navigate to="/dashboard" replace /> : <VerifyOtp />)}
+          element={wrapModule('Verify OTP', isLoggedIn ? <Navigate to={isAdmin ? "/admin/whatsapp/dashboard" : "/dashboard"} replace /> : <VerifyOtp />)} 
         />
-        <Route
-          path="/login"
-          element={wrapModule('Login', isLoggedIn ? <Navigate to="/dashboard" replace /> : <Login />)}
-        />
+        <Route path="/login" element={wrapModule('Login', isLoggedIn ? <Navigate to="/dashboard" replace /> : <Login />)} />
         <Route path="/forgot-password" element={wrapModule('Forgot Password', <ForgotPassword />)} />
         <Route path="/reset-password" element={wrapModule('Reset Password', <ResetPassword />)} />
         <Route path="/profile" element={privateRoute('Profile', <UserProfile />)} />
@@ -320,6 +344,25 @@ function App() {
         <Route path="/dashboard/recharge" element={privateRoute('Recharge & Payments', <DashboardLayout page="recharge" />)} />
         <Route path="/dashboard/contact-support" element={privateRoute('Contact Support', <DashboardLayout page="contactSupport" />)} />
         <Route path="/dashboard/sender-id-request" element={privateRoute('Sender ID Request', <SenderIdRequestPage />)} />
+        <Route path="/whatsapp/send" element={privateRoute('WhatsApp Send', <WhatsAppSendPage />)} />
+        <Route path="/whatsapp/dashboard" element={privateRoute('WhatsApp Dashboard', <WhatsAppDashboard />)} />
+        <Route path="/whatsapp/inbox" element={privateRoute('WhatsApp Inbox', <Inbox />)} />
+        <Route path="/whatsapp/templates" element={privateRoute('WhatsApp Templates', <Templates />)} />
+        <Route path="/whatsapp/campaigns" element={privateRoute('WhatsApp Campaigns', <Campaigns />)} />
+        <Route path="/whatsapp/Analytics" element={privateRoute('WhatsApp Analytics', <Analytics />)} />
+        <Route path="/whatsapp/History" element={privateRoute('WhatsApp History', <History />)} />
+        <Route path="/whatsapp/Settings" element={privateRoute('WhatsApp Settings', <Settings />)} />
+        <Route path="/whatsapp/Support" element={privateRoute('WhatsApp Support', <Support />)} />
+        <Route path="/admin/whatsapp/dashboard" element={privateRoute('Admin WhatsApp Dashboard', <AdminWhatsAppDashboard />)} />
+        <Route path="/admin/whatsapp/accounts" element={adminRoute('Admin WhatsApp Accounts', <AdminWhatsAppAccounts />)} />
+        <Route path="/admin/whatsapp/customers" element={adminRoute('Admin WhatsApp Customers', <AdminWhatsAppCustomers />)} />
+        <Route path="/admin/whatsapp/messages" element={adminRoute('Admin WhatsApp Messages', <AdminWhatsAppMessages />)} />
+        <Route path="/admin/whatsapp/campaigns" element={adminRoute('Admin WhatsApp Campaigns', <AdminWhatsAppCampaigns />)} />
+        <Route path="/admin/whatsapp/templates" element={adminRoute('Admin WhatsApp Templates', <AdminWhatsAppTemplates />)} />
+        <Route path="/admin/whatsapp/automation" element={adminRoute('Admin WhatsApp Automation', <AdminWhatsAppAutomation />)} />
+        <Route path="/admin/whatsapp/settings" element={adminRoute('Admin WhatsApp Settings', <AdminWhatsAppSettings />)} />
+        <Route path="/admin/whatsapp/reports" element={adminRoute('Admin WhatsApp Reports', <AdminWhatsAppReports />)} />
+
 
         {/* SMS Routes */}
         <Route path="/sms/send" element={adminRoute('SMS Send', <SMSSend />)} />
@@ -330,6 +373,7 @@ function App() {
           path="/admin/sms/credentials"
           element={supportRoute('Support SMS Credentials', <AdminSMSCredentials />)}
         />
+        
         <Route path="/admin/notifications" element={supportRoute('Support Notifications', <AdminNotifications />)} />
         <Route path="/broadcast/email-validation" element={privateRoute('Email Validation', <EmailValidation />)} />
         <Route path="/reports" element={privateRoute('Reports', <Reports />)} />
@@ -339,7 +383,8 @@ function App() {
         <Route path="/privacy-notice" element={wrapModule('Privacy Notice', <PrivacyNotice />)} />
         <Route path="/terms-of-use" element={wrapModule('Terms of Use', <TermsOfUse />)} />
         <Route path="/bhisha-for-startups" element={wrapModule('Bhisha for Startups', <BhishaForStartups />)} />
-        
+         
+
         <Route path="/" element={wrapModule('Home', <MainPage />)} />
       </Routes>
     </BrowserRouter>

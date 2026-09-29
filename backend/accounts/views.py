@@ -1,4 +1,5 @@
 from rest_framework import status, generics, permissions
+from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.conf import settings
@@ -17,6 +18,8 @@ from django.core.validators import validate_email
 from decimal import Decimal, InvalidOperation
 from django.http import HttpResponseRedirect, Http404
 from django.views import View
+
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -9332,3 +9335,9 @@ class AdminEmployeeListView(generics.ListAPIView):
             )
         return Response(payload, status=status.HTTP_200_OK)
 
+class WhatsAppAccountOverviewView(APIView):
+    def get(self, request):
+        return Response({
+            "account_name": settings.WHATSAPP_ACCOUNT_NAME,
+            "account_id": settings.WHATSAPP_ACCOUNT_ID
+        })

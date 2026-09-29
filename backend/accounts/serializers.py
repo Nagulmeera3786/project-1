@@ -19,6 +19,10 @@ from .models import (
     SenderIdRequest,
     EmailValidationIPWhitelistRequest,
     Employee,
+    WhatsAppAccount,
+    WhatsAppNumber,
+
+    
 )
 from .utils import calculate_sms_segments
 
@@ -769,4 +773,5 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'admin_otp_verified', 'employee_otp_verified', 'department',
             'created_at', 'updated_at'
         ]
+
 

@@ -50,6 +50,9 @@ from .views import (
     EmployeeVerifyDualOTPView,
     EmployeeLoginView,
     AdminEmployeeListView,
+    WhatsAppAccountOverviewView,
+    
+    
 )
 from .download_views import (
     EmailValidationDownloadView,
@@ -69,6 +72,8 @@ urlpatterns = [
     path('admin/users/<int:user_id>/permissions/', AdminUserPermissionView.as_view(), name='admin-user-permissions'),
     path('admin/users/export/', AdminUsersExportView.as_view(), name='admin-users-export'),
     path('confirm-admin-promotion/', ConfirmAdminPromotionView.as_view(), name='confirm-admin-promotion'),
+    path("whatsapp-account-overview/", WhatsAppAccountOverviewView.as_view(), name="whatsapp-account-overview"),
+    
     
     # SMS endpoints
     path('sms/send/', SMSSendView.as_view(), name='sms-send'),

@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 env_path = os.path.join(BASE_DIR, '.env')
 load_dotenv(env_path)
 
+WHATSAPP_ACCOUNT_NAME = os.getenv("WHATSAPP_ACCOUNT_NAME", "")
+WHATSAPP_ACCOUNT_ID = os.getenv("WHATSAPP_ACCOUNT_ID", "")
 
 def _env_bool(name, default=False):
     value = os.environ.get(name)
@@ -93,6 +95,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'accounts',
+    
 ]
 
 MIDDLEWARE = [
@@ -202,6 +205,17 @@ if RUNNING_TESTS and _env_bool('USE_SQLITE_FOR_TESTS', DEBUG):
             # timeout makes concurrent writes retry instead of failing.
             'OPTIONS': {'timeout': int(_env_text('SQLITE_TEST_TIMEOUT', 30))},
             'TEST': {'NAME': str(BASE_DIR / 'test_db.sqlite3')},
+        }
+    }
+
+# Local developer convenience: if running with DEBUG and a local sqlite file exists,
+# prefer it so developers can run the project without a local Postgres server.
+local_sqlite_path = BASE_DIR / 'db.sqlite3'
+if DEBUG and local_sqlite_path.exists():
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': str(local_sqlite_path),
         }
     }
 

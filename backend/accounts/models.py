@@ -526,3 +526,44 @@ class Employee(models.Model):
     def __str__(self):
         return f"Employee: {self.user.email} ({self.status})"
 
+
+class WhatsAppAccount(models.Model):
+    account_name = models.CharField(max_length=150)
+    account_id = models.CharField(max_length=100, unique=True)
+    status = models.CharField(max_length=30, default="Active")
+    active_users = models.PositiveIntegerField(default=0)
+    created_on = models.DateField(auto_now_add=True)
+
+    def __str__(self):
+        return self.account_name
+
+
+class WhatsAppNumber(models.Model):
+    account = models.ForeignKey(
+        WhatsAppAccount,
+        on_delete=models.CASCADE,
+        related_name="whatsapp_numbers"
+    )
+    country = models.CharField(max_length=100)
+    country_code = models.CharField(max_length=10)
+    phone_number = models.CharField(max_length=30)
+    number_type = models.CharField(
+        max_length=100,
+        default="WhatsApp Number"
+    )
+    display_name = models.CharField(
+        max_length=150,
+        blank=True
+    )
+    business_category = models.CharField(
+        max_length=100,
+        default="Business"
+    )
+    status = models.CharField(
+        max_length=30,
+        default="Pending"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.country_code} {self.phone_number}"
