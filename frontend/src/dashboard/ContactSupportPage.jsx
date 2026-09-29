@@ -39,7 +39,7 @@ const contactCards = [
 const ContactSupportPage = () => {
   return (
     <div className="dashboard-shell">
-      <h2 className="welcome-text" style={{ marginTop: 0 }}>Contact Support</h2>
+     <h2 className="welcome-text" style={{ marginTop: 0 }}>Contact Support</h2>
       <p style={{ color: "#475569", marginTop: "-8px", marginBottom: "16px" }}>
         Reach the support team through your preferred channel.
       </p>

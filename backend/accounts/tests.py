@@ -700,6 +700,9 @@ class SMSSendModesFlowTests(TestCase):
                 'dest_addr_npi': 1,
                 'data_coding': 0,
                 'registered_delivery': True,
+                'dlt_template_id': 'DLT-TEMPLATE-123',
+                'dlt_entity_id': 'DLT-ENTITY-456',
+                'dlt_telemarketer_id': 'DLT-TM-789',
             },
             'APPROVEDID',
             '919876543210',
@@ -709,6 +712,11 @@ class SMSSendModesFlowTests(TestCase):
         self.assertEqual(result['message_id'], 'provider-message-123')
         client.set_message_received_handler.assert_called_once()
         client.read_once.assert_called_once_with(auto_send_enquire_link=False)
+        self.assertEqual(client.send_message.call_args.kwargs['optional_parameters'], {
+            0x1400: b'DLT-ENTITY-456',
+            0x1401: b'DLT-TEMPLATE-123',
+            0x1402: b'DLT-TM-789',
+        })
 
     @patch('accounts.views.SMSSendView._send_sms_via_api')
     def test_send_personalized_file_mode(self, mock_send):

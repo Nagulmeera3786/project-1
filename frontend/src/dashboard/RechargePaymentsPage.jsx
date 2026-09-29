@@ -80,6 +80,7 @@ const RechargePaymentsPage = () => {
     gateway_configured: false,
   });
   const [enteredAmount, setEnteredAmount] = useState("");
+  const [walletType, setWalletType] = useState("sms");
   const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHODS.upi);
   const [cardForm, setCardForm] = useState({
     number: "",
@@ -164,7 +165,8 @@ const RechargePaymentsPage = () => {
   }, [statusFilter, payments]);
 
   const creditCards = [
-    { title: "Wallet Balance", value: profile ? formatNumeric(profile.wallet_balance) : "0", note: "Available credit in your account" },
+    { title: "SMS Wallet Balance", value: profile ? formatNumeric(profile.sms_wallet_balance ?? profile.wallet_balance) : "0", note: "Available SMS sending credits" },
+    { title: "Email Validation Wallet", value: profile ? formatNumeric(profile.email_validation_balance) : "0", note: "Available email-validation credits" },
     { title: "Messages Available", value: profile ? formatNumeric(profile.sms_available_messages) : "0", note: "Messages remaining for current usage" },
     { title: "Messages Used", value: profile ? formatNumeric(profile.sms_used_messages) : "0", note: "Messages consumed from your allocation" },
     { title: "Total Limit", value: profile ? formatNumeric(profile.sms_total_limit) : "0", note: "Total messaging capacity assigned to your profile" },
@@ -254,6 +256,7 @@ const RechargePaymentsPage = () => {
 
       const orderResponse = await API.post("wallet/recharge/create-order/", {
         amount: chargeSummary.entered.toFixed(2),
+        wallet_type: walletType,
         payment_method: paymentMethod,
       });
 
@@ -278,6 +281,7 @@ const RechargePaymentsPage = () => {
         },
         notes: {
           wallet_credit_amount: String(chargeSummary.entered.toFixed(2)),
+          wallet_type: walletType,
           service_charge_amount: String(chargeSummary.serviceCharge.toFixed(2)),
           tax_amount: String(chargeSummary.tax.toFixed(2)),
           selected_payment_method: paymentMethod,
@@ -292,7 +296,7 @@ const RechargePaymentsPage = () => {
 
             const paymentSummary = verifyResponse?.data?.payment || null;
             setLastPaymentSummary(paymentSummary);
-            setSuccess("Order Confirmed. Payment successful and wallet credited.");
+            setSuccess(`Order Confirmed. Payment successful; ${walletType === 'sms' ? 'SMS' : 'email validation'} wallet credited.`);
             await Promise.all([fetchProfile(), fetchPayments()]);
             setEnteredAmount("");
           } catch (verifyError) {
@@ -396,6 +400,34 @@ const RechargePaymentsPage = () => {
             </p>
 
             <div style={{ display: "grid", gap: "14px", maxWidth: "560px" }}>
+              <div style={{ display: "grid", gap: "8px" }}>
+                <span style={{ fontWeight: 600, color: "#1f2937" }}>Wallet to recharge</span>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  {[
+                    { key: "sms", label: "SMS Wallet" },
+                    { key: "email_validation", label: "Email Validation Wallet" },
+                  ].map((wallet) => (
+                    <button
+                      key={wallet.key}
+                      type="button"
+                      onClick={() => setWalletType(wallet.key)}
+                      aria-pressed={walletType === wallet.key}
+                      style={{
+                        border: walletType === wallet.key ? "2px solid #167d68" : "1px solid #d1d5db",
+                        background: walletType === wallet.key ? "#edf8f0" : "#ffffff",
+                        color: "#1f2937",
+                        borderRadius: "6px",
+                        padding: "9px 12px",
+                        cursor: "pointer",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {wallet.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <label style={{ display: "grid", gap: "8px" }}>
                 <span style={{ fontWeight: 600, color: "#1f2937" }}>Recharge Amount</span>
                 <input
@@ -543,7 +575,7 @@ const RechargePaymentsPage = () => {
                     Total Payable: <strong>{formatCurrency(chargeSummary.total, chargeSummary.currency)}</strong>
                   </div>
                   <div style={{ color: "#6b7280" }}>
-                    Wallet Credit on success: <strong>{formatCurrency(chargeSummary.entered, chargeSummary.currency)}</strong>
+                    {walletType === 'sms' ? 'SMS wallet credit' : 'Email validation wallet credit'} on success: <strong>{formatCurrency(chargeSummary.entered, chargeSummary.currency)}</strong>
                   </div>
                 </div>
               </div>
@@ -563,7 +595,7 @@ const RechargePaymentsPage = () => {
                 <div style={{ border: "1px solid #d1fae5", borderRadius: "12px", padding: "14px", background: "#ecfdf5" }}>
                   <div style={{ fontWeight: 700, color: "#065f46", marginBottom: "6px" }}>Last Payment Completed</div>
                   <div style={{ fontSize: "14px", color: "#065f46" }}>
-                    Added: {formatCurrency(lastPaymentSummary.entered_amount, lastPaymentSummary.currency)} | Service: {formatCurrency(lastPaymentSummary.service_charge_amount, lastPaymentSummary.currency)} | Tax: {formatCurrency(lastPaymentSummary.tax_amount, lastPaymentSummary.currency)}
+                    {lastPaymentSummary.wallet_type === 'email_validation' ? 'Email validation wallet' : 'SMS wallet'} · Added: {formatCurrency(lastPaymentSummary.entered_amount, lastPaymentSummary.currency)} | Service: {formatCurrency(lastPaymentSummary.service_charge_amount, lastPaymentSummary.currency)} | Tax: {formatCurrency(lastPaymentSummary.tax_amount, lastPaymentSummary.currency)}
                   </div>
                 </div>
               )}
@@ -609,6 +641,7 @@ const RechargePaymentsPage = () => {
                   <thead>
                     <tr style={{ textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
                       <th style={{ padding: "10px 8px" }}>Order ID</th>
+                      <th style={{ padding: "10px 8px" }}>Wallet</th>
                       <th style={{ padding: "10px 8px" }}>Entered Amount</th>
                       <th style={{ padding: "10px 8px" }}>Service Charge</th>
                       <th style={{ padding: "10px 8px" }}>Tax</th>
@@ -624,6 +657,7 @@ const RechargePaymentsPage = () => {
                       return (
                         <tr key={row.id} style={{ borderBottom: "1px solid #eef2ff" }}>
                           <td style={{ padding: "10px 8px", fontWeight: 600 }}>{row.razorpay_order_id}</td>
+                          <td style={{ padding: "10px 8px" }}>{row.wallet_type === 'email_validation' ? 'Email validation' : 'SMS'}</td>
                           <td style={{ padding: "10px 8px" }}>{formatCurrency(row.entered_amount, row.currency)}</td>
                           <td style={{ padding: "10px 8px" }}>{formatCurrency(row.service_charge_amount, row.currency)}</td>
                           <td style={{ padding: "10px 8px" }}>{formatCurrency(row.tax_amount, row.currency)}</td>
@@ -651,7 +685,7 @@ const RechargePaymentsPage = () => {
                     })}
                     {!filteredPayments.length && (
                       <tr>
-                        <td colSpan={7} style={{ padding: "12px 8px", color: "#6b7280" }}>
+                        <td colSpan={8} style={{ padding: "12px 8px", color: "#6b7280" }}>
                           No payment records found.
                         </td>
                       </tr>

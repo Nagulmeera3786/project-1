@@ -93,9 +93,21 @@ export default function Login() {
       localStorage.setItem('access', res.data.access);
       localStorage.setItem('refresh', res.data.refresh);
       localStorage.setItem('authToken', res.data.access);
+      localStorage.setItem('isAdmin', res.data.is_admin);
+      window.dispatchEvent(new Event('auth-changed'));
+      
+      console.log("LOGIN RESPONSE:", res.data);
+      console.log("ADMIN LOGIN SUCCESS");
+
+      if (res.data.is_admin) {
+  nav("/dashboard", { replace: true });
+} else {
+  nav("/dashboard", { replace: true });
+}
+
       // Use window.location to force refresh and update isLoggedIn state
-      window.location.href = '/dashboard';
-    } catch (err) {
+      //window.location.reload();
+          } catch (err) {
       const requiresOtp = Boolean(err.response?.data?.requires_otp_verification);
       if (requiresOtp) {
         const emailForVerify = err.response?.data?.email || email;

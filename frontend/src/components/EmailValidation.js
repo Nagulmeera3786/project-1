@@ -217,7 +217,7 @@ export default function EmailValidation() {
         const currentProviderEmailBalance = wallet.data?.provider_email_balance;
         const currentMillionVerifierBalance = wallet.data?.millionverifier_email_balance;
         const currentProviderMessageBalance = wallet.data?.provider_message_balance;
-        const validationBalance = wallet.data?.balance;
+        const validationBalance = wallet.data?.email_validation_balance ?? wallet.data?.balance;
         const providerMode = String(wallet.data?.email_validation_provider_mode || 'own_system').toLowerCase();
         setIsAdmin(adminUser);
         setCanViewSupportData(supportUser);
@@ -246,7 +246,7 @@ export default function EmailValidation() {
       const currentProviderEmailBalance = refreshedWallet.data?.provider_email_balance;
       const currentMillionVerifierBalance = refreshedWallet.data?.millionverifier_email_balance;
       const currentProviderMessageBalance = refreshedWallet.data?.provider_message_balance;
-      const validationBalance = refreshedWallet.data?.balance;
+      const validationBalance = refreshedWallet.data?.email_validation_balance ?? refreshedWallet.data?.balance;
       const providerMode = String(refreshedWallet.data?.email_validation_provider_mode || validationProviderMode || 'own_system').toLowerCase();
       setWalletBalance(String(validationBalance ?? preferResponseBalance ?? walletBalance));
       setValidationProviderMode(providerMode);
@@ -1061,7 +1061,7 @@ export default function EmailValidation() {
       setSelectedUserCreditDraft({ add_message_credits: '', add_email_validation_credits: '' });
       await loadUserHistory(selectedUserDetails.id);
       setError('');
-      setInfo(`Credits updated. Unified wallet: ${response.data?.message_credits || response.data?.email_validation_credits || '0'}`);
+      setInfo(`Credits updated. SMS wallet: ${response.data?.message_credits || '0'}; email validation wallet: ${response.data?.email_validation_credits || '0'}.`);
     } catch (err) {
       setError(getProfessionalErrorMessage(err, 'Could not update user credits.'));
     }
@@ -1376,7 +1376,7 @@ export default function EmailValidation() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px', marginBottom: '16px' }}>
         <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '12px' }}>
-          <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>Unified Wallet Balance</div>
+          <div style={{ color: '#6b7280', fontSize: '12px', fontWeight: 700 }}>Email Validation Wallet</div>
           <div style={{ color: '#111827', fontSize: '24px', fontWeight: 800 }}>{walletBalance}</div>
         </div>
         <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '12px' }}>
@@ -2048,7 +2048,8 @@ export default function EmailValidation() {
               <div style={{ marginBottom: '10px', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '10px', background: '#f8fafc' }}>
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>User ID:</strong> {selectedUserDetails.id}</div>
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Email:</strong> {selectedUserDetails.email}</div>
-                <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Unified Wallet Credits (SMS + Email):</strong> {selectedUserDetails.wallet_balance || selectedUserDetails.email_validation_balance || '0'}</div>
+                <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>SMS wallet:</strong> {selectedUserDetails.wallet_balance ?? '0'}</div>
+                <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>Email validation wallet:</strong> {selectedUserDetails.email_validation_balance ?? '0'}</div>
                 <div style={{ fontSize: '13px', color: '#1f2937' }}><strong>API Keys:</strong> {selectedUserDetails.api_key_count || 0}</div>
 
                 <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #e2e8f0' }}>

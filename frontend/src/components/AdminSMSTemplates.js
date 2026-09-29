@@ -98,6 +98,27 @@ export default function AdminSMSTemplates() {
     }
   };
 
+  const reviewTemplate = async (template, approvalStatus) => {
+    const reviewNote = approvalStatus === 'rejected'
+      ? window.prompt(`Reason for rejecting "${template.name}"?`, '')
+      : '';
+    if (reviewNote === null) {
+      return;
+    }
+    setError('');
+    setSuccess('');
+    try {
+      await API.patch(`sms/templates/${template.id}/`, {
+        approval_status: approvalStatus,
+        review_note: reviewNote,
+      });
+      setSuccess(`Template ${approvalStatus}`);
+      await loadTemplates();
+    } catch (err) {
+      setError(getProfessionalErrorMessage(err, 'Could not review SMS template'));
+    }
+  };
+
   const deleteTemplate = async (template) => {
     if (!window.confirm(`Delete template "${template.name}"?`)) {
       return;
@@ -146,14 +167,20 @@ export default function AdminSMSTemplates() {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                       <strong>{template.name}</strong>
+                      <span style={{ padding: '2px 7px', borderRadius: '4px', background: template.approval_status === 'approved' ? '#e7f6f1' : template.approval_status === 'rejected' ? '#fef3f2' : '#fff7e6', color: template.approval_status === 'approved' ? '#167d68' : template.approval_status === 'rejected' ? '#b42318' : '#8a5a00', fontSize: '11px' }}>{(template.approval_status || 'approved').toUpperCase()}</span>
                       <span style={{ padding: '2px 7px', borderRadius: '4px', background: template.is_active ? '#e7f6f1' : '#f2f4f7', color: template.is_active ? '#167d68' : '#667085', fontSize: '11px' }}>{template.is_active ? 'ACTIVE' : 'INACTIVE'}</span>
                     </div>
                     <div style={{ marginTop: '5px', fontSize: '12px', color: '#667085' }}>{template.sms_type} · Sender ID: {template.sender_id || 'Default'}</div>
                     <p style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '13px', color: '#344054' }}>{template.message_content}</p>
+                    {template.review_note && <p style={{ margin: '6px 0 0', color: '#b42318', fontSize: '12px' }}>Review note: {template.review_note}</p>}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '7px' }}>
                     <button type="button" onClick={() => editTemplate(template)} style={{ padding: '6px 9px', border: '1px solid #d0d5dd', borderRadius: '5px', background: '#fff', cursor: 'pointer' }}>Edit</button>
-                    <button type="button" onClick={() => toggleActive(template)} style={{ padding: '6px 9px', border: '1px solid #d0d5dd', borderRadius: '5px', background: '#fff', cursor: 'pointer' }}>{template.is_active ? 'Disable' : 'Enable'}</button>
+                    {template.approval_status === 'approved' && <button type="button" onClick={() => toggleActive(template)} style={{ padding: '6px 9px', border: '1px solid #d0d5dd', borderRadius: '5px', background: '#fff', cursor: 'pointer' }}>{template.is_active ? 'Disable' : 'Enable'}</button>}
+                    {template.approval_status !== 'approved' && <>
+                      <button type="button" onClick={() => reviewTemplate(template, 'approved')} style={{ padding: '6px 9px', border: '1px solid #abefc6', borderRadius: '5px', background: '#ecfdf3', color: '#067647', cursor: 'pointer' }}>Approve</button>
+                      <button type="button" onClick={() => reviewTemplate(template, 'rejected')} style={{ padding: '6px 9px', border: '1px solid #fecdca', borderRadius: '5px', background: '#fef3f2', color: '#b42318', cursor: 'pointer' }}>Reject</button>
+                    </>}
                     <button type="button" aria-label={`Delete ${template.name}`} title="Delete template" onClick={() => deleteTemplate(template)} style={{ display: 'grid', placeItems: 'center', width: '32px', height: '32px', border: '1px solid #fecdca', borderRadius: '5px', background: '#fff', color: '#b42318', cursor: 'pointer' }}><FaTrash /></button>
                   </div>
                 </article>

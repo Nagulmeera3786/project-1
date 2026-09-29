@@ -1,4 +1,5 @@
 from rest_framework import status, generics, permissions
+from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.conf import settings
@@ -12,11 +13,14 @@ from django.db import connection
 from django.db import transaction
 from django.db import close_old_connections
 from django.db.models import Q, Count, F
+from django.db.models.functions import TruncDate
 from django.core.mail import get_connection, EmailMessage
 from django.core.validators import validate_email
 from decimal import Decimal, InvalidOperation
 from django.http import HttpResponseRedirect, Http404
 from django.views import View
+
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -51,6 +55,7 @@ from .serializers import (
     SignupSerializer, OTPVerifySerializer, LoginSerializer,
     ForgotPasswordSerializer, ResetPasswordSerializer,
     SMSMessageSerializer, SMSSendSerializer, SMSCredentialSerializer, SMSTemplateSerializer,
+    WhatsAppTemplateSerializer,
     UserSMSEligibilitySerializer, SMSMessageStatusSerializer,
     SMSContactGroupSerializer, SMSContactGroupCreateSerializer,
     SMSShortURLSerializer,
@@ -83,6 +88,9 @@ from .models import Employee
 from .models import (
     SMSMessage,
     SMSTemplate,
+    WhatsAppCampaign,
+    WhatsAppMessage,
+    WhatsAppTemplate,
     SMSCredential,
     SMSContactGroup,
     SMSContact,
@@ -346,7 +354,6 @@ def _otp_email_diagnostics(email_sent):
 
 
 def _get_sms_provider_config():
-    preferred_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or '').strip()
     cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
     if cred:
         db_user = (cred.user or '').strip()
@@ -358,7 +365,6 @@ def _get_sms_provider_config():
                 'user': db_user,
                 'password': db_password,
                 'sender_ids': db_sender_ids,
-                'default_sender_id': preferred_sender_id or str(getattr(cred, 'free_trial_default_sender_id', '') or '').strip() or (db_sender_ids[0] if db_sender_ids else ''),
                 'source': 'database',
             }
 
@@ -371,7 +377,6 @@ def _get_sms_provider_config():
             'user': env_user,
             'password': env_password,
             'sender_ids': sender_ids,
-            'default_sender_id': preferred_sender_id or (sender_ids[0] if sender_ids else ''),
             'source': 'env',
         }
 
@@ -379,7 +384,6 @@ def _get_sms_provider_config():
 
 
 def _get_admin_managed_sms_provider_config():
-    preferred_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or '').strip()
     cred = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
     if cred:
         db_user = (cred.user or '').strip()
@@ -393,7 +397,6 @@ def _get_admin_managed_sms_provider_config():
                 'password': db_password,
                 'sender_ids': db_sender_ids,
                 'free_trial_default_sender_id': db_free_trial_sender_id,
-                'default_sender_id': preferred_sender_id or db_free_trial_sender_id or (db_sender_ids[0] if db_sender_ids else ''),
                 'source': 'database',
             }
 
@@ -408,7 +411,6 @@ def _get_admin_managed_sms_provider_config():
             'password': env_password,
             'sender_ids': env_sender_ids,
             'free_trial_default_sender_id': env_free_trial_sender_id,
-            'default_sender_id': preferred_sender_id or env_free_trial_sender_id or (env_sender_ids[0] if env_sender_ids else ''),
             'source': 'env',
         }
 
@@ -3132,7 +3134,7 @@ def _get_or_create_wallet(user):
 
 def _get_email_validation_wallet_balance(user):
     wallet = _get_or_create_wallet(user)
-    return Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
+    return Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
 
 
 def _get_email_validation_cost_per_request():
@@ -3479,8 +3481,7 @@ def _deduct_sms_credits(user, message_count):
         raise ValueError('Insufficient messaging credits.')
 
     wallet.balance = (current_balance - total_cost).quantize(Decimal('0.0001'))
-    wallet.email_validation_balance = wallet.balance
-    wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
+    wallet.save(update_fields=['balance', 'updated_at'])
     return total_cost, wallet.balance
 
 
@@ -3533,15 +3534,14 @@ def _deduct_email_validation_credits(user, email_count):
         return Decimal('0.0000'), Decimal(str(available_balance)).quantize(Decimal('0.0001'))
 
     wallet = _get_or_create_wallet(user)
-    wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
+    wallet_balance = Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
 
     if wallet_balance < total_cost:
         raise ValueError('Insufficient email validation credits.')
 
-    wallet.balance = (wallet_balance - total_cost).quantize(Decimal('0.0001'))
-    wallet.email_validation_balance = wallet.balance
-    wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
-    return total_cost, wallet.balance
+    wallet.email_validation_balance = (wallet_balance - total_cost).quantize(Decimal('0.0001'))
+    wallet.save(update_fields=['email_validation_balance', 'updated_at'])
+    return total_cost, wallet.email_validation_balance
 
 
 def _validate_email_list_with_verifalia(unique_emails):
@@ -5227,6 +5227,8 @@ class UserProfileView(generics.GenericAPIView):
             'sms_used_percentage': usage_summary['used_percentage'],
             'sms_available_percentage': usage_summary['available_percentage'],
             'wallet_balance': usage_summary['wallet_balance'],
+            'sms_wallet_balance': usage_summary['wallet_balance'],
+            'email_validation_balance': str(_get_email_validation_wallet_balance(user)),
             'free_trial_limit': FREE_TRIAL_MESSAGE_LIMIT,
             'free_trial_verified_numbers_count': verified_numbers_count,
             'free_trial_service_sender_id': resolved_free_trial_sender_id,
@@ -5501,6 +5503,10 @@ class SMSSendView(generics.CreateAPIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def create(self, request, *args, **kwargs):
+        guard = _primary_admin_guard(request)
+        if guard:
+            return guard
+
         self._process_due_scheduled_messages()
 
         serializer = self.get_serializer(data=request.data)
@@ -5511,35 +5517,16 @@ class SMSSendView(generics.CreateAPIView):
         display_sender_id = validated_data['display_sender_id']
         sms_type = validated_data['sms_type']
         message_content = validated_data['message_content']
-        sms_template = validated_data['sms_template']
         send_mode = validated_data.get('send_mode') or 'single'
         delivery_mode = validated_data.get('delivery_mode') or 'instant'
         destination_country = validated_data.get('destination_country') or 'OTHER'
-        dlt_template_id = str(
-            (getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') if transport == 'smpp' else validated_data.get('dlt_template_id'))
-            or getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or ''
-        ).strip()
-        dlt_entity_id = str(
-            (getattr(settings, 'SMS_DLT_ENTITY_ID', '') if transport == 'smpp' else validated_data.get('dlt_entity_id'))
-            or getattr(settings, 'SMS_DLT_ENTITY_ID', '') or ''
-        ).strip()
-        dlt_telemarketer_id = str(
-            (getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') if transport == 'smpp' else validated_data.get('dlt_telemarketer_id'))
-            or getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or ''
-        ).strip()
+        dlt_template_id = str(validated_data.get('dlt_template_id') or getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip()
+        dlt_entity_id = str(validated_data.get('dlt_entity_id') or getattr(settings, 'SMS_DLT_ENTITY_ID', '') or '').strip()
+        dlt_telemarketer_id = str(validated_data.get('dlt_telemarketer_id') or getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip()
 
-        is_wallet_exempt = bool(request.user.is_staff or request.user.is_superuser)
-        if not _has_admin_access(request.user):
-            sender_options = SMSSendOptionsView.get_sender_options()
-            allowed_sender_ids = set(sender_options['sender_ids'])
-            if display_sender_id not in allowed_sender_ids:
-                return Response(
-                    {'detail': 'Select a sender ID configured by the administrator.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        usage_summary = _get_user_sms_usage_summary(request.user) if not is_wallet_exempt else {}
+        usage_summary = _get_user_sms_usage_summary(request.user)
         wallet_balance = usage_summary.get('wallet_balance')
-        if not is_wallet_exempt and wallet_balance is not None:
+        if wallet_balance is not None:
             try:
                 if float(wallet_balance) <= 0:
                     return Response(
@@ -5572,13 +5559,12 @@ class SMSSendView(generics.CreateAPIView):
         else:
             dispatch_config.update(self._build_smpp_config(validated_data))
 
-        dispatch_config['destination_country'] = destination_country
-        if transport == 'api':
-            dispatch_config.update({
-                'dlt_template_id': dlt_template_id,
-                'dlt_entity_id': dlt_entity_id,
-                'dlt_telemarketer_id': dlt_telemarketer_id,
-            })
+        dispatch_config.update({
+            'destination_country': destination_country,
+            'dlt_template_id': dlt_template_id,
+            'dlt_entity_id': dlt_entity_id,
+            'dlt_telemarketer_id': dlt_telemarketer_id,
+        })
 
         if send_mode == 'single':
             recipient_user_id = validated_data.get('recipient_user_id')
@@ -5589,11 +5575,10 @@ class SMSSendView(generics.CreateAPIView):
             if destination_country == 'IN' and not _is_indian_number(recipient_number):
                 return Response({'detail': 'Selected destination country is India, but recipient number is not a valid Indian number'}, status=status.HTTP_400_BAD_REQUEST)
 
-            if not is_wallet_exempt:
-                try:
-                    _, remaining_sms_balance = _deduct_sms_credits(request.user, 1)
-                except ValueError as exc:
-                    return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+            try:
+                _, remaining_sms_balance = _deduct_sms_credits(request.user, 1)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
             recipient_user = None
             try:
@@ -5608,7 +5593,6 @@ class SMSSendView(generics.CreateAPIView):
                 request=request,
                 recipient_number=recipient_number,
                 recipient_user=recipient_user,
-                sms_template=sms_template,
                 display_sender_id=display_sender_id,
                 message_content=message_content,
                 sms_type=sms_type,
@@ -5620,7 +5604,7 @@ class SMSSendView(generics.CreateAPIView):
             )
 
             send_result = self._dispatch_or_schedule_message(sms_msg, dispatch_config)
-            if transport == 'api' and _has_admin_access(request.user):
+            if transport == 'api':
                 self._persist_sender_id(provider_config, display_sender_id)
 
             response_payload = SMSMessageSerializer(sms_msg).data
@@ -5709,11 +5693,10 @@ class SMSSendView(generics.CreateAPIView):
         if payable_target_count <= 0:
             return Response({'detail': 'No valid recipients found for selected mode'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if not is_wallet_exempt:
-            try:
-                _, remaining_sms_balance = _deduct_sms_credits(request.user, payable_target_count)
-            except ValueError as exc:
-                return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+        try:
+            _, remaining_sms_balance = _deduct_sms_credits(request.user, payable_target_count)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
         sent_count = 0
         failed_count = 0
@@ -5738,7 +5721,6 @@ class SMSSendView(generics.CreateAPIView):
                 request=request,
                 recipient_number=target['recipient_number'],
                 recipient_user=None,
-                sms_template=sms_template,
                 display_sender_id=display_sender_id,
                 message_content=target['message_content'],
                 sms_type=sms_type,
@@ -5767,7 +5749,7 @@ class SMSSendView(generics.CreateAPIView):
             if sms_msg.message_id:
                 message_ids.append(sms_msg.message_id)
 
-        if transport == 'api' and _has_admin_access(request.user):
+        if transport == 'api':
             self._persist_sender_id(provider_config, display_sender_id)
 
         return Response(
@@ -5800,22 +5782,22 @@ class SMSSendView(generics.CreateAPIView):
 
     def _build_smpp_config(self, validated_data):
         return {
-            'host': str(getattr(settings, 'SMS_SMPP_HOST', '') or '').strip(),
-            'port': int(getattr(settings, 'SMS_SMPP_PORT', 2775) or 2775),
-            'system_id': str(getattr(settings, 'SMS_SMPP_SYSTEM_ID', '') or '').strip(),
-            'password': str(getattr(settings, 'SMS_SMPP_PASSWORD', '') or '').strip(),
+            'host': str(validated_data.get('smpp_host') or '').strip(),
+            'port': int(validated_data.get('smpp_port') or 2775),
+            'system_id': str(validated_data.get('smpp_system_id') or '').strip(),
+            'password': str(validated_data.get('smpp_password') or '').strip(),
             'profile': str(validated_data.get('smpp_profile') or 'standard').strip(),
-            'template_id': str(getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip(),
-            'source_addr_ton': int(getattr(settings, 'SMS_SMPP_SOURCE_ADDR_TON', 5)),
-            'source_addr_npi': int(getattr(settings, 'SMS_SMPP_SOURCE_ADDR_NPI', 0)),
-            'dest_addr_ton': int(getattr(settings, 'SMS_SMPP_DEST_ADDR_TON', 1)),
-            'dest_addr_npi': int(getattr(settings, 'SMS_SMPP_DEST_ADDR_NPI', 1)),
-            'data_coding': int(getattr(settings, 'SMS_SMPP_DATA_CODING', 0)),
-            'registered_delivery': bool(getattr(settings, 'SMS_SMPP_REGISTERED_DELIVERY', True)),
+            'template_id': str(validated_data.get('smpp_template_id') or '').strip(),
+            'source_addr_ton': int(validated_data.get('smpp_source_addr_ton') or 5),
+            'source_addr_npi': int(validated_data.get('smpp_source_addr_npi') or 0),
+            'dest_addr_ton': int(validated_data.get('smpp_dest_addr_ton') or 1),
+            'dest_addr_npi': int(validated_data.get('smpp_dest_addr_npi') or 1),
+            'data_coding': int(validated_data.get('smpp_data_coding') or 0),
+            'registered_delivery': bool(validated_data.get('smpp_registered_delivery', True)),
             'destination_country': validated_data.get('destination_country') or 'OTHER',
-            'dlt_template_id': str(getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip(),
-            'dlt_entity_id': str(getattr(settings, 'SMS_DLT_ENTITY_ID', '') or '').strip(),
-            'dlt_telemarketer_id': str(getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip(),
+            'dlt_template_id': str(validated_data.get('dlt_template_id') or '').strip(),
+            'dlt_entity_id': str(validated_data.get('dlt_entity_id') or '').strip(),
+            'dlt_telemarketer_id': str(validated_data.get('dlt_telemarketer_id') or '').strip(),
         }
 
     def _create_sms_record(
@@ -5823,7 +5805,6 @@ class SMSSendView(generics.CreateAPIView):
         request,
         recipient_number,
         recipient_user,
-        sms_template,
         display_sender_id,
         message_content,
         sms_type,
@@ -5837,7 +5818,6 @@ class SMSSendView(generics.CreateAPIView):
             sender=request.user,
             recipient_number=recipient_number,
             recipient_user=recipient_user,
-            sms_template=sms_template,
             display_sender_id=display_sender_id,
             message_content=message_content,
             sms_type=sms_type,
@@ -6237,22 +6217,17 @@ class SMSSendView(generics.CreateAPIView):
 
         client = smpplib.client.Client(smpp_config['host'], smpp_config['port'])
         client.socket_timeout = 20
-        submit_response = {'received': False, 'message_id': ''}
+        submit_response = {}
 
-        def handle_submit_sm_resp(pdu):
-            submit_response['received'] = True
-            submit_response['message_id'] = str(getattr(pdu, 'message_id', '') or '')
+        def handle_message_sent(pdu):
+            submit_response['message_id'] = getattr(pdu, 'message_id', None)
 
-        def handle_deliver_sm(pdu):
-            receipt = getattr(pdu, 'short_message', b'') or b''
-            if isinstance(receipt, bytes):
-                receipt = receipt.decode(errors='ignore')
-            logger.info('SMPP delivery receipt received: %s', receipt)
-
-        client.set_message_sent_handler(handle_submit_sm_resp)
-        client.set_message_received_handler(handle_deliver_sm)
+        def handle_message_received(_pdu):
+            return None
 
         try:
+            client.set_message_sent_handler(handle_message_sent)
+            client.set_message_received_handler(handle_message_received)
             client.connect()
             client.bind_transceiver(
                 system_id=smpp_config['system_id'],
@@ -6284,16 +6259,16 @@ class SMSSendView(generics.CreateAPIView):
                     optional_parameters[0x1402] = telemarketer_id.encode()
                 send_kwargs['optional_parameters'] = optional_parameters
 
-            client.send_message(**send_kwargs)
-            while not submit_response['received']:
-                client.read_once(auto_send_enquire_link=False)
-
-            message_id = submit_response['message_id']
-            if not message_id:
-                raise Exception('SMPP provider did not return a message ID')
+            pdu = client.send_message(**send_kwargs)
+            client.read_once(auto_send_enquire_link=False)
+            message_id = (
+                submit_response.get('message_id')
+                or getattr(pdu, 'message_id', None)
+                or getattr(pdu, 'sequence', None)
+            )
 
             return {
-                'message_id': message_id,
+                'message_id': str(message_id) if message_id is not None else f'smpp-{timezone.now().timestamp()}',
                 'status': 'sent',
             }
         except (socket.timeout, OSError) as exc:
@@ -6309,6 +6284,171 @@ class SMSSendView(generics.CreateAPIView):
                 client.disconnect()
             except Exception:
                 pass
+
+
+class UserSMSSendOptionsView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        provider_config = _get_admin_managed_sms_provider_config()
+        active_credential = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
+        sender_ids = list((provider_config or {}).get('sender_ids') or [])
+        if not sender_ids and active_credential:
+            sender_ids = [str(item).strip() for item in (active_credential.sender_ids or []) if str(item).strip()]
+        sender_ids.extend(str(item).strip() for item in getattr(settings, 'SMS_DEFAULT_SENDER_IDS', []) if str(item).strip())
+        for sender_id in (
+            getattr(settings, 'SMS_DEFAULT_SENDER_ID', ''),
+            getattr(settings, 'SMS_FREE_TRIAL_DEFAULT_SENDER_ID', ''),
+            getattr(active_credential, 'free_trial_default_sender_id', ''),
+        ):
+            if str(sender_id or '').strip():
+                sender_ids.append(str(sender_id).strip())
+        sender_ids = list(dict.fromkeys(sender_ids))
+
+        smpp_available = all(str(getattr(settings, name, '') or '').strip() for name in (
+            'SMS_SMPP_HOST', 'SMS_SMPP_SYSTEM_ID', 'SMS_SMPP_PASSWORD',
+        ))
+        transports = []
+        if provider_config:
+            transports.append('api')
+        if smpp_available:
+            transports.append('smpp')
+
+        wallet = _get_or_create_wallet(request.user)
+        return Response({
+            'sender_ids': sender_ids,
+            'default_sender_id': sender_ids[0] if sender_ids else '',
+            'transports': transports,
+            'wallet_balance': str(Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))),
+            'cost_per_message': str(_get_sms_cost_per_request()),
+        })
+
+
+class UserSMSSendView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SMSSendSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request):
+        provider_config = _get_admin_managed_sms_provider_config()
+        active_credential = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
+        sender_ids = list((provider_config or {}).get('sender_ids') or [])
+        if not sender_ids and active_credential:
+            sender_ids = [str(item).strip() for item in (active_credential.sender_ids or []) if str(item).strip()]
+        sender_ids.extend(str(item).strip() for item in getattr(settings, 'SMS_DEFAULT_SENDER_IDS', []) if str(item).strip())
+        for sender_id in (
+            getattr(settings, 'SMS_DEFAULT_SENDER_ID', ''),
+            getattr(settings, 'SMS_FREE_TRIAL_DEFAULT_SENDER_ID', ''),
+            getattr(active_credential, 'free_trial_default_sender_id', ''),
+        ):
+            if str(sender_id or '').strip():
+                sender_ids.append(str(sender_id).strip())
+        sender_ids = list(dict.fromkeys(sender_ids))
+
+        allowed_fields = (
+            'transport', 'smpp_profile', 'display_sender_id', 'message_content',
+            'template_id', 'sms_type', 'recipient_number', 'destination_country',
+        )
+        payload = {field: request.data.get(field) for field in allowed_fields if field in request.data}
+        payload['send_mode'] = 'single'
+        payload['delivery_mode'] = 'instant'
+
+        template = None
+        raw_template_id = payload.get('template_id')
+        if raw_template_id:
+            try:
+                template = SMSTemplate.objects.select_related('created_by').get(
+                    pk=int(raw_template_id),
+                    approval_status=SMSTemplate.APPROVAL_APPROVED,
+                    is_active=True,
+                )
+            except (TypeError, ValueError, SMSTemplate.DoesNotExist):
+                return Response({'template_id': 'This SMS template is not approved for sending'}, status=status.HTTP_403_FORBIDDEN)
+            if template.created_by_id not in (None, request.user.id) and not (
+                template.created_by.is_staff or template.created_by.is_superuser
+            ):
+                return Response({'template_id': 'This SMS template is not available to your account'}, status=status.HTTP_403_FORBIDDEN)
+            payload['message_content'] = template.message_content
+            payload['sms_type'] = template.sms_type
+            if template.sender_id and template.sender_id in sender_ids:
+                payload['display_sender_id'] = template.sender_id
+
+        if not payload.get('display_sender_id') and sender_ids:
+            payload['display_sender_id'] = sender_ids[0]
+
+        serializer = self.get_serializer(data=payload, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data
+        if validated_data.get('send_mode') != 'single' or validated_data.get('delivery_mode') != 'instant':
+            return Response({'detail': 'User SMS sending supports one immediate recipient at a time'}, status=status.HTTP_400_BAD_REQUEST)
+
+        sender_id = validated_data['display_sender_id']
+        if sender_id not in sender_ids:
+            return Response({'display_sender_id': 'Select a sender ID configured by the administrator'}, status=status.HTTP_403_FORBIDDEN)
+
+        transport = validated_data.get('transport') or 'api'
+        if transport == 'api' and not provider_config:
+            return Response({'detail': 'Administrator SMS API credentials are not configured'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        smpp_view = SMSSendView()
+        dispatch_config = {'transport': transport}
+        if transport == 'api':
+            dispatch_config.update(provider_config)
+        else:
+            smpp_configured = all(str(getattr(settings, name, '') or '').strip() for name in (
+                'SMS_SMPP_HOST', 'SMS_SMPP_SYSTEM_ID', 'SMS_SMPP_PASSWORD',
+            ))
+            if not smpp_configured:
+                return Response({'detail': 'Administrator SMPP credentials are not configured'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            dispatch_config.update(smpp_view._build_smpp_config(validated_data))
+
+        destination_country = validated_data.get('destination_country') or 'OTHER'
+        dispatch_config.update({
+            'destination_country': destination_country,
+            'dlt_template_id': str(validated_data.get('dlt_template_id') or getattr(settings, 'SMS_DLT_TEMPLATE_ID', '') or '').strip(),
+            'dlt_entity_id': str(validated_data.get('dlt_entity_id') or getattr(settings, 'SMS_DLT_ENTITY_ID', '') or '').strip(),
+            'dlt_telemarketer_id': str(validated_data.get('dlt_telemarketer_id') or getattr(settings, 'SMS_DLT_TELEMARKETER_ID', '') or '').strip(),
+        })
+
+        recipient_number = _normalize_phone_number(validated_data.get('recipient_number'))
+        if not recipient_number:
+            return Response({'recipient_number': 'Invalid phone number'}, status=status.HTTP_400_BAD_REQUEST)
+        if destination_country == 'IN' and not _is_indian_number(recipient_number):
+            return Response({'detail': 'Selected destination country is India, but recipient number is not a valid Indian number'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            _, remaining_balance = _deduct_sms_credits(request.user, 1)
+        except ValueError as exc:
+            return Response({'detail': str(exc), 'wallet_balance': str(_get_or_create_wallet(request.user).balance)}, status=status.HTTP_402_PAYMENT_REQUIRED)
+
+        sms_message = smpp_view._create_sms_record(
+            request=request,
+            recipient_number=recipient_number,
+            recipient_user=None,
+            display_sender_id=sender_id,
+            message_content=validated_data['message_content'],
+            sms_type=validated_data['sms_type'],
+            send_mode='single',
+            schedule_at=None,
+            timezone_name='',
+            batch_reference='',
+            source_file_name='',
+        )
+        sms_message.sms_template = template
+        sms_message.save(update_fields=['sms_template'])
+
+        result = smpp_view._dispatch_or_schedule_message(sms_message, dispatch_config)
+        if transport == 'api':
+            smpp_view._persist_sender_id(provider_config, sender_id)
+
+        response_data = SMSMessageSerializer(sms_message).data
+        response_data.update({
+            'detail': 'SMS sent successfully' if result == 'sent' else 'SMS could not be sent',
+            'transport': transport,
+            'remaining_sms_credits': str(remaining_balance),
+            'template_name': template.name if template else '',
+        })
+        return Response(response_data, status=status.HTTP_201_CREATED if result == 'sent' else status.HTTP_502_BAD_GATEWAY)
 
 
 class SMSTimezoneListView(generics.GenericAPIView):
@@ -6464,7 +6604,23 @@ class FreeTrialSendSMSView(generics.GenericAPIView):
         if not recipient_number:
             return Response({'detail': 'Add your mobile number in signup/profile before using free trial SMS'}, status=status.HTTP_400_BAD_REQUEST)
 
-        message_content = str(request.data.get('message_content') or '').strip()
+        template = None
+        raw_template_id = request.data.get('template_id')
+        if raw_template_id:
+            try:
+                template = SMSTemplate.objects.get(
+                    pk=int(raw_template_id),
+                    approval_status=SMSTemplate.APPROVAL_APPROVED,
+                    is_active=True,
+                )
+            except (TypeError, ValueError, SMSTemplate.DoesNotExist):
+                return Response({'template_id': 'This SMS template is not approved for sending'}, status=status.HTTP_403_FORBIDDEN)
+            if template.created_by_id not in (None, request.user.id) and not (
+                template.created_by.is_staff or template.created_by.is_superuser
+            ):
+                return Response({'template_id': 'This SMS template is not available to your account'}, status=status.HTTP_403_FORBIDDEN)
+
+        message_content = template.message_content.strip() if template else str(request.data.get('message_content') or '').strip()
         if not message_content:
             return Response({'detail': 'Message content is required'}, status=status.HTTP_400_BAD_REQUEST)
         try:
@@ -6487,6 +6643,7 @@ class FreeTrialSendSMSView(generics.GenericAPIView):
             sender=mediator_user,
             recipient_number=recipient_number,
             recipient_user=request.user,
+            sms_template=template,
             display_sender_id=display_sender_id,
             message_content=message_content,
             sms_type='transactional',
@@ -6582,46 +6739,32 @@ class SMSTemplateListCreateView(generics.GenericAPIView):
     def get(self, request):
         templates = SMSTemplate.objects.all()
         if not _has_admin_access(request.user):
-            templates = templates.filter(is_active=True)
+            templates = templates.filter(
+                Q(created_by=request.user)
+                | Q(
+                    approval_status=SMSTemplate.APPROVAL_APPROVED,
+                    is_active=True,
+                    created_by__is_staff=True,
+                )
+                | Q(
+                    approval_status=SMSTemplate.APPROVAL_APPROVED,
+                    is_active=True,
+                    created_by__is_superuser=True,
+                )
+                | Q(approval_status=SMSTemplate.APPROVAL_APPROVED, is_active=True, created_by__isnull=True)
+            ).distinct()
         return Response(self.get_serializer(templates, many=True).data)
 
     def post(self, request):
-        guard = self._admin_guard(request)
-        if guard:
-            return guard
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save(created_by=request.user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-
-class SMSSendOptionsView(generics.GenericAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    @staticmethod
-    def get_sender_options():
-        sender_ids = [
-            str(item).strip()
-            for item in getattr(settings, 'SMS_DEFAULT_SENDER_IDS', [])
-            if str(item).strip()
-        ]
-        default_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or '').strip()
-        credential = SMSCredential.objects.filter(is_active=True).order_by('-updated_at', '-id').first()
-        if credential:
-            sender_ids.extend(str(item).strip() for item in (credential.sender_ids or []) if str(item).strip())
-            configured_trial_sender = str(credential.free_trial_default_sender_id or '').strip()
-            if not default_sender_id:
-                default_sender_id = configured_trial_sender
-
-        if default_sender_id:
-            sender_ids.append(default_sender_id)
-        sender_ids = list(dict.fromkeys(sender_ids))
-        if not default_sender_id and sender_ids:
-            default_sender_id = sender_ids[0]
-        return {'sender_ids': sender_ids, 'default_sender_id': default_sender_id}
-
-    def get(self, request):
-        return Response(self.get_sender_options())
+        is_admin = _has_admin_access(request.user)
+        template = serializer.save(
+            created_by=request.user,
+            approval_status=SMSTemplate.APPROVAL_APPROVED if is_admin else SMSTemplate.APPROVAL_PENDING,
+            is_active=bool(serializer.validated_data.get('is_active', True)) if is_admin else False,
+        )
+        return Response(self.get_serializer(template).data, status=status.HTTP_201_CREATED)
 
 
 class SMSTemplateDetailView(generics.GenericAPIView):
@@ -6640,16 +6783,34 @@ class SMSTemplateDetailView(generics.GenericAPIView):
             return None
 
     def patch(self, request, template_id):
-        guard = self._admin_guard(request)
-        if guard:
-            return guard
         template = self._get_template(template_id)
         if not template:
             return Response({'detail': 'Template not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        is_admin = _has_admin_access(request.user)
+        if not is_admin and (template.created_by_id != request.user.id or template.approval_status == SMSTemplate.APPROVAL_APPROVED):
+            return Response({'detail': 'You cannot edit this SMS template'}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = self.get_serializer(template, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data)
+        template = serializer.save()
+        if is_admin:
+            requested_status = request.data.get('approval_status')
+            if requested_status in (SMSTemplate.APPROVAL_APPROVED, SMSTemplate.APPROVAL_REJECTED, SMSTemplate.APPROVAL_PENDING):
+                template.approval_status = requested_status
+                template.is_active = requested_status == SMSTemplate.APPROVAL_APPROVED
+                template.review_note = str(request.data.get('review_note') or '').strip()[:500]
+                template.reviewed_by = request.user
+                template.reviewed_at = timezone.now()
+                template.save(update_fields=['approval_status', 'is_active', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        else:
+            template.approval_status = SMSTemplate.APPROVAL_PENDING
+            template.is_active = False
+            template.review_note = ''
+            template.reviewed_by = None
+            template.reviewed_at = None
+            template.save(update_fields=['approval_status', 'is_active', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        return Response(self.get_serializer(template).data)
 
     def put(self, request, template_id):
         guard = self._admin_guard(request)
@@ -6687,22 +6848,17 @@ class SMSCredentialView(generics.GenericAPIView):
             env_user = getattr(settings, 'SMS_PROVIDER_USER', '').strip()
             env_sender_ids = [str(item).strip() for item in getattr(settings, 'SMS_DEFAULT_SENDER_IDS', []) if str(item).strip()]
             env_free_trial_sender_id = str(getattr(settings, 'SMS_FREE_TRIAL_DEFAULT_SENDER_ID', '') or '').strip()
-            default_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or env_free_trial_sender_id or (env_sender_ids[0] if env_sender_ids else '')).strip()
             has_env_provider = bool(env_user and getattr(settings, 'SMS_PROVIDER_PASSWORD', '').strip())
             return Response({
                 'user': env_user,
                 'password': '',
                 'sender_ids': env_sender_ids,
-                'default_sender_id': default_sender_id,
                 'free_trial_default_sender_id': env_free_trial_sender_id,
                 'is_active': has_env_provider,
                 'created_at': None,
                 'updated_at': None,
             })
-        response_data = self.get_serializer(cred).data
-        env_default_sender_id = str(getattr(settings, 'SMS_DEFAULT_SENDER_ID', '') or '').strip()
-        response_data['default_sender_id'] = env_default_sender_id or str(cred.free_trial_default_sender_id or '').strip() or (response_data['sender_ids'][0] if response_data['sender_ids'] else '')
-        return Response(response_data)
+        return Response(self.get_serializer(cred).data)
 
     def patch(self, request):
         guard = None if _has_admin_access(request.user) else Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
@@ -7401,9 +7557,6 @@ class UserWalletView(generics.GenericAPIView):
 
     def get(self, request):
         wallet = _get_or_create_wallet(request.user)
-        if Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001')) != Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001')):
-            wallet.email_validation_balance = wallet.balance
-            wallet.save(update_fields=['email_validation_balance', 'updated_at'])
         payload = UserWalletSerializer(wallet).data
         payload['email_validation_provider_mode'] = _get_email_validation_provider_mode()
         if _has_admin_access(request.user):
@@ -7475,6 +7628,7 @@ class WalletRechargeCreateOrderView(generics.GenericAPIView):
             return Response({'detail': 'Payment gateway client initialization failed.'}, status=status.HTTP_400_BAD_REQUEST)
 
         entered_amount = serializer.validated_data['amount']
+        wallet_type = serializer.validated_data['wallet_type']
         service_charge_percentage, tax_percentage = _get_recharge_charge_percentages()
         breakdown = _calculate_recharge_breakdown(entered_amount, service_charge_percentage, tax_percentage)
 
@@ -7519,6 +7673,7 @@ class WalletRechargeCreateOrderView(generics.GenericAPIView):
 
         payment = WalletRechargePayment.objects.create(
             user=request.user,
+            wallet_type=wallet_type,
             entered_amount=breakdown['entered_amount'],
             service_charge_percentage=breakdown['service_charge_percentage'],
             tax_percentage=breakdown['tax_percentage'],
@@ -7539,6 +7694,7 @@ class WalletRechargeCreateOrderView(generics.GenericAPIView):
                     'receipt': receipt_value,
                 },
                 'payment_method': selected_method,
+                'wallet_type': payment.wallet_type,
                 'charges': {
                     'entered_amount': str(payment.entered_amount),
                     'service_charge_percentage': str(payment.service_charge_percentage),
@@ -7622,11 +7778,15 @@ class WalletRechargeVerifyView(generics.GenericAPIView):
             payment = WalletRechargePayment.objects.select_for_update().get(id=payment.id)
             if payment.status != WalletRechargePayment.STATUS_SUCCESSFUL:
                 wallet = _get_or_create_wallet(request.user)
-                current_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
                 credit_amount = Decimal(str(payment.entered_amount or 0)).quantize(Decimal('0.0001'))
-                wallet.balance = (current_balance + credit_amount).quantize(Decimal('0.0001'))
-                wallet.email_validation_balance = wallet.balance
-                wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
+                if payment.wallet_type == WalletRechargePayment.WALLET_EMAIL_VALIDATION:
+                    current_balance = Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
+                    wallet.email_validation_balance = (current_balance + credit_amount).quantize(Decimal('0.0001'))
+                    wallet.save(update_fields=['email_validation_balance', 'updated_at'])
+                else:
+                    current_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
+                    wallet.balance = (current_balance + credit_amount).quantize(Decimal('0.0001'))
+                    wallet.save(update_fields=['balance', 'updated_at'])
 
                 payment.status = WalletRechargePayment.STATUS_SUCCESSFUL
                 payment.failure_reason = ''
@@ -7648,10 +7808,18 @@ class WalletRechargeVerifyView(generics.GenericAPIView):
             )
 
         updated_wallet = _get_or_create_wallet(request.user)
+        selected_wallet_balance = (
+            updated_wallet.email_validation_balance
+            if payment.wallet_type == WalletRechargePayment.WALLET_EMAIL_VALIDATION
+            else updated_wallet.balance
+        )
         return Response(
             {
                 'detail': 'Payment verified and wallet credited successfully.',
-                'wallet_balance': str(Decimal(str(updated_wallet.balance or 0)).quantize(Decimal('0.0001'))),
+                'wallet_type': payment.wallet_type,
+                'wallet_balance': str(Decimal(str(selected_wallet_balance or 0)).quantize(Decimal('0.0001'))),
+                'sms_wallet_balance': str(Decimal(str(updated_wallet.balance or 0)).quantize(Decimal('0.0001'))),
+                'email_validation_balance': str(Decimal(str(updated_wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))),
                 'payment': WalletRechargePaymentSerializer(payment).data,
             }
         )
@@ -8822,6 +8990,7 @@ class AdminUserWalletCreditsView(generics.GenericAPIView):
 
         wallet = _get_or_create_wallet(target_user)
         current_sms = Decimal(str(wallet.balance or 0)).quantize(Decimal('0.0001'))
+        current_email = Decimal(str(wallet.email_validation_balance or 0)).quantize(Decimal('0.0001'))
 
         add_sms_raw = request.data.get('add_message_credits', request.data.get('message_credits_delta', '0'))
         add_email_raw = request.data.get('add_email_validation_credits', request.data.get('email_validation_credits_delta', '0'))
@@ -8835,9 +9004,8 @@ class AdminUserWalletCreditsView(generics.GenericAPIView):
         if add_sms < 0 or add_email < 0:
             return Response({'detail': 'Credit values must be zero or positive numbers'}, status=status.HTTP_400_BAD_REQUEST)
 
-        total_add = (add_sms + add_email).quantize(Decimal('0.0001'))
-        wallet.balance = max(Decimal('0.0000'), (current_sms + total_add).quantize(Decimal('0.0001')))
-        wallet.email_validation_balance = wallet.balance
+        wallet.balance = (current_sms + add_sms).quantize(Decimal('0.0001'))
+        wallet.email_validation_balance = (current_email + add_email).quantize(Decimal('0.0001'))
         wallet.save(update_fields=['balance', 'email_validation_balance', 'updated_at'])
 
         return Response(
@@ -8845,10 +9013,12 @@ class AdminUserWalletCreditsView(generics.GenericAPIView):
                 'user_id': target_user.id,
                 'user_email': target_user.email,
                 'message_credits': str(wallet.balance),
-                'email_validation_credits': str(wallet.balance),
+                'email_validation_credits': str(wallet.email_validation_balance),
+                'sms_wallet_balance': str(wallet.balance),
+                'email_validation_balance': str(wallet.email_validation_balance),
                 'added_message_credits': str(add_sms),
                 'added_email_validation_credits': str(add_email),
-                'total_credits_added': str(total_add),
+                'total_credits_added': str((add_sms + add_email).quantize(Decimal('0.0001'))),
             },
             status=status.HTTP_200_OK,
         )
@@ -9489,3 +9659,684 @@ class AdminEmployeeListView(generics.ListAPIView):
             )
         return Response(payload, status=status.HTTP_200_OK)
 
+class WhatsAppAccountOverviewView(APIView):
+    def get(self, request):
+        return Response({
+            "account_name": settings.WHATSAPP_ACCOUNT_NAME,
+            "account_id": settings.WHATSAPP_ACCOUNT_ID
+        })
+
+
+def _whatsapp_scope(user):
+    messages = WhatsAppMessage.objects.select_related('campaign', 'user')
+    campaigns = WhatsAppCampaign.objects.select_related('user')
+    if not (user.is_staff or user.is_superuser):
+        messages = messages.filter(user=user)
+        campaigns = campaigns.filter(user=user)
+    return messages, campaigns
+
+
+def _whatsapp_provider_post(path, payload, params=None, form_fields=None):
+    api_key = getattr(settings, 'WHATSAPP_API', '')
+    if not api_key:
+        return False, {'detail': 'WhatsApp API key is not configured'}, 503
+
+    url = f"{settings.WHATSAPP_API_BASE_URL}{path}"
+    headers = {'Accept': 'application/json', 'X-Api-Key': api_key}
+    request_args = {'params': params, 'headers': headers, 'timeout': (5, 30)}
+    if form_fields is None:
+        headers['Content-Type'] = 'application/json'
+        request_args['json'] = payload
+    else:
+        request_args['files'] = {
+            key: (None, str(value))
+            for key, value in form_fields.items()
+            if value is not None
+        }
+
+    try:
+        response = requests.post(url, **request_args)
+    except requests.RequestException:
+        return False, {'detail': 'Could not connect to the WhatsApp provider'}, 502
+
+    try:
+        provider_data = response.json()
+    except ValueError:
+        provider_data = {'body': response.text[:2000]}
+
+    if not response.ok:
+        provider_message = provider_data.get('message') or provider_data.get('detail') if isinstance(provider_data, dict) else ''
+        return False, {'detail': str(provider_message or f'Provider returned HTTP {response.status_code}')[:500]}, 502
+    if isinstance(provider_data, dict):
+        provider_success = provider_data.get('IsSuccess', provider_data.get('isSuccess'))
+        if provider_success is False:
+            provider_message = provider_data.get('Message') or provider_data.get('message')
+            return False, {'detail': str(provider_message or 'Anantya rejected the WhatsApp message')[:500]}, 502
+    return True, provider_data, 200
+
+
+def _whatsapp_provider_get(path, params=None):
+    api_key = getattr(settings, 'WHATSAPP_API', '')
+    if not api_key:
+        return False, {'detail': 'WhatsApp API key is not configured'}, 503
+    try:
+        response = requests.get(
+            f"{settings.WHATSAPP_API_BASE_URL}{path}",
+            params=params,
+            headers={'Accept': 'application/json', 'X-Api-Key': api_key},
+            timeout=(5, 15),
+        )
+    except requests.RequestException:
+        return False, {'detail': 'Could not connect to the WhatsApp provider'}, 502
+
+    try:
+        provider_data = response.json()
+    except ValueError:
+        provider_data = {'body': response.text[:2000]}
+    if not response.ok:
+        provider_message = provider_data.get('Message') or provider_data.get('message') or provider_data.get('detail') if isinstance(provider_data, dict) else ''
+        return False, {'detail': str(provider_message or f'Provider returned HTTP {response.status_code}')[:500]}, 502
+    if isinstance(provider_data, dict) and provider_data.get('IsSuccess', provider_data.get('isSuccess')) is False:
+        provider_message = provider_data.get('Message') or provider_data.get('message')
+        return False, {'detail': str(provider_message or 'Anantya could not retrieve message status')[:500]}, 502
+    return True, provider_data, 200
+
+
+def _whatsapp_provider_value(provider_data, keys):
+    if isinstance(provider_data, dict):
+        values = {str(key).lower(): value for key, value in provider_data.items()}
+        for key in keys:
+            value = values.get(key.lower())
+            if value is not None:
+                return value
+        for key in ('dataobj', 'data', 'result', 'message'):
+            nested = values.get(key)
+            value = _whatsapp_provider_value(nested, keys)
+            if value is not None:
+                return value
+    elif isinstance(provider_data, list):
+        for item in provider_data:
+            value = _whatsapp_provider_value(item, keys)
+            if value is not None:
+                return value
+    return None
+
+
+def _whatsapp_provider_id(provider_data):
+    value = _whatsapp_provider_value(provider_data, ('MsgId', 'messageId', 'message_id', 'campaignId', 'campaign_id', 'id'))
+    return str(value)[:150] if value else ''
+
+
+def _whatsapp_provider_status_code(provider_data):
+    value = _whatsapp_provider_value(provider_data, ('MsgStatus', 'messageStatus', 'statusCode'))
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _whatsapp_delivery_status(status_code):
+    return {
+        0: WhatsAppMessage.DELIVERY_PENDING,
+        4: WhatsAppMessage.DELIVERY_SENT,
+        5: WhatsAppMessage.DELIVERY_DELIVERED,
+        13: WhatsAppMessage.DELIVERY_SEEN,
+    }.get(status_code, WhatsAppMessage.DELIVERY_PENDING)
+
+
+def _whatsapp_delivery_status_from_provider(value):
+    try:
+        return _whatsapp_delivery_status(int(value))
+    except (TypeError, ValueError):
+        return {
+            'pending': WhatsAppMessage.DELIVERY_PENDING,
+            'processing': WhatsAppMessage.DELIVERY_PENDING,
+            'sent': WhatsAppMessage.DELIVERY_SENT,
+            'delivered': WhatsAppMessage.DELIVERY_DELIVERED,
+            'seen': WhatsAppMessage.DELIVERY_SEEN,
+            'read': WhatsAppMessage.DELIVERY_SEEN,
+            'failed': WhatsAppMessage.DELIVERY_FAILED,
+        }.get(str(value or '').strip().lower())
+
+
+def _normalize_whatsapp_number(value):
+    return ''.join(character for character in str(value or '') if character.isdigit())
+
+
+def _apply_whatsapp_campaign_statuses(messages, provider_data):
+    entries = _whatsapp_provider_value(provider_data, ('dataObj',))
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return False
+
+    messages_by_number = {}
+    for message in messages:
+        messages_by_number.setdefault(_normalize_whatsapp_number(message.contact_no), []).append(message)
+
+    changed_messages = []
+    for entry in entries:
+        contact_numbers = _whatsapp_provider_value(entry, ('contactNo',))
+        message_status = _whatsapp_delivery_status_from_provider(
+            _whatsapp_provider_value(entry, ('messageStatus', 'msgStatus'))
+        )
+        if not message_status:
+            continue
+        failed_reason = str(_whatsapp_provider_value(entry, ('failedReason',)) or '').strip()[:500]
+        for contact_number in str(contact_numbers or '').split(','):
+            for message in messages_by_number.get(_normalize_whatsapp_number(contact_number), []):
+                message.delivery_status = message_status
+                if message_status == WhatsAppMessage.DELIVERY_FAILED and failed_reason:
+                    message.error_message = failed_reason
+                changed_messages.append(message)
+
+    if changed_messages:
+        WhatsAppMessage.objects.bulk_update(changed_messages, ['delivery_status', 'error_message'])
+    return True
+
+
+def _can_use_whatsapp_template(user, template):
+    if user.is_staff or user.is_superuser:
+        return True
+    return template.created_by_id == user.id or template.created_by.is_staff or template.created_by.is_superuser
+
+
+class WhatsAppTemplateListCreateView(generics.GenericAPIView):
+    serializer_class = WhatsAppTemplateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        templates = WhatsAppTemplate.objects.select_related('created_by', 'reviewed_by')
+        if not _has_admin_access(request.user):
+            templates = templates.filter(
+                Q(created_by=request.user)
+                | Q(
+                    approval_status=WhatsAppTemplate.APPROVAL_APPROVED,
+                    is_active=True,
+                    created_by__is_staff=True,
+                )
+                | Q(
+                    approval_status=WhatsAppTemplate.APPROVAL_APPROVED,
+                    is_active=True,
+                    created_by__is_superuser=True,
+                )
+            ).distinct()
+        return Response(self.get_serializer(templates, many=True).data)
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        is_admin = _has_admin_access(request.user)
+        provider_template_id = serializer.validated_data.get('provider_template_id', '').strip()
+        if is_admin and not provider_template_id.isdigit():
+            return Response({'provider_template_id': 'A numeric Anantya template ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+        template = serializer.save(
+            created_by=request.user,
+            approval_status=WhatsAppTemplate.APPROVAL_APPROVED if is_admin else WhatsAppTemplate.APPROVAL_PENDING,
+            is_active=is_admin,
+        )
+        return Response(self.get_serializer(template).data, status=status.HTTP_201_CREATED)
+
+
+class WhatsAppTemplateDetailView(generics.GenericAPIView):
+    serializer_class = WhatsAppTemplateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_template(self, template_id):
+        try:
+            return WhatsAppTemplate.objects.get(pk=template_id)
+        except WhatsAppTemplate.DoesNotExist:
+            return None
+
+    def patch(self, request, template_id):
+        template = self._get_template(template_id)
+        if not template:
+            return Response({'detail': 'Template not found'}, status=status.HTTP_404_NOT_FOUND)
+        is_admin = _has_admin_access(request.user)
+        if not is_admin and (template.created_by_id != request.user.id or template.approval_status == WhatsAppTemplate.APPROVAL_APPROVED):
+            return Response({'detail': 'You cannot edit this WhatsApp template'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = self.get_serializer(template, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        template = serializer.save()
+        if is_admin:
+            requested_status = request.data.get('approval_status')
+            if requested_status in (WhatsAppTemplate.APPROVAL_APPROVED, WhatsAppTemplate.APPROVAL_REJECTED, WhatsAppTemplate.APPROVAL_PENDING):
+                if requested_status == WhatsAppTemplate.APPROVAL_APPROVED and not template.provider_template_id.strip().isdigit():
+                    return Response({'provider_template_id': 'A numeric Anantya template ID is required before approval'}, status=status.HTTP_400_BAD_REQUEST)
+                template.approval_status = requested_status
+                template.is_active = requested_status == WhatsAppTemplate.APPROVAL_APPROVED
+                template.review_note = str(request.data.get('review_note') or '').strip()[:500]
+                template.reviewed_by = request.user
+                template.reviewed_at = timezone.now()
+                template.save(update_fields=['approval_status', 'is_active', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        else:
+            template.approval_status = WhatsAppTemplate.APPROVAL_PENDING
+            template.is_active = False
+            template.review_note = ''
+            template.reviewed_by = None
+            template.reviewed_at = None
+            template.save(update_fields=['approval_status', 'is_active', 'review_note', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        return Response(self.get_serializer(template).data)
+
+    def delete(self, request, template_id):
+        if not _has_admin_access(request.user):
+            return Response({'detail': 'Admin access required'}, status=status.HTTP_403_FORBIDDEN)
+        template = self._get_template(template_id)
+        if not template:
+            return Response({'detail': 'Template not found'}, status=status.HTTP_404_NOT_FOUND)
+        template.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WhatsAppSendTextView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        message_text = str(request.data.get('msgText') or '').strip()
+        contact_no = str(request.data.get('contactNo') or '').strip()
+        contact_name = str(request.data.get('contactName') or '').strip()[:150]
+        template = None
+        raw_template_id = request.data.get('templateId')
+        if raw_template_id:
+            try:
+                template = WhatsAppTemplate.objects.get(
+                    pk=int(raw_template_id),
+                    approval_status=WhatsAppTemplate.APPROVAL_APPROVED,
+                    is_active=True,
+                )
+            except (TypeError, ValueError, WhatsAppTemplate.DoesNotExist):
+                return Response({'templateId': 'This WhatsApp template is not approved for sending'}, status=status.HTTP_403_FORBIDDEN)
+            if not _can_use_whatsapp_template(request.user, template):
+                return Response({'templateId': 'This WhatsApp template is not available to your account'}, status=status.HTTP_403_FORBIDDEN)
+            message_text = template.message_text.strip()
+        if not template and not message_text:
+            return Response({'msgText': 'Message text is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not contact_no:
+            return Response({'contactNo': 'Contact number is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if template:
+            try:
+                provider_template_id = int(template.provider_template_id.strip())
+            except (TypeError, ValueError):
+                return Response({'templateId': 'The approved template has an invalid Anantya template ID'}, status=status.HTTP_400_BAD_REQUEST)
+            raw_attributes = request.data.get('attributes') or []
+            if not isinstance(raw_attributes, (list, dict)):
+                return Response({'attributes': 'Template attributes must be an array or object'}, status=status.HTTP_400_BAD_REQUEST)
+            template_fields = {
+                'ContactNo': contact_no,
+                'ContactName': contact_name,
+                'MediaFileName': '',
+                'ExtraParams': '',
+                'MediaFile': '',
+            }
+            for index in range(1, 14):
+                if isinstance(raw_attributes, list):
+                    value = raw_attributes[index - 1] if len(raw_attributes) >= index else ''
+                else:
+                    value = raw_attributes.get(f'attribute{index}', raw_attributes.get(f'Attribute{index}', ''))
+                template_fields[f'Attribute{index}'] = str(value or '')
+            provider_path = '/api/Campaign/SendSingleTemplateMessage'
+            accepted, provider_data, http_status = _whatsapp_provider_post(
+                provider_path,
+                None,
+                params={'templateId': provider_template_id},
+                form_fields=template_fields,
+            )
+            provider_record_id = _whatsapp_provider_id(provider_data) if accepted else ''
+            provider_message_id = ''
+            provider_campaign_id = provider_record_id
+        else:
+            accepted, provider_data, http_status = _whatsapp_provider_post(
+                '/api/Messages/sendtext',
+                {'msgText': message_text, 'contactNo': contact_no},
+            )
+            provider_status_code = _whatsapp_provider_status_code(provider_data) if accepted else None
+            provider_message_id = _whatsapp_provider_id(provider_data) if accepted else ''
+            provider_campaign_id = ''
+
+        provider_status_code = _whatsapp_provider_status_code(provider_data) if accepted else None
+        record = WhatsAppMessage.objects.create(
+            user=request.user,
+            approved_template=template,
+            mode=WhatsAppMessage.MODE_TEXT,
+            contact_name=contact_name,
+            contact_no=contact_no,
+            message_text=message_text,
+            template_id=template.provider_template_id if template else '',
+            status=WhatsAppMessage.STATUS_ACCEPTED if accepted else WhatsAppMessage.STATUS_FAILED,
+            delivery_status=_whatsapp_delivery_status(provider_status_code) if accepted else WhatsAppMessage.DELIVERY_PENDING,
+            provider_status_code=provider_status_code,
+            provider_message_id=provider_message_id,
+            provider_campaign_id=provider_campaign_id,
+            provider_response=provider_data if accepted else {},
+            error_message='' if accepted else provider_data.get('detail', 'WhatsApp send failed'),
+        )
+        body = {
+            'detail': 'Message accepted by provider' if accepted else provider_data.get('detail'),
+            'message': {
+                'id': record.id,
+                'contactName': record.contact_name,
+                'contactNo': record.contact_no,
+                'msgText': record.message_text,
+                'templateId': record.template_id,
+                'templateName': template.name if template else '',
+                'status': record.status,
+                'deliveryStatus': record.delivery_status,
+                'createdAt': record.created_at,
+                'providerMessageId': record.provider_message_id,
+                'providerCampaignId': record.provider_campaign_id,
+            },
+        }
+        if accepted:
+            body['providerResponse'] = provider_data
+        return Response(body, status=status.HTTP_201_CREATED if accepted else http_status)
+
+
+class WhatsAppSendCampaignView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        raw_template_id = request.data.get('templateId')
+        contacts = request.data.get('contacts')
+        campaign_name = str(request.data.get('campaignName') or '').strip()[:150]
+        if not raw_template_id:
+            return Response({'templateId': 'Template ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            template = WhatsAppTemplate.objects.get(
+                pk=int(raw_template_id),
+                approval_status=WhatsAppTemplate.APPROVAL_APPROVED,
+                is_active=True,
+            )
+        except (TypeError, ValueError, WhatsAppTemplate.DoesNotExist):
+            return Response({'templateId': 'This WhatsApp template is not approved for sending'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_use_whatsapp_template(request.user, template):
+            return Response({'templateId': 'This WhatsApp template is not available to your account'}, status=status.HTTP_403_FORBIDDEN)
+        provider_template_id = template.provider_template_id.strip()
+        try:
+            provider_template_id_param = int(provider_template_id)
+        except (TypeError, ValueError):
+            return Response({'templateId': 'The approved template has an invalid Anantya template ID'}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(contacts, list) or not contacts:
+            return Response({'contacts': 'At least one contact is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(contacts) > 1000:
+            return Response({'contacts': 'A campaign may contain at most 1000 contacts'}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_contacts = []
+        for index, contact in enumerate(contacts):
+            if not isinstance(contact, dict):
+                return Response({'contacts': f'Contact {index + 1} must be an object'}, status=status.HTTP_400_BAD_REQUEST)
+            contact_no = str(contact.get('contactNo') or '').strip()
+            if not contact_no:
+                return Response({'contacts': f'Contact {index + 1} needs a contactNo'}, status=status.HTTP_400_BAD_REQUEST)
+            normalized_contact = {
+                'contactName': str(contact.get('contactName') or '').strip()[:150],
+                'contactNo': contact_no,
+                'mediaFileName': str(contact.get('mediaFileName') or '').strip(),
+                'extraParams': str(contact.get('extraParams') or '').strip(),
+                'mediaFile': str(contact.get('mediaFile') or '').strip(),
+            }
+            for attribute_index in range(1, 14):
+                normalized_contact[f'attribute{attribute_index}'] = str(
+                    contact.get(f'attribute{attribute_index}')
+                    or contact.get(f'Attribute{attribute_index}')
+                    or ''
+                )
+            normalized_contacts.append(normalized_contact)
+
+        campaign = WhatsAppCampaign.objects.create(
+            user=request.user,
+            approved_template=template,
+            name=campaign_name,
+            template_id=provider_template_id,
+            recipient_count=len(normalized_contacts),
+        )
+        accepted, provider_data, http_status = _whatsapp_provider_post(
+            '/api/Campaign/SendCampaign',
+            normalized_contacts,
+            params={'templateId': provider_template_id_param},
+        )
+        campaign.status = WhatsAppCampaign.STATUS_ACCEPTED if accepted else WhatsAppCampaign.STATUS_FAILED
+        campaign.provider_campaign_id = _whatsapp_provider_id(provider_data) if accepted else ''
+        campaign.provider_response = provider_data if accepted else {}
+        campaign.error_message = '' if accepted else provider_data.get('detail', 'WhatsApp campaign failed')
+        campaign.save(update_fields=['status', 'provider_campaign_id', 'provider_response', 'error_message'])
+
+        message_status = WhatsAppMessage.STATUS_ACCEPTED if accepted else WhatsAppMessage.STATUS_FAILED
+        WhatsAppMessage.objects.bulk_create([
+            WhatsAppMessage(
+                user=request.user,
+                campaign=campaign,
+                approved_template=template,
+                mode=WhatsAppMessage.MODE_CAMPAIGN,
+                contact_name=contact['contactName'],
+                contact_no=contact['contactNo'],
+                template_id=provider_template_id,
+                status=message_status,
+                provider_response={},
+                error_message='' if accepted else campaign.error_message,
+            )
+            for contact in normalized_contacts
+        ])
+        body = {
+            'detail': 'Campaign accepted by provider' if accepted else campaign.error_message,
+            'campaign': {
+                'id': campaign.id,
+                'name': campaign.name,
+                'templateId': campaign.template_id,
+                'templateRecordId': template.id,
+                'templateName': template.name,
+                'recipientCount': campaign.recipient_count,
+                'status': campaign.status,
+                'createdAt': campaign.created_at,
+                'providerCampaignId': campaign.provider_campaign_id,
+            },
+        }
+        if accepted:
+            body['providerResponse'] = provider_data
+        return Response(body, status=status.HTTP_201_CREATED if accepted else http_status)
+
+
+class WhatsAppHistoryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        messages, _ = _whatsapp_scope(request.user)
+        status_filter = request.query_params.get('status')
+        mode_filter = request.query_params.get('mode')
+        if status_filter in (WhatsAppMessage.STATUS_ACCEPTED, WhatsAppMessage.STATUS_FAILED):
+            messages = messages.filter(status=status_filter)
+        if mode_filter in (WhatsAppMessage.MODE_TEXT, WhatsAppMessage.MODE_CAMPAIGN):
+            messages = messages.filter(mode=mode_filter)
+
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+            page_size = min(100, max(1, int(request.query_params.get('page_size', 25))))
+        except (TypeError, ValueError):
+            return Response({'detail': 'page and page_size must be integers'}, status=status.HTTP_400_BAD_REQUEST)
+
+        total = messages.count()
+        rows = messages[(page - 1) * page_size:page * page_size]
+        return Response({
+            'count': total,
+            'page': page,
+            'pageSize': page_size,
+            'results': [{
+                'id': item.id,
+                'mode': item.mode,
+                'contactName': item.contact_name,
+                'contactNo': item.contact_no,
+                'msgText': item.message_text,
+                'templateId': item.template_id,
+                'templateName': item.approved_template.name if item.approved_template_id else '',
+                'status': item.status,
+                'deliveryStatus': item.delivery_status,
+                'providerStatusCode': item.provider_status_code,
+                'error': item.error_message,
+                'campaignId': item.campaign_id,
+                'campaignName': item.campaign.name if item.campaign_id else '',
+                'createdAt': item.created_at,
+                'providerMessageId': item.provider_message_id,
+            } for item in rows],
+        })
+
+
+class WhatsAppMessageStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, message_id):
+        messages, _ = _whatsapp_scope(request.user)
+        try:
+            message = messages.get(pk=message_id)
+        except WhatsAppMessage.DoesNotExist:
+            return Response({'detail': 'WhatsApp message not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if message.status == WhatsAppMessage.STATUS_ACCEPTED and message.provider_campaign_id:
+            try:
+                provider_campaign_id = int(message.provider_campaign_id)
+            except (TypeError, ValueError):
+                return Response({'detail': 'The template send does not have a valid Anantya order ID'}, status=status.HTTP_400_BAD_REQUEST)
+            success, provider_data, http_status = _whatsapp_provider_post(
+                '/api/Campaign/GetCampaign',
+                None,
+                params={'CampaignId': provider_campaign_id},
+            )
+            if not success:
+                return Response(provider_data, status=http_status)
+            _apply_whatsapp_campaign_statuses([message], provider_data)
+            message.refresh_from_db()
+            return Response({
+                'id': message.id,
+                'status': message.status,
+                'deliveryStatus': message.delivery_status,
+                'providerCampaignId': message.provider_campaign_id,
+            })
+
+        try:
+            provider_message_id = int(message.provider_message_id)
+        except (TypeError, ValueError):
+            provider_message_id = None
+        if message.status != WhatsAppMessage.STATUS_ACCEPTED or provider_message_id is None:
+            return Response({
+                'id': message.id,
+                'status': message.status,
+                'deliveryStatus': message.delivery_status,
+                'providerStatusCode': message.provider_status_code,
+                'providerMessageId': message.provider_message_id,
+            })
+
+        success, provider_data, http_status = _whatsapp_provider_get(
+            '/api/Messages/getStatus',
+            params={'msgId': provider_message_id},
+        )
+        if not success:
+            return Response({
+                'detail': provider_data.get('detail', 'Could not refresh provider status'),
+                'id': message.id,
+                'status': message.status,
+                'deliveryStatus': message.delivery_status,
+                'providerStatusCode': message.provider_status_code,
+                'providerMessageId': message.provider_message_id,
+            }, status=http_status)
+
+        provider_status_code = _whatsapp_provider_status_code(provider_data)
+        if provider_status_code is not None:
+            message.provider_status_code = provider_status_code
+            message.delivery_status = _whatsapp_delivery_status(provider_status_code)
+            message.provider_response = provider_data
+            message.save(update_fields=['provider_status_code', 'delivery_status', 'provider_response'])
+
+        return Response({
+            'id': message.id,
+            'status': message.status,
+            'deliveryStatus': message.delivery_status,
+            'providerStatusCode': message.provider_status_code,
+            'providerMessageId': message.provider_message_id,
+        })
+
+
+class WhatsAppCampaignStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, campaign_id):
+        _, campaigns = _whatsapp_scope(request.user)
+        try:
+            campaign = campaigns.get(pk=campaign_id)
+        except WhatsAppCampaign.DoesNotExist:
+            return Response({'detail': 'WhatsApp campaign not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            provider_campaign_id = int(campaign.provider_campaign_id)
+        except (TypeError, ValueError):
+            return Response({'detail': 'The campaign does not have an Anantya campaign ID'}, status=status.HTTP_400_BAD_REQUEST)
+
+        success, provider_data, http_status = _whatsapp_provider_post(
+            '/api/Campaign/GetCampaign',
+            None,
+            params={'CampaignId': provider_campaign_id},
+        )
+        if not success:
+            return Response(provider_data, status=http_status)
+
+        if not _apply_whatsapp_campaign_statuses(list(campaign.messages.all()), provider_data):
+            return Response({'detail': 'Anantya returned an unexpected campaign status response'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        refreshed_messages = campaign.messages.all()
+        delivery_counts = {
+            delivery_status: refreshed_messages.filter(delivery_status=delivery_status).count()
+            for delivery_status, _ in WhatsAppMessage.DELIVERY_CHOICES
+        }
+        return Response({
+            'campaignId': campaign.id,
+            'providerCampaignId': campaign.provider_campaign_id,
+            'recipientCount': campaign.recipient_count,
+            'deliveryCounts': delivery_counts,
+            'messages': [{
+                'id': item.id,
+                'contactName': item.contact_name,
+                'contactNo': item.contact_no,
+                'deliveryStatus': item.delivery_status,
+                'error': item.error_message,
+            } for item in refreshed_messages],
+        })
+
+
+class WhatsAppReportsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        messages, campaigns = _whatsapp_scope(request.user)
+        since = timezone.now() - timedelta(days=30)
+        recent = messages.filter(created_at__gte=since)
+        daily = recent.annotate(day=TruncDate('created_at')).values('day').annotate(
+            total=Count('id'),
+            accepted=Count('id', filter=Q(status=WhatsAppMessage.STATUS_ACCEPTED)),
+            failed=Count('id', filter=Q(status=WhatsAppMessage.STATUS_FAILED)),
+        ).order_by('day')
+        by_mode = messages.values('mode').annotate(total=Count('id')).order_by('mode')
+        return Response({
+            'summary': {
+                'totalMessages': messages.count(),
+                'acceptedMessages': messages.filter(status=WhatsAppMessage.STATUS_ACCEPTED).count(),
+                'failedMessages': messages.filter(status=WhatsAppMessage.STATUS_FAILED).count(),
+                'totalCampaigns': campaigns.count(),
+                'acceptedCampaigns': campaigns.filter(status=WhatsAppCampaign.STATUS_ACCEPTED).count(),
+                'failedCampaigns': campaigns.filter(status=WhatsAppCampaign.STATUS_FAILED).count(),
+            },
+            'byMode': list(by_mode),
+            'daily': [{
+                'date': item['day'].isoformat(),
+                'total': item['total'],
+                'accepted': item['accepted'],
+                'failed': item['failed'],
+            } for item in daily],
+            'campaigns': [{
+                'id': item.id,
+                'name': item.name,
+                'templateId': item.template_id,
+                'templateName': item.approved_template.name if item.approved_template_id else '',
+                'recipientCount': item.recipient_count,
+                'status': item.status,
+                'createdAt': item.created_at,
+                } for item in campaigns[:100]],
+        })
