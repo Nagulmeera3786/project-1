@@ -1,7 +1,6 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom';
 import { FaChevronDown, FaSearch } from 'react-icons/fa';
-
 const landingMenus = [
   {
     key: 'products',
@@ -88,7 +87,6 @@ const FreeTrialSMS = lazy(() => import('./components/FreeTrialSMS'));
 const SMSHistory = lazy(() => import('./components/SMSHistory'));
 const AdminSMSDashboard = lazy(() => import('./components/AdminSMSDashboard'));
 const AdminSMSCredentials = lazy(() => import('./components/AdminSMSCredentials'));
-const AdminSMSTemplates = lazy(() => import('./components/AdminSMSTemplates'));
 const AdminNotifications = lazy(() => import('./components/AdminNotifications'));
 const UserNotifications = lazy(() => import('./components/UserNotifications'));
 const EmailValidation = lazy(() => import('./components/EmailValidation'));
@@ -294,6 +292,8 @@ function App() {
                     <span>{menu.label}</span>
                     <FaChevronDown />
                   </button>
+                  
+
 
                   <div className={`bhisha-dropdown ${openMenu === menu.key ? 'open' : ''}`}>
                     {menu.items.map((item) => (
@@ -344,7 +344,6 @@ function App() {
         <Route path="/dashboard/recharge" element={privateRoute('Recharge & Payments', <DashboardLayout page="recharge" />)} />
         <Route path="/dashboard/contact-support" element={privateRoute('Contact Support', <DashboardLayout page="contactSupport" />)} />
         <Route path="/dashboard/sender-id-request" element={privateRoute('Sender ID Request', <SenderIdRequestPage />)} />
-
         <Route path="/whatsapp/send" element={privateRoute('WhatsApp', <WhatsAppSendPage />)} />
         <Route path="/whatsapp/send-message" element={privateRoute('Send WhatsApp Message', <WhatsApp />)} />
         <Route path="/whatsapp/dashboard" element={privateRoute('WhatsApp Dashboard', <WhatsAppDashboard />)} />
@@ -376,7 +375,7 @@ function App() {
           path="/admin/sms/credentials"
           element={supportRoute('Support SMS Credentials', <AdminSMSCredentials />)}
         />
-        <Route path="/admin/sms/templates" element={adminRoute('SMS Templates', <AdminSMSTemplates />)} />
+        
         <Route path="/admin/notifications" element={supportRoute('Support Notifications', <AdminNotifications />)} />
         <Route path="/broadcast/email-validation" element={privateRoute('Email Validation', <EmailValidation />)} />
         <Route path="/reports" element={privateRoute('Reports', <Reports />)} />
