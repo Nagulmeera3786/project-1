@@ -8,6 +8,9 @@ WORKDIR /app
 ARG REACT_APP_USE_SAME_ORIGIN_API=true
 ENV REACT_APP_USE_SAME_ORIGIN_API=${REACT_APP_USE_SAME_ORIGIN_API}
 
+# ─── Pin npm to match the version used to generate package-lock.json ──
+RUN npm install -g npm@10.8.2
+
 # ─── Copy Package Files ────────────────────────────────────────
 COPY package.json package-lock.json ./
 
